@@ -1,14 +1,18 @@
 // SPDX-License-Identifier: GPL-3.0-only
-//! Typed HTTP client for the `crm-api` contact endpoints.
+//! Typed HTTP client for the `crm-api` endpoints.
 //!
-//! All requests target [`API_BASE`]. The demo tenant
-//! [`DEMO_PROFILE_ID_STR`] stands in for real auth/tenancy until task
-//! `03-SEC-01` provides the client profile from the session.
+//! All requests target [`API_BASE`] with `Authorization: Bearer <token>`.
+//! Every function maps transport failures to [`ApiError::Transport`] and
+//! non-2xx responses to [`ApiError::Api`] via the decoded
+//! `application/problem+json` body.
 
 use std::fmt;
 
+use crm_domain::asset::Asset;
+use crm_domain::audit::AuditEvent;
 use crm_domain::contact::Contact;
 use crm_domain::ids::{ClientProfileId, ContactId};
+use crm_domain::profile::ClientProfile;
 use gloo_net::http::Request;
 use serde::{Deserialize, Serialize};
 
@@ -236,4 +240,352 @@ pub async fn create_contact(
 /// reference to any contact.
 fn new_idempotency_key() -> String {
     ContactId::new().to_string()
+}
+
+// ---------------------------------------------------------------------------
+// Client profiles (`POST/GET /api/v1/profiles…`)
+// ---------------------------------------------------------------------------
+
+/// `GET /api/v1/profiles` response envelope.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ProfileListResponse {
+    /// Profiles for the caller's agency.
+    pub profiles: Vec<ClientProfile>,
+    /// Total profiles.
+    pub total: usize,
+}
+
+/// `POST /api/v1/profiles` request body.
+#[derive(Debug, Clone, Serialize)]
+pub struct CreateProfileRequest {
+    /// Display name of the client's business.
+    pub name: String,
+}
+
+/// Lists the caller's agency profiles.
+pub async fn fetch_profiles(token: &str) -> Result<ProfileListResponse, ApiError> {
+    let url = format!("{API_BASE}/api/v1/profiles");
+    let response = bearer(Request::get(&url), token)
+        .send()
+        .await
+        .map_err(|error| ApiError::Transport(error.to_string()))?;
+    if response.ok() {
+        response
+            .json::<ProfileListResponse>()
+            .await
+            .map_err(|error| ApiError::Transport(format!("invalid profile list response: {error}")))
+    } else {
+        Err(api_error_from_response(&response).await)
+    }
+}
+
+/// Creates a profile, minting a fresh `Idempotency-Key` per call.
+pub async fn create_profile(name: &str, token: &str) -> Result<ClientProfile, ApiError> {
+    let url = format!("{API_BASE}/api/v1/profiles");
+    let body = serde_json::to_string(&CreateProfileRequest {
+        name: name.to_string(),
+    })
+    .map_err(|error| ApiError::Transport(format!("invalid create-profile request: {error}")))?;
+    let response = bearer(
+        Request::post(&url)
+            .header("Idempotency-Key", &new_idempotency_key())
+            .header("Content-Type", "application/json"),
+        token,
+    )
+    .body(body)
+    .map_err(|error| ApiError::Transport(error.to_string()))?
+    .send()
+    .await
+    .map_err(|error| ApiError::Transport(error.to_string()))?;
+    if response.ok() {
+        response
+            .json::<ClientProfile>()
+            .await
+            .map_err(|error| ApiError::Transport(format!("invalid profile response: {error}")))
+    } else {
+        Err(api_error_from_response(&response).await)
+    }
+}
+
+/// Fetches one profile by id.
+pub async fn fetch_profile(profile_id: &str, token: &str) -> Result<ClientProfile, ApiError> {
+    let url = format!("{API_BASE}/api/v1/profiles/{profile_id}");
+    let response = bearer(Request::get(&url), token)
+        .send()
+        .await
+        .map_err(|error| ApiError::Transport(error.to_string()))?;
+    if response.ok() {
+        response
+            .json::<ClientProfile>()
+            .await
+            .map_err(|error| ApiError::Transport(format!("invalid profile response: {error}")))
+    } else {
+        Err(api_error_from_response(&response).await)
+    }
+}
+
+/// Runs a profile lifecycle transition (`suspend`, `reactivate`, `archive`).
+pub async fn transition_profile(
+    profile_id: &str,
+    transition: &str,
+    token: &str,
+) -> Result<ClientProfile, ApiError> {
+    let url = format!("{API_BASE}/api/v1/profiles/{profile_id}/{transition}");
+    let response = bearer(Request::post(&url), token)
+        .send()
+        .await
+        .map_err(|error| ApiError::Transport(error.to_string()))?;
+    if response.ok() {
+        response
+            .json::<ClientProfile>()
+            .await
+            .map_err(|error| ApiError::Transport(format!("invalid profile response: {error}")))
+    } else {
+        Err(api_error_from_response(&response).await)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Assets (`POST/GET /api/v1/assets…`)
+// ---------------------------------------------------------------------------
+
+/// `GET /api/v1/assets` response envelope.
+#[derive(Debug, Clone, Deserialize)]
+pub struct AssetListResponse {
+    /// Assets for the requested profile.
+    pub assets: Vec<Asset>,
+    /// Total assets.
+    pub total: usize,
+}
+
+/// `POST /api/v1/assets` request body: asset metadata. The byte store is
+/// out of scope — `sha256_hex` is the content address supplied by the
+/// uploader and doubles as the upload-dedupe key.
+#[derive(Debug, Clone, Serialize)]
+pub struct RegisterAssetRequest {
+    /// Owning client profile (UUID string).
+    pub client_profile_id: String,
+    /// Original file name.
+    pub file_name: String,
+    /// MIME type supplied at upload.
+    pub mime_type: String,
+    /// Size in bytes; must be greater than zero.
+    pub size_bytes: u64,
+    /// SHA-256 of the file bytes, hex-encoded (64 chars).
+    pub sha256_hex: String,
+}
+
+/// Lists assets for one client profile.
+pub async fn fetch_assets(profile_id: &str, token: &str) -> Result<AssetListResponse, ApiError> {
+    let url = format!("{API_BASE}/api/v1/assets?client_profile_id={profile_id}&limit=50");
+    let response = bearer(Request::get(&url), token)
+        .send()
+        .await
+        .map_err(|error| ApiError::Transport(error.to_string()))?;
+    if response.ok() {
+        response
+            .json::<AssetListResponse>()
+            .await
+            .map_err(|error| ApiError::Transport(format!("invalid asset list response: {error}")))
+    } else {
+        Err(api_error_from_response(&response).await)
+    }
+}
+
+/// Registers an asset's metadata. Returns `201` with the new asset, or
+/// `200` with the existing asset when the same bytes were already
+/// registered under the profile (upload dedupe).
+pub async fn register_asset(
+    request: &RegisterAssetRequest,
+    token: &str,
+) -> Result<Asset, ApiError> {
+    let url = format!("{API_BASE}/api/v1/assets");
+    let body = serde_json::to_string(request)
+        .map_err(|error| ApiError::Transport(format!("invalid register-asset request: {error}")))?;
+    let response = bearer(
+        Request::post(&url)
+            .header("Idempotency-Key", &new_idempotency_key())
+            .header("Content-Type", "application/json"),
+        token,
+    )
+    .body(body)
+    .map_err(|error| ApiError::Transport(error.to_string()))?
+    .send()
+    .await
+    .map_err(|error| ApiError::Transport(error.to_string()))?;
+    if response.ok() {
+        response
+            .json::<Asset>()
+            .await
+            .map_err(|error| ApiError::Transport(format!("invalid asset response: {error}")))
+    } else {
+        Err(api_error_from_response(&response).await)
+    }
+}
+
+/// Archives an asset (terminal).
+pub async fn archive_asset(asset_id: &str, token: &str) -> Result<Asset, ApiError> {
+    let url = format!("{API_BASE}/api/v1/assets/{asset_id}/archive");
+    let response = bearer(Request::post(&url), token)
+        .send()
+        .await
+        .map_err(|error| ApiError::Transport(error.to_string()))?;
+    if response.ok() {
+        response
+            .json::<Asset>()
+            .await
+            .map_err(|error| ApiError::Transport(format!("invalid asset response: {error}")))
+    } else {
+        Err(api_error_from_response(&response).await)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Contacts: detail + merge (`GET /api/v1/contacts/{id}`,
+// `POST /api/v1/contacts/merge`)
+// ---------------------------------------------------------------------------
+
+/// Fetches one contact by id.
+pub async fn fetch_contact(contact_id: &str, token: &str) -> Result<Contact, ApiError> {
+    let url = format!("{API_BASE}/api/v1/contacts/{contact_id}");
+    let response = bearer(Request::get(&url), token)
+        .send()
+        .await
+        .map_err(|error| ApiError::Transport(error.to_string()))?;
+    if response.ok() {
+        response
+            .json::<Contact>()
+            .await
+            .map_err(|error| ApiError::Transport(format!("invalid contact response: {error}")))
+    } else {
+        Err(api_error_from_response(&response).await)
+    }
+}
+
+/// `POST /api/v1/contacts/merge` request body.
+#[derive(Debug, Clone, Serialize)]
+pub struct MergeContactsRequest {
+    /// The contact that survives, absorbing the other's identity (UUID string).
+    pub survivor_id: String,
+    /// The duplicate folded into the survivor (UUID string).
+    pub duplicate_id: String,
+}
+
+/// Merges a duplicate into its survivor. Returns the archived duplicate
+/// (tombstoned via `merged_into`, never deleted).
+pub async fn merge_contacts(
+    request: &MergeContactsRequest,
+    token: &str,
+) -> Result<Contact, ApiError> {
+    let url = format!("{API_BASE}/api/v1/contacts/merge");
+    let body = serde_json::to_string(request)
+        .map_err(|error| ApiError::Transport(format!("invalid merge request: {error}")))?;
+    let response = bearer(
+        Request::post(&url)
+            .header("Idempotency-Key", &new_idempotency_key())
+            .header("Content-Type", "application/json"),
+        token,
+    )
+    .body(body)
+    .map_err(|error| ApiError::Transport(error.to_string()))?
+    .send()
+    .await
+    .map_err(|error| ApiError::Transport(error.to_string()))?;
+    if response.ok() {
+        response
+            .json::<Contact>()
+            .await
+            .map_err(|error| ApiError::Transport(format!("invalid merge response: {error}")))
+    } else {
+        Err(api_error_from_response(&response).await)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Audit log (`GET /api/v1/audit/events`, `GET /api/v1/audit/verify`)
+// ---------------------------------------------------------------------------
+
+/// One audit event in a query response: the chain-linked envelope plus the
+/// forensic payload, when the event carries one.
+#[derive(Debug, Clone, Deserialize)]
+pub struct AuditEventItem {
+    /// The chain-linked envelope (flattened).
+    #[serde(flatten)]
+    pub event: AuditEvent,
+    /// The serialized security-event payload, if any.
+    pub payload: Option<serde_json::Value>,
+}
+
+/// `GET /api/v1/audit/events` response: chain-order page.
+#[derive(Debug, Clone, Deserialize)]
+pub struct AuditEventsResponse {
+    /// Events in chain (ascending time) order.
+    pub events: Vec<AuditEventItem>,
+    /// Whether more events match beyond this page.
+    pub has_more: bool,
+}
+
+/// Optional filters for the audit query. All are optional; the server
+/// applies scope isolation on top.
+#[derive(Debug, Clone, Default)]
+pub struct AuditQuery {
+    /// Pinned action name, e.g. `"auth.login_failed"`.
+    pub action: Option<String>,
+    /// Maximum events to return.
+    pub limit: Option<u64>,
+}
+
+/// Queries the audit log (agency scope required).
+pub async fn fetch_audit_events(
+    query: &AuditQuery,
+    token: &str,
+) -> Result<AuditEventsResponse, ApiError> {
+    let mut url = format!("{API_BASE}/api/v1/audit/events?");
+    if let Some(action) = &query.action {
+        url.push_str(&format!("action={action}&"));
+    }
+    let limit = query.limit.unwrap_or(50).min(100);
+    url.push_str(&format!("limit={limit}"));
+    let response = bearer(Request::get(&url), token)
+        .send()
+        .await
+        .map_err(|error| ApiError::Transport(error.to_string()))?;
+    if response.ok() {
+        response
+            .json::<AuditEventsResponse>()
+            .await
+            .map_err(|error| ApiError::Transport(format!("invalid audit response: {error}")))
+    } else {
+        Err(api_error_from_response(&response).await)
+    }
+}
+
+/// `GET /api/v1/audit/verify` response: chain verification result.
+#[derive(Debug, Clone, Deserialize)]
+pub struct VerifyResponse {
+    /// Whether every checked event links correctly from genesis.
+    pub valid: bool,
+    /// Number of events checked.
+    pub events_checked: u64,
+    /// Chain hash of the verified head, hex-encoded.
+    pub head: Option<String>,
+    /// The first event that failed verification, if any (UUID string).
+    pub first_bad_event: Option<String>,
+}
+
+/// Verifies the audit chain from genesis (agency scope required).
+pub async fn verify_audit_chain(token: &str) -> Result<VerifyResponse, ApiError> {
+    let url = format!("{API_BASE}/api/v1/audit/verify");
+    let response = bearer(Request::get(&url), token)
+        .send()
+        .await
+        .map_err(|error| ApiError::Transport(error.to_string()))?;
+    if response.ok() {
+        response
+            .json::<VerifyResponse>()
+            .await
+            .map_err(|error| ApiError::Transport(format!("invalid verify response: {error}")))
+    } else {
+        Err(api_error_from_response(&response).await)
+    }
 }

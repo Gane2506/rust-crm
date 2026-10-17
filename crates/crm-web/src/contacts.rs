@@ -9,13 +9,16 @@
 use leptos::html::Input;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
+use leptos_router::components::A;
 
 use crm_domain::contact::Contact;
 
 use crate::api::{
-    create_contact, demo_profile_id, fetch_contacts, ApiError, ContactListResponse,
-    CreateContactRequest,
+    create_contact, demo_profile_id, fetch_contact, fetch_contacts, merge_contacts, ApiError,
+    ContactListResponse, CreateContactRequest, MergeContactsRequest,
 };
+use crate::components::{EmptyState, ErrorAlert, Loading, OkAlert, PageHeader};
+use crate::styles;
 
 /// Contacts list page: fetch-on-mount list plus the create form.
 ///
@@ -39,32 +42,29 @@ pub fn ContactsPage(token: String) -> impl IntoView {
             contacts.set(Some(fetch_contacts(&token).await));
         });
     });
-    let retry = move |_| reload.update(|n| *n = n.wrapping_add(1));
+    let retry = move || reload.update(|n| *n = n.wrapping_add(1));
 
     view! {
-        <section aria-label="Contacts">
-            <h2>"Contacts"</h2>
-            <ContactForm token=token.clone() on_created=move || reload.update(|n| *n = n.wrapping_add(1)) />
-            <h3>"Contact list"</h3>
+        <section aria-label="Contacts" style=styles::SECTION>
+            <PageHeader title="Contacts" />
+            <p>
+                <A href="/contacts/merge">"Merge duplicate contacts"</A>
+            </p>
+            <ContactForm token={token.clone()} on_created=move || reload.update(|n| *n = n.wrapping_add(1)) />
+            <h3 style=styles::H3>"Contact list"</h3>
             {move || match contacts.get() {
                 None => {
-                    view! { <p aria-busy="true">"Loading contacts…"</p> }.into_any()
+                    view! { <Loading label="contacts" /> }.into_any()
                 }
                 Some(Err(error)) => {
-                    view! {
-                        <div role="alert" style="border: 1px solid #fca5a5; background: #fef2f2; border-radius: 0.5rem; padding: 0.75rem; max-width: 32rem;">
-                            <p style="margin: 0 0 0.5rem;">{format!("Could not load contacts: {error}")}</p>
-                            <button on:click=retry>"Retry"</button>
-                        </div>
-                    }
-                        .into_any()
+                    view! { <ErrorAlert message=error.to_string() on_retry={std::rc::Rc::new(retry) as std::rc::Rc<dyn Fn()>} /> }.into_any()
                 }
                 Some(Ok(page)) if page.contacts.is_empty() => {
-                    view! { <p>"No contacts yet."</p> }.into_any()
+                    view! { <EmptyState message="No contacts yet." /> }.into_any()
                 }
                 Some(Ok(page)) => {
                     view! {
-                        <p style="font-size: 0.875rem; color: #6b7280;">
+                        <p style=styles::MUTED>
                             {format!("{} contact{} total", page.total, if page.total == 1 { "" } else { "s" })}
                         </p>
                         <ul style="list-style: none; margin: 0; padding: 0; display: grid; gap: 0.75rem;">
@@ -241,7 +241,7 @@ fn ContactForm(token: String, on_created: impl Fn() + Clone + 'static) -> impl I
 /// One contact in the list: short id, lifecycle, emails, phones and source.
 ///
 /// Renders what the domain model carries — contacts have no display name in
-/// this slice.
+/// this slice. The id links to the detail page.
 #[component]
 fn ContactRow(contact: Contact) -> impl IntoView {
     let Contact {
@@ -252,7 +252,8 @@ fn ContactRow(contact: Contact) -> impl IntoView {
         latest_source,
         ..
     } = contact;
-    let short_id: String = contact_id.to_string().chars().take(8).collect();
+    let id = contact_id.to_string();
+    let short_id: String = id.chars().take(8).collect();
     let emails = normalized_emails.join(", ");
     let phones = normalized_phones.join(", ");
     let emails = if emails.is_empty() {
@@ -267,19 +268,19 @@ fn ContactRow(contact: Contact) -> impl IntoView {
     };
 
     view! {
-        <li style="border: 1px solid #e5e7eb; border-radius: 0.5rem; padding: 0.75rem;">
+        <li style=styles::CARD>
             <div style="display: flex; justify-content: space-between; align-items: baseline; gap: 1rem;">
-                <strong>{format!("Contact {short_id}…")}</strong>
-                <span style="font-size: 0.875rem; color: #4b5563;">
-                    {format!("{lifecycle:?}")}
-                </span>
+                <A href=format!("/contacts/{id}")>
+                    <strong>{format!("Contact {short_id}…")}</strong>
+                </A>
+                <span style=styles::MUTED>{format!("{lifecycle:?}")}</span>
             </div>
-            <dl style="margin: 0.5rem 0 0; display: grid; grid-template-columns: auto 1fr; gap: 0.25rem 0.75rem; font-size: 0.875rem;">
-                <dt style="color: #6b7280;">"Emails"</dt>
+            <dl style=styles::DL>
+                <dt style=styles::DT>"Emails"</dt>
                 <dd style="margin: 0;">{emails}</dd>
-                <dt style="color: #6b7280;">"Phones"</dt>
+                <dt style=styles::DT>"Phones"</dt>
                 <dd style="margin: 0;">{phones}</dd>
-                <dt style="color: #6b7280;">"Source"</dt>
+                <dt style=styles::DT>"Source"</dt>
                 <dd style="margin: 0;">{latest_source}</dd>
             </dl>
         </li>
@@ -299,5 +300,195 @@ mod tests {
         assert!(split_list("").is_empty());
         assert!(split_list("   , ").is_empty());
         assert_eq!(split_list("one"), vec!["one".to_string()]);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Detail + merge (appended by 06-UI-01)
+// ---------------------------------------------------------------------------
+
+/// Contact detail page: full record fetched by id.
+///
+/// # Props
+/// - `token`: the in-memory bearer token.
+/// - `id`: the contact UUID from the route.
+#[component]
+pub fn ContactDetail(token: String, id: String) -> impl IntoView {
+    let contact = RwSignal::new(None::<Result<Contact, ApiError>>);
+    {
+        let token = token.clone();
+        Effect::new(move |_| {
+            if id.is_empty() {
+                return;
+            }
+            contact.set(None);
+            let token = token.clone();
+            let id = id.clone();
+            spawn_local(async move {
+                contact.set(Some(fetch_contact(&id, &token).await));
+            });
+        });
+    }
+
+    view! {
+        <section aria-label="Contact detail" style=styles::SECTION>
+            <PageHeader title="Contact" />
+            <p>
+                <A href="/contacts">"← Back to contacts"</A>
+            </p>
+            {move || match contact.get() {
+                None => view! { <Loading label="contact" /> }.into_any(),
+                Some(Err(error)) => {
+                    view! { <ErrorAlert message=error.to_string() /> }.into_any()
+                }
+                Some(Ok(c)) => {
+                    view! {
+                        <div style=styles::CARD>
+                            <dl style=styles::DL>
+                                <dt style=styles::DT>"Contact id"</dt>
+                                <dd style=styles::MONO>{c.contact_id.to_string()}</dd>
+                                <dt style=styles::DT>"Profile id"</dt>
+                                <dd style=styles::MONO>{c.client_profile_id.to_string()}</dd>
+                                <dt style=styles::DT>"Lifecycle"</dt>
+                                <dd style="margin: 0;">{format!("{:?}", c.lifecycle)}</dd>
+                                <dt style=styles::DT>"Emails"</dt>
+                                <dd style="margin: 0;">{c.normalized_emails.join(", ")}</dd>
+                                <dt style=styles::DT>"Phones"</dt>
+                                <dd style="margin: 0;">{c.normalized_phones.join(", ")}</dd>
+                                <dt style=styles::DT>"First source"</dt>
+                                <dd style="margin: 0;">{c.first_source.clone()}</dd>
+                                <dt style=styles::DT>"Latest source"</dt>
+                                <dd style="margin: 0;">{c.latest_source.clone()}</dd>
+                                <dt style=styles::DT>"Source touches"</dt>
+                                <dd style="margin: 0;">{c.source_touches.join(", ")}</dd>
+                                <dt style=styles::DT>"Merged into"</dt>
+                                <dd style="margin: 0;">
+                                    {c
+                                        .merged_into
+                                        .map(|id| id.to_string())
+                                        .unwrap_or_else(|| "—".to_string())}
+                                </dd>
+                            </dl>
+                        </div>
+                    }
+                        .into_any()
+                }
+            }}
+        </section>
+    }
+}
+
+/// Merge-duplicates page: folds a duplicate contact into its survivor.
+///
+/// Posts `POST /api/v1/contacts/merge`. The survivor absorbs identity,
+/// sources and consents; the duplicate is archived with `merged_into`
+/// set (tombstone — never deleted). A `409` means the pair cannot merge
+/// (different profiles, already merged, or self-merge).
+///
+/// # Props
+/// - `token`: the in-memory bearer token.
+#[component]
+pub fn MergePage(token: String) -> impl IntoView {
+    let survivor_ref = NodeRef::<Input>::new();
+    let duplicate_ref = NodeRef::<Input>::new();
+    let status = RwSignal::new(None::<Result<String, String>>);
+    let submitting = RwSignal::new(false);
+
+    let on_submit = move |ev: leptos::ev::SubmitEvent| {
+        ev.prevent_default();
+        if submitting.get() {
+            return;
+        }
+        let survivor_id = survivor_ref
+            .get()
+            .map(|i| i.value().trim().to_string())
+            .unwrap_or_default();
+        let duplicate_id = duplicate_ref
+            .get()
+            .map(|i| i.value().trim().to_string())
+            .unwrap_or_default();
+        if survivor_id.is_empty() || duplicate_id.is_empty() {
+            status.set(Some(Err("Enter both contact ids.".to_string())));
+            return;
+        }
+        if survivor_id == duplicate_id {
+            status.set(Some(Err(
+                "Survivor and duplicate must be different contacts.".to_string(),
+            )));
+            return;
+        }
+        submitting.set(true);
+        status.set(None);
+        let request = MergeContactsRequest {
+            survivor_id,
+            duplicate_id,
+        };
+        let token = token.clone();
+        spawn_local(async move {
+            match merge_contacts(&request, &token).await {
+                Ok(archived) => {
+                    if let Some(input) = duplicate_ref.get() {
+                        input.set_value("");
+                    }
+                    status.set(Some(Ok(format!(
+                        "Merged — duplicate {} archived.",
+                        archived.contact_id
+                    ))));
+                }
+                Err(ApiError::Api { status: 409, .. }) => {
+                    status.set(Some(Err(
+                        "Cannot merge this pair (different profiles, already merged, or invalid ids)."
+                            .to_string(),
+                    )));
+                }
+                Err(error) => status.set(Some(Err(error.to_string()))),
+            }
+            submitting.set(false);
+        });
+    };
+
+    view! {
+        <section aria-label="Merge duplicates" style=styles::SECTION>
+            <PageHeader title="Merge duplicates" />
+            <p style=styles::MUTED>
+                "Fold a duplicate contact into its survivor. The survivor keeps the union of identity, sources and consents; the duplicate is archived (never deleted)."
+            </p>
+            <form on:submit=on_submit style=styles::CARD>
+                <div style=styles::FORM>
+                    <div>
+                        <label for="merge-survivor" style=styles::LABEL>"Survivor contact id"</label>
+                        <input
+                            id="merge-survivor"
+                            type="text"
+                            node_ref=survivor_ref
+                            placeholder="UUID of the surviving contact"
+                            autocomplete="off"
+                            style=styles::INPUT
+                        />
+                    </div>
+                    <div>
+                        <label for="merge-duplicate" style=styles::LABEL>"Duplicate contact id"</label>
+                        <input
+                            id="merge-duplicate"
+                            type="text"
+                            node_ref=duplicate_ref
+                            placeholder="UUID of the duplicate"
+                            autocomplete="off"
+                            style=styles::INPUT
+                        />
+                    </div>
+                    <div>
+                        <button type="submit" disabled=move || submitting.get() style=styles::BTN_PRIMARY>
+                            {move || if submitting.get() { "Merging…" } else { "Merge contacts" }}
+                        </button>
+                    </div>
+                    {move || match status.get() {
+                        None => ().into_any(),
+                        Some(Ok(message)) => view! { <OkAlert message=message /> }.into_any(),
+                        Some(Err(message)) => view! { <ErrorAlert message=message /> }.into_any(),
+                    }}
+                </div>
+            </form>
+        </section>
     }
 }
