@@ -465,6 +465,29 @@ async fn seed_staff(pool: &sqlx::PgPool, agency_id: AgencyId) -> Result<bool, Do
             )
             .await?;
     }
+    // Grants for the Jev agents slice (task 09-JEV-02): run lifecycle
+    // plus approval on the demo profile, so the demo user can try the
+    // agent endpoints after logging in.
+    for operation in [
+        Operation::Create,
+        Operation::Read,
+        Operation::Update,
+        Operation::Approve,
+    ] {
+        grant_repo
+            .assign(
+                user.staff_id,
+                Grant {
+                    grant_id: GrantId::new(),
+                    action: Action {
+                        resource: Resource::AgentRun,
+                        operation,
+                    },
+                    scope,
+                },
+            )
+            .await?;
+    }
     Ok(true)
 }
 

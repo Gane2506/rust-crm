@@ -7,20 +7,18 @@
 //! profile and every mutation is authorized and audited by the service
 //! layer (task 09-JEV-02).
 //!
-//! ## Authorization (deferred)
+//! ## Authorization
 //!
-//! Agent operations will authorize against `Resource::AgentRun`, which
-//! is **not** added here: the `Resource` → database-string mapping lives
-//! in `crates/crm-db` (exhaustive match), and this task is domain-only.
-//! 09-JEV-02 (the vertical slice) adds the variant together with its
-//! `"agent_run"` mapping arm atomically, so the workspace keeps
-//! compiling. The service-trait docs reference the future authorization
-//! requirement.
+//! Agent operations authorize against
+//! [`Resource::AgentRun`](crate::security::Resource::AgentRun):
+//! profile-scoped contexts may only touch their own profile's runs;
+//! agency-scoped contexts require an agency grant. The service-trait
+//! docs reference the authorization requirement.
 //!
 //! Note: [`Resource::AgentAction`](crate::security::Resource::AgentAction)
 //! (task 01-FND-01) covers audit records of delegated tool calls; the
-//! `AgentRun` resource introduced here covers the run lifecycle itself
-//! (start, approve, cancel, handoff).
+//! `AgentRun` resource covers the run lifecycle itself (start, approve,
+//! cancel, handoff).
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -74,8 +72,13 @@ pub struct AgentRun {
     pub agent_kind: String,
     /// Current lifecycle status.
     pub status: AgentRunStatus,
-    /// Model-adapter name selected for this run (see [`FallbackChain`]).
+    /// Model-adapter name currently selected for this run. Starts as the
+    /// chain's primary; the service advances it along
+    /// [`FallbackChain`] when an adapter fails (task 09-JEV-02).
     pub adapter_name: String,
+    /// Ordered fallback chain of adapter names, stored on the run so a
+    /// reloaded run can keep walking the chain after a failure.
+    pub fallback_chain: FallbackChain,
     /// Input payload for the run (task description, parameters).
     pub input: Value,
     /// Output payload, set on completion.
@@ -89,38 +92,38 @@ pub struct AgentRun {
 impl AgentRun {
     /// Creates a run in `Pending` status.
     ///
-    /// Rejects: blank `agent_kind` or adapter name, a null input.
+    /// The initial adapter is the chain's primary; `adapter_name` stays
+    /// consistent with the stored chain by construction.
+    ///
+    /// Rejects: blank `agent_kind`, a null input.
     ///
     /// ```
     /// use crm_domain::ids::ClientProfileId;
-    /// use crm_domain::jev::{AgentRun, AgentRunStatus};
+    /// use crm_domain::jev::{AgentRun, AgentRunStatus, FallbackChain};
     /// use serde_json::json;
     ///
+    /// let chain = FallbackChain::new(vec!["openrouter".to_string()])
+    ///     .expect("valid chain");
     /// let run = AgentRun::new(
     ///     ClientProfileId::new(),
     ///     "triage".to_string(),
-    ///     "openrouter".to_string(),
+    ///     chain,
     ///     json!({"task": "triage inbox"}),
     /// )
     /// .expect("valid run");
     /// assert_eq!(run.status, AgentRunStatus::Pending);
+    /// assert_eq!(run.adapter_name, "openrouter");
     /// ```
     pub fn new(
         client_profile_id: ClientProfileId,
         agent_kind: String,
-        adapter_name: String,
+        fallback_chain: FallbackChain,
         input: Value,
     ) -> Result<Self, DomainError> {
         let agent_kind = agent_kind.trim().to_owned();
         if agent_kind.is_empty() {
             return Err(DomainError::Validation(
                 "agent kind must not be blank".to_string(),
-            ));
-        }
-        let adapter_name = adapter_name.trim().to_owned();
-        if adapter_name.is_empty() {
-            return Err(DomainError::Validation(
-                "model adapter name must not be blank".to_string(),
             ));
         }
         if input.is_null() {
@@ -134,7 +137,8 @@ impl AgentRun {
             client_profile_id,
             agent_kind,
             status: AgentRunStatus::Pending,
-            adapter_name,
+            adapter_name: fallback_chain.primary().to_owned(),
+            fallback_chain,
             input,
             output: None,
             created_at: now,
@@ -462,6 +466,9 @@ pub struct ToolCall {
     pub input: Value,
     /// Current lifecycle status.
     pub status: ToolCallStatus,
+    /// Whether the tool required human approval, captured at record
+    /// time (task 09-JEV-02).
+    pub requires_approval: bool,
     /// Tool output, set on execution.
     pub output: Option<Value>,
     /// When the call was recorded.
@@ -472,7 +479,12 @@ impl ToolCall {
     /// Records a model-requested tool call in `Pending` status.
     ///
     /// Rejects: blank tool name, null input.
-    pub fn new(run_id: AgentRunId, tool_name: String, input: Value) -> Result<Self, DomainError> {
+    pub fn new(
+        run_id: AgentRunId,
+        tool_name: String,
+        input: Value,
+        requires_approval: bool,
+    ) -> Result<Self, DomainError> {
         let tool_name = tool_name.trim().to_owned();
         if tool_name.is_empty() {
             return Err(DomainError::Validation(
@@ -490,6 +502,7 @@ impl ToolCall {
             tool_name,
             input,
             status: ToolCallStatus::Pending,
+            requires_approval,
             output: None,
             created_at: Utc::now(),
         })
@@ -558,6 +571,15 @@ pub enum ApprovalDecision {
     /// The human denied the pending action.
     Denied,
 }
+
+/// Well-known role whose holders may approve agent runs.
+///
+/// The role is resolved to the `agent_run`/`approve` (or `manage`)
+/// grant covering the run's client profile: either a profile-scoped
+/// grant on that exact profile or an agency-scoped grant for the
+/// profile's agency. The service layer checks membership through
+/// [`crate::services::RoleMembership`] before recording a decision.
+pub const APPROVER_ROLE: &str = "agent_approver";
 
 /// A human-in-the-loop approval gate for one pending action.
 ///
@@ -713,7 +735,7 @@ mod tests {
         AgentRun::new(
             ClientProfileId::new(),
             "triage".to_string(),
-            "openrouter".to_string(),
+            FallbackChain::new(vec!["openrouter".to_string()]).expect("valid chain"),
             json!({"task": "triage"}),
         )
         .expect("valid run")
@@ -722,9 +744,9 @@ mod tests {
     #[test]
     fn run_validates_inputs() {
         let profile = ClientProfileId::new();
-        assert!(AgentRun::new(profile, "  ".to_string(), "x".to_string(), json!({})).is_err());
-        assert!(AgentRun::new(profile, "x".to_string(), "  ".to_string(), json!({})).is_err());
-        assert!(AgentRun::new(profile, "x".to_string(), "y".to_string(), Value::Null).is_err());
+        let chain = FallbackChain::new(vec!["x".to_string()]).expect("valid chain");
+        assert!(AgentRun::new(profile, "  ".to_string(), chain.clone(), json!({})).is_err());
+        assert!(AgentRun::new(profile, "x".to_string(), chain, Value::Null).is_err());
     }
 
     #[test]
@@ -817,6 +839,7 @@ mod tests {
             AgentRunId::new(),
             "crm.create_contact".to_string(),
             json!({"email": "a@example.com"}),
+            true,
         )
         .expect("valid call");
         assert_eq!(call.status, ToolCallStatus::Pending);
@@ -838,6 +861,7 @@ mod tests {
             AgentRunId::new(),
             "crm.delete_contact".to_string(),
             json!({}),
+            true,
         )
         .expect("valid call");
         assert!(call.deny("  ").is_err());

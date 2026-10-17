@@ -28,7 +28,8 @@ Statuses: TODO / IN_PROGRESS / BLOCKED / DONE. Never mark DONE without linked co
 | 08-CAMP-01 | DONE | issue #41 / PR #42 (merge `c33f74f`) | | Campaigns: domain, traits, lifecycle (231 tests) |
 | 08-CAMP-02 | DONE | issue #43 / PR #44 (merge `af1dfa8`) | | Campaigns: vertical slice (14 endpoints, 4 integration tests) |
 | 08-CAMP-03 | DONE | issue #45 / PR #46 (merge `eaa504d`) | | Campaigns: runbook, threat model, seed — **workstream COMPLETE** |
-| 09-JEV-01 | IN_PROGRESS | issue #47 / branch `task/09-JEV-01` | | Jev agents: define domain and interfaces |
+| 09-JEV-01 | DONE | issue #47 / PR #48 (merge `681af19`) | | Jev agents: domain, traits, interfaces (248 tests) |
+| 09-JEV-02 | IN_PROGRESS | issue #49 / branch `task/09-JEV-02` | | Jev agents: implement vertical slice |
 | 02-DB-02 | TODO | | | |
 | 02-DB-03 | TODO | | | |
 | 03-SEC-01 | TODO | | | |

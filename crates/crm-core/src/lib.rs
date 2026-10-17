@@ -50,6 +50,12 @@ pub mod email;
 /// contact repository, email service and audit service.
 pub mod campaign;
 
+/// Jev agent service implementation (task 09-JEV-02): the generic
+/// [`jev::AgentServiceImpl`] over the agent-run, tool-call and handoff
+/// repositories, role membership and audit service, plus the
+/// [`jev::StubModelAdapter`] test/dev adapter.
+pub mod jev;
+
 /// Errors raised by [`crm-core`](crate) utilities.
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum CoreError {
