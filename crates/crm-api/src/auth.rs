@@ -46,7 +46,7 @@ use crm_domain::security::{Action, Scope, SessionToken};
 use crm_domain::services::{ActionContext, AuthenticationService, AuthorizationService};
 
 use crate::contacts::{request_id, AppState};
-use crate::observability::{DenialTracker, LoggingAnomalySink, TracingTracer};
+use crate::observability::{DenialTracker, DenialTrackerConfig, LoggingAnomalySink, TracingTracer};
 use crate::problem_response;
 use crate::rate_limit::{LoginRateLimitConfig, LoginRateLimiter};
 use crm_core::memory::{ContactReadModel, ContactServiceImpl};
@@ -77,10 +77,12 @@ pub struct ApiAuth {
 }
 
 impl ApiAuth {
-    /// Builds the auth services over `pool`, with the default login
-    /// rate limits.
+    /// Builds the auth services over `pool`, with login rate limits and
+    /// denial-tracker tuning read from the environment (see
+    /// [`LoginRateLimitConfig::from_env`] and
+    /// [`DenialTrackerConfig::from_env`]).
     pub fn new(pool: &PgPool) -> Self {
-        Self::with_rate_limits(pool, LoginRateLimitConfig::default())
+        Self::with_rate_limits(pool, LoginRateLimitConfig::from_env())
     }
 
     /// Builds the auth services over `pool` with explicit login rate
@@ -94,7 +96,7 @@ impl ApiAuth {
             audit_log: PgAuditLogService::new(pool.clone()),
             tracer: TracingTracer,
             anomaly_sink: LoggingAnomalySink,
-            denial_tracker: Arc::new(DenialTracker::new()),
+            denial_tracker: Arc::new(DenialTracker::with_config(DenialTrackerConfig::from_env())),
         }
     }
 }

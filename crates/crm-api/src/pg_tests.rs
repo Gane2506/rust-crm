@@ -1558,3 +1558,134 @@ async fn pg_audit_endpoints_serve_agency_auditor() {
 
     drop_db(&admin_url, &db_name, pool).await;
 }
+/// Tampering with a chain hash is surfaced through the HTTP verify
+/// endpoint: `GET /api/v1/audit/verify` reports `valid: false` and names
+/// the first bad event (task 04-AUD-03).
+#[tokio::test]
+async fn pg_audit_verify_endpoint_reports_tamper() {
+    let Some((pool, admin_url, db_name)) = fresh_db().await else {
+        eprintln!("skipping Postgres API test: DATABASE_URL is not set");
+        return;
+    };
+    let router = pg_router(&pool);
+    let profile = uuid::Uuid::new_v4();
+    let (token, staff_id, agency_id) =
+        seed_authed_user(&pool, &router, profile, "tamper@example.com").await;
+
+    PgGrantRepository::new(pool.clone())
+        .assign(
+            staff_id,
+            Grant {
+                grant_id: GrantId::new(),
+                action: Action {
+                    resource: Resource::AuditLog,
+                    operation: Operation::Read,
+                },
+                scope: Scope::Agency { agency_id },
+            },
+        )
+        .await
+        .expect("assign the audit-read grant");
+
+    // Sanity: the untampered chain verifies over HTTP.
+    let (status, body) = read_json(
+        router
+            .clone()
+            .oneshot(get("/api/v1/audit/verify".to_owned(), &token))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        body.get("valid").and_then(serde_json::Value::as_bool),
+        Some(true)
+    );
+
+    // Tamper with the login event's chain hash in place.
+    let tampered_id: uuid::Uuid = sqlx::query_scalar(
+        "SELECT event_id FROM audit_events WHERE action = 'auth.login' ORDER BY seq ASC LIMIT 1",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("login event exists");
+    sqlx::query("UPDATE audit_events SET chain_hash = $1 WHERE event_id = $2")
+        .bind(vec![0u8; 32])
+        .bind(tampered_id)
+        .execute(&pool)
+        .await
+        .expect("tamper with the chain hash");
+
+    let (status, body) = read_json(
+        router
+            .clone()
+            .oneshot(get("/api/v1/audit/verify".to_owned(), &token))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        body.get("valid").and_then(serde_json::Value::as_bool),
+        Some(false),
+        "the tampered chain must not verify"
+    );
+    assert_eq!(
+        body.get("first_bad_event")
+            .and_then(serde_json::Value::as_str),
+        Some(tampered_id.to_string()).as_deref(),
+        "the endpoint must name the first bad event"
+    );
+
+    drop_db(&admin_url, &db_name, pool).await;
+}
+
+/// A profile-scoped `AuditLog:Read` grant is not enough: the audit
+/// endpoints demand agency scope, so the caller gets 403 rather than a
+/// (possibly empty) page (task 04-AUD-03).
+#[tokio::test]
+async fn pg_audit_events_endpoint_rejects_profile_scoped_grant() {
+    let Some((pool, admin_url, db_name)) = fresh_db().await else {
+        eprintln!("skipping Postgres API test: DATABASE_URL is not set");
+        return;
+    };
+    let router = pg_router(&pool);
+    let profile = uuid::Uuid::new_v4();
+    let (token, staff_id, agency_id) =
+        seed_authed_user(&pool, &router, profile, "profilescoped@example.com").await;
+
+    // The caller holds AuditLog:Read, but only for their own profile.
+    PgGrantRepository::new(pool.clone())
+        .assign(
+            staff_id,
+            Grant {
+                grant_id: GrantId::new(),
+                action: Action {
+                    resource: Resource::AuditLog,
+                    operation: Operation::Read,
+                },
+                scope: Scope::ClientProfile {
+                    agency_id,
+                    client_profile_id: ClientProfileId::from(profile),
+                },
+            },
+        )
+        .await
+        .expect("assign the profile-scoped audit-read grant");
+
+    let (status, _) = read_json(
+        router
+            .clone()
+            .oneshot(get("/api/v1/audit/events".to_owned(), &token))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "a profile-scoped audit grant must not open the agency audit log"
+    );
+
+    drop_db(&admin_url, &db_name, pool).await;
+}

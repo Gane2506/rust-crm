@@ -14,7 +14,8 @@ Statuses: TODO / IN_PROGRESS / BLOCKED / DONE. Never mark DONE without linked co
 | 03-SEC-02 | DONE | issue #13 / PR #14 (merge `9ed1b5b`) | | Identity and RBAC: auth vertical slice — Argon2, sessions, middleware (security-reviewed) |
 | 03-SEC-03 | DONE | issue #15 / PR #16 (merge `2ba2860`) | | Identity and RBAC: rate limiting, security headers, runbooks (verified) |
 | 04-AUD-01 | DONE | issue #17 / PR #18 (merge `86eb7d5`) | | Audit and observability: SecurityEvent taxonomy, AuditLogService trait, observability ports |
-| 04-AUD-02 | IN_PROGRESS | issue #19 / branch `task/04-AUD-02` | | Audit and observability: implement vertical slice |
+| 04-AUD-02 | DONE | issue #19 / PR #20 (merge `15028ab`) | | Audit and observability: PgAuditLogService, event recording, query/verify endpoints, observability wiring |
+| 04-AUD-03 | IN_PROGRESS | issue #21 / branch `task/04-AUD-03` | | Audit and observability: verify + operationalize |
 | 02-DB-02 | TODO | | | |
 | 02-DB-03 | TODO | | | |
 | 03-SEC-01 | TODO | | | |
