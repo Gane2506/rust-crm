@@ -378,6 +378,23 @@ impl ContactReadModel for InMemoryContactRepository {
     }
 }
 
+/// Readiness probe for a repository backend.
+///
+/// Lets the API's `/readyz` endpoint verify the backing store without
+/// knowing which backend serves traffic: the in-memory backend is always
+/// ready, the Postgres backend runs a cheap query.
+pub trait BackendHealth {
+    /// Runs a cheap check against the backing store. Returns `false` on
+    /// any failure; never panics and never leaks the underlying error.
+    fn is_healthy(&self) -> impl Future<Output = bool> + Send;
+}
+
+impl BackendHealth for InMemoryContactRepository {
+    async fn is_healthy(&self) -> bool {
+        true
+    }
+}
+
 /// A stubbed merge-review case.
 ///
 /// The review workflow and its approval state live in the workflow layer;
@@ -428,6 +445,15 @@ impl<R, A> ContactServiceImpl<R, A> {
     #[must_use]
     pub fn repository(&self) -> &R {
         &self.contacts
+    }
+
+    /// Cheap readiness probe against the backing store, for the API's
+    /// `/readyz` endpoint.
+    pub async fn backend_healthy(&self) -> bool
+    where
+        R: BackendHealth,
+    {
+        self.contacts.is_healthy().await
     }
 
     /// Enforces client-profile scope: a scoped context may only touch its

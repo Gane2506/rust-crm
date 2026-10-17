@@ -188,6 +188,26 @@ async fn pg_create_get_list_round_trip() {
 }
 
 #[tokio::test]
+async fn pg_readyz_reports_database_ok() {
+    let Some((pool, admin_url, db_name)) = fresh_db().await else {
+        eprintln!("skipping Postgres API test: DATABASE_URL is not set");
+        return;
+    };
+    let (status, body) = read_json(
+        pg_router(&pool)
+            .oneshot(get("/readyz".to_owned()))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["status"], "ok");
+    assert_eq!(body["database"], "ok");
+
+    drop_db(&admin_url, &db_name, pool).await;
+}
+
+#[tokio::test]
 async fn pg_idempotent_post_replays_without_duplicating() {
     let Some((pool, admin_url, db_name)) = fresh_db().await else {
         eprintln!("skipping Postgres API test: DATABASE_URL is not set");

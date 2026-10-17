@@ -10,8 +10,8 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use axum::{
-    extract::OriginalUri,
-    http::{header, HeaderName, StatusCode},
+    extract::{OriginalUri, State},
+    http::{header, HeaderMap, HeaderName, StatusCode},
     response::{IntoResponse, Json, Response},
     routing::{get, post},
     Router,
@@ -30,8 +30,8 @@ mod contacts;
 #[cfg(test)]
 mod pg_tests;
 
-use contacts::{AppState, IdempotencyStore};
-use crm_core::memory::{ContactReadModel, ContactServiceImpl};
+use contacts::{request_id, AppState, IdempotencyStore};
+use crm_core::memory::{BackendHealth, ContactReadModel, ContactServiceImpl};
 use crm_domain::services::AuditService;
 
 /// Header carrying the request/correlation id.
@@ -110,6 +110,61 @@ async fn healthz() -> Json<Health> {
     Json(Health { status: "ok" })
 }
 
+/// Readiness probe body.
+#[derive(Debug, Serialize)]
+struct Readiness {
+    status: &'static str,
+    database: &'static str,
+}
+
+/// Readiness probe: `200 {"status":"ok","database":"ok"}` when the backing
+/// store answers, `503` `problem+json` when it does not.
+///
+/// `/healthz` stays the process-liveness probe (always 200 while the
+/// server runs); `/readyz` is what orchestrators gate traffic on, since
+/// the API cannot serve without PostgreSQL.
+///
+/// The backend check is bounded by [`READYZ_TIMEOUT`]: a hung or dead
+/// database must fail the probe fast instead of holding the connection
+/// open until the orchestrator gives up.
+///
+/// Maximum time the readiness probe waits for the backing store.
+const READYZ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+
+async fn readyz<R, A, I>(
+    State(state): State<AppState<ContactServiceImpl<R, A>, I>>,
+    headers: HeaderMap,
+) -> Response
+where
+    R: ContactReadModel + BackendHealth + Clone + Send + Sync + 'static,
+    A: AuditService + Clone + Send + Sync + 'static,
+    I: IdempotencyStore,
+{
+    let (instance, _) = request_id(&headers);
+    // Bound the probe: a dead database must yield 503 fast, not hang the
+    // orchestrator's check until its own timeout fires.
+    let healthy = tokio::time::timeout(READYZ_TIMEOUT, state.contact_service().backend_healthy())
+        .await
+        .unwrap_or(false);
+    if healthy {
+        (
+            StatusCode::OK,
+            Json(Readiness {
+                status: "ok",
+                database: "ok",
+            }),
+        )
+            .into_response()
+    } else {
+        problem_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Service unavailable",
+            "the database is unreachable".to_owned(),
+            instance,
+        )
+    }
+}
+
 /// Returns the crate version of the running server.
 async fn version() -> Json<VersionInfo> {
     Json(VersionInfo {
@@ -175,7 +230,7 @@ pub(crate) fn app<R, A, I>(
     web_dir: Option<PathBuf>,
 ) -> Router
 where
-    R: ContactReadModel + Clone + Send + Sync + 'static,
+    R: ContactReadModel + BackendHealth + Clone + Send + Sync + 'static,
     A: AuditService + Clone + Send + Sync + 'static,
     I: IdempotencyStore,
 {
@@ -192,6 +247,7 @@ where
 
     let router = Router::new()
         .route("/healthz", get(healthz))
+        .route("/readyz", get(readyz::<R, A, I>))
         .nest("/api", api);
 
     let router = match web_dir {
@@ -339,6 +395,51 @@ mod tests {
         let body = to_bytes(response.into_body(), 1024).await.expect("body");
         let json: serde_json::Value = serde_json::from_slice(&body).expect("json");
         assert_eq!(json["status"], "ok");
+    }
+
+    #[tokio::test]
+    async fn readyz_returns_200_with_memory_backend() {
+        // The in-memory backend is always ready; no database needed.
+        let response = app(AppState::new(), None)
+            .oneshot(get("/readyz"))
+            .await
+            .expect("oneshot");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), 1024).await.expect("body");
+        let json: serde_json::Value = serde_json::from_slice(&body).expect("json");
+        assert_eq!(json["status"], "ok");
+        assert_eq!(json["database"], "ok");
+    }
+
+    #[tokio::test]
+    async fn readyz_returns_503_when_database_unreachable() {
+        // A lazily-connected pool against a closed port never touches the
+        // network until the probe runs, so no database is needed for this
+        // test; the probe's `SELECT 1` fails with connection-refused.
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(1)
+            .connect_lazy("postgres://postgres:postgres@127.0.0.1:9/crm_test")
+            .expect("lazy pool builds without connecting");
+        let response = app(AppState::from_pool(&pool), None)
+            .oneshot(get("/readyz"))
+            .await
+            .expect("oneshot");
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            response
+                .headers()
+                .get(header::CONTENT_TYPE)
+                .expect("content type")
+                .to_str()
+                .expect("content type parses"),
+            "application/problem+json"
+        );
+        let body = to_bytes(response.into_body(), 4096).await.expect("body");
+        let json: serde_json::Value = serde_json::from_slice(&body).expect("json");
+        assert_eq!(json["status"], 503);
+        assert_eq!(json["title"], "Service unavailable");
     }
 
     #[tokio::test]

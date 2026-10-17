@@ -15,17 +15,19 @@
 //! fully isolated and may run in parallel. A test database is only left
 //! behind if its test panics; drop strays with
 //! `DROP DATABASE "crm_t_<pid>_<n>"`.
+//!
+//! Database lifecycle helpers live in `common/` (shared with the
+//! migration-verification tests).
 
-use std::sync::atomic::{AtomicU64, Ordering};
+mod common;
 
 use chrono::{DateTime, SubsecRound, Utc};
+use sqlx::PgPool;
 use uuid::Uuid;
 
-use crm_db::{
-    connect,
-    postgres::{publish_outbox, OutboxMessage, PgAuditRepository, PgContactRepository},
-    run_migrations, DATABASE_URL_ENV,
-};
+use common::{drop_db, fresh_db_raw};
+use crm_db::postgres::{publish_outbox, OutboxMessage, PgAuditRepository, PgContactRepository};
+use crm_db::run_migrations;
 use crm_domain::audit::{
     compute_chain_hash, verify_chain, ActionResult, ActorKind, AuditEvent, PermissionDecision,
     GENESIS_CHAIN_HASH,
@@ -34,69 +36,14 @@ use crm_domain::contact::{ConsentRecord, Contact, Lifecycle};
 use crm_domain::error::DomainError;
 use crm_domain::ids::{ActorId, AuditEventId, ClientProfileId, ContactId};
 use crm_domain::repositories::{AuditRepository, ContactRepository};
-use sqlx::PgPool;
 
-/// Counter distinguishing this process's test databases.
-static DB_COUNTER: AtomicU64 = AtomicU64::new(0);
-
-/// Creates a dedicated test database, migrates a fresh schema into it,
-/// and returns the pool plus the admin URL and db name for teardown.
-///
-/// Panics with setup instructions when `DATABASE_URL` is unset — these
-/// tests cannot run without a database.
+/// Creates a dedicated test database and migrates a fresh schema into it.
 async fn fresh_db() -> (PgPool, String, String) {
-    let admin_url = std::env::var(DATABASE_URL_ENV).unwrap_or_else(|_| {
-        panic!(
-            "{DATABASE_URL_ENV} must be set for crm-db integration tests; \
-             start Postgres with `docker compose up -d` (repo root)"
-        )
-    });
-    let admin = connect(&admin_url)
-        .await
-        .expect("connect to the admin database");
-    let db_name = format!(
-        "crm_t_{}_{}",
-        std::process::id(),
-        DB_COUNTER.fetch_add(1, Ordering::SeqCst)
-    );
-    sqlx::query(&format!("CREATE DATABASE \"{db_name}\""))
-        .execute(&admin)
-        .await
-        .expect("create test database");
-    admin.close().await;
-    let (base, _) = admin_url
-        .rsplit_once('/')
-        .expect("DATABASE_URL must end with /<database>");
-    let url = format!("{base}/{db_name}");
-    let pool = connect(&url).await.expect("connect to test database");
+    let (pool, admin_url, db_name) = fresh_db_raw().await;
     run_migrations(&pool)
         .await
         .expect("migrate the fresh test schema");
     (pool, admin_url, db_name)
-}
-
-/// Drops a test database created by [`fresh_db`].
-async fn drop_db(admin_url: &str, db_name: &str, pool: PgPool) {
-    pool.close().await;
-    let admin = connect(admin_url)
-        .await
-        .expect("reconnect to the admin database");
-    // `pool.close()` is graceful: a just-returned backend can still be
-    // registered server-side, which makes DROP DATABASE fail with 55006.
-    // Terminate stray backends first so the drop is deterministic.
-    sqlx::query(
-        "SELECT pg_terminate_backend(pid) FROM pg_stat_activity \
-         WHERE datname = $1 AND pid <> pg_backend_pid()",
-    )
-    .bind(db_name)
-    .execute(&admin)
-    .await
-    .expect("terminate stray test-database backends");
-    sqlx::query(&format!("DROP DATABASE IF EXISTS \"{db_name}\""))
-        .execute(&admin)
-        .await
-        .expect("drop test database");
-    admin.close().await;
 }
 
 /// Inserts a client-profile row (contacts and audit events reference it).
