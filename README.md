@@ -118,6 +118,10 @@ slice until real auth/tenancy lands):
 curl localhost:3000/healthz
 # {"status":"ok"}
 
+curl localhost:3000/readyz
+# {"status":"ok","database":"ok"} — gate orchestrators on /readyz (503 when
+# the database is unreachable); /healthz is process liveness only
+
 curl localhost:3000/api/v1/version
 # {"version":"0.1.0"}
 
@@ -137,6 +141,20 @@ curl localhost:3000/api/v1/contacts/<contact_id>
 Errors use RFC 7807 `application/problem+json` (`422` validation,
 `404` not found, `409` conflict).
 
+### Seed data (development)
+
+Populate the database with the demo tenant and sample contacts:
+
+```sh
+CRM_SEED_DEV=1 DATABASE_URL=postgres://postgres:postgres@localhost:5432/crm_test \
+    cargo run -p crm-db --example seed
+```
+
+Idempotent (re-runs skip existing contacts); without `CRM_SEED_DEV=1` it
+prints the plan and writes nothing. Full database runbook (migrations,
+rollback, backup/restore, pool guidance, `/readyz`): see
+[`docs/operations/database.md`](docs/operations/database.md).
+
 ### Environment variables
 
 Copy `.env.example` to `.env` to override the defaults (`.env*` is
@@ -147,6 +165,7 @@ gitignored; no secrets are used by this project yet).
 | `CRM_API_ADDR` | `127.0.0.1:3000`                 | Socket address the API server binds to               |
 | `CRM_WEB_DIR`  | `./web`                          | Directory the built frontend is served from          |
 | `RUST_LOG`     | `crm_api=info,tower_http=info`   | `tracing` log filter                                 |
+| `DATABASE_URL` | (none — required)                | Postgres connection URL; see `.env.example`          |
 
 ### Verification
 

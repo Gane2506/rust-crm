@@ -239,7 +239,7 @@ struct ContactListResponse {
 
 /// Reads the request/correlation id the middleware propagated, generating
 /// one when absent (tests bypass the middleware).
-fn request_id(headers: &HeaderMap) -> (String, Uuid) {
+pub(crate) fn request_id(headers: &HeaderMap) -> (String, Uuid) {
     let id = headers
         .get(REQUEST_ID_HEADER)
         .and_then(|value| value.to_str().ok())

@@ -41,7 +41,7 @@ use crm_domain::ids::{ActorId, AuditEventId, ClientProfileId, ContactId};
 use crm_domain::repositories::{AuditRepository, ContactRepository};
 use crm_domain::services::{ActionContext, AuditService};
 
-use crm_core::memory::ContactReadModel;
+use crm_core::memory::{BackendHealth, ContactReadModel};
 use crm_core::IdempotencyKey;
 
 /// SQLSTATE for unique-violation (duplicate key) errors.
@@ -298,6 +298,12 @@ impl ContactReadModel for PgContactRepository {
         client_profile_id: ClientProfileId,
     ) -> Result<usize, DomainError> {
         PgContactRepository::count_for_client(self, client_profile_id).await
+    }
+}
+
+impl BackendHealth for PgContactRepository {
+    async fn is_healthy(&self) -> bool {
+        sqlx::query("SELECT 1").execute(&self.pool).await.is_ok()
     }
 }
 
