@@ -30,8 +30,8 @@ use crm_domain::audit::{ActionResult, PermissionDecision};
 use crm_domain::error::DomainError;
 use crm_domain::ids::{AgentRunId, ClientProfileId};
 use crm_domain::jev::{
-    AgentRun, ApprovalDecision, ApprovalGate, Handoff, ModelAdapter,
-    ModelCompletion, ToolCall, ToolCallStatus, APPROVER_ROLE,
+    AgentRun, ApprovalDecision, ApprovalGate, Handoff, ModelAdapter, ModelCompletion, ToolCall,
+    ToolCallStatus, APPROVER_ROLE,
 };
 use crm_domain::repositories::{AgentRunRepository, HandoffRepository, ToolCallRepository};
 use crm_domain::services::{
