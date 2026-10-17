@@ -26,7 +26,11 @@ use crate::campaign::{Campaign, OwnerContext};
 use crate::contact::Contact;
 use crate::contract::Contract;
 use crate::error::DomainError;
-use crate::ids::{AgentActionId, AuditEventId, CampaignId, ClientProfileId, ContactId, ContractId};
+use crate::ids::{
+    AgentActionId, AuditEventId, CampaignId, ClientProfileId, ContactId, ContractId, GrantId,
+    StaffId,
+};
+use crate::security::{Grant, Session, StaffUser};
 
 /// Append-only store for [`AuditEvent`]s.
 ///
@@ -181,4 +185,101 @@ pub trait AgentActionRepository {
         &'a self,
         idempotency_key: &'a str,
     ) -> impl Future<Output = Result<Option<AgentAction>, DomainError>> + Send + 'a;
+}
+
+/// Persistence port for [`StaffUser`] records.
+///
+/// Intended storage shape (later task): `staff_users` table keyed by
+/// `staff_id`, with the password credential in a `phc_hash TEXT` column —
+/// never a plaintext column.
+pub trait StaffRepository {
+    /// Fetches a staff user by id.
+    fn get<'a>(
+        &'a self,
+        staff_id: StaffId,
+    ) -> impl Future<Output = Result<StaffUser, DomainError>> + Send + 'a;
+
+    /// Finds a staff user by (normalized, lowercase) email for login.
+    /// Returns `None` rather than an error for unknown emails; callers
+    /// map that to [`DomainError::Unauthorized`] without revealing
+    /// whether the account exists.
+    fn find_by_email<'a>(
+        &'a self,
+        email: &'a str,
+    ) -> impl Future<Output = Result<Option<StaffUser>, DomainError>> + Send + 'a;
+
+    /// Persists a new staff user.
+    fn create<'a>(
+        &'a self,
+        user: StaffUser,
+    ) -> impl Future<Output = Result<StaffUser, DomainError>> + Send + 'a;
+
+    /// Persists staff changes (status transitions, credential rotation).
+    fn update<'a>(
+        &'a self,
+        user: StaffUser,
+    ) -> impl Future<Output = Result<StaffUser, DomainError>> + Send + 'a;
+}
+
+/// Persistence port for login [`Session`] records.
+///
+/// Intended storage shape (later task): `sessions` table keyed by
+/// `session_id` with a `token_hash BYTEA` column — the raw token is never
+/// stored. Rows are never deleted: revocation is a timestamp, because
+/// session history is security-relevant.
+pub trait SessionRepository {
+    /// Persists a new session.
+    fn create<'a>(
+        &'a self,
+        session: Session,
+    ) -> impl Future<Output = Result<Session, DomainError>> + Send + 'a;
+
+    /// Finds a session by token hash. Returns `None` for unknown tokens;
+    /// callers map that to [`DomainError::Unauthorized`].
+    fn get_by_token_hash<'a>(
+        &'a self,
+        token_hash: &'a [u8; 32],
+    ) -> impl Future<Output = Result<Option<Session>, DomainError>> + Send + 'a;
+
+    /// Persists session changes (revocation, activity touch, refresh).
+    fn update<'a>(
+        &'a self,
+        session: Session,
+    ) -> impl Future<Output = Result<Session, DomainError>> + Send + 'a;
+
+    /// Lists a staff user's sessions, newest first, capped at `limit`.
+    fn list_for_staff<'a>(
+        &'a self,
+        staff_id: StaffId,
+        limit: u64,
+    ) -> impl Future<Output = Result<Vec<Session>, DomainError>> + Send + 'a;
+}
+
+/// Persistence port for [`Grant`] assignments.
+///
+/// Intended storage shape (later task): `grants` table (`grant_id` PK,
+/// `staff_id`, resource, operation and scope columns). Grants are
+/// additive; there are no negative grants — deny by default.
+pub trait GrantRepository {
+    /// Lists all grants assigned to a staff user.
+    fn list_for_staff<'a>(
+        &'a self,
+        staff_id: StaffId,
+    ) -> impl Future<Output = Result<Vec<Grant>, DomainError>> + Send + 'a;
+
+    /// Assigns a grant to a staff user.
+    fn assign<'a>(
+        &'a self,
+        staff_id: StaffId,
+        grant: Grant,
+    ) -> impl Future<Output = Result<Grant, DomainError>> + Send + 'a;
+
+    /// Removes a grant assignment. Implementations should tombstone the
+    /// assignment rather than delete the row: grant history is audit-
+    /// relevant.
+    fn revoke<'a>(
+        &'a self,
+        staff_id: StaffId,
+        grant_id: GrantId,
+    ) -> impl Future<Output = Result<(), DomainError>> + Send + 'a;
 }
