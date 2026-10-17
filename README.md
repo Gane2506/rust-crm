@@ -236,9 +236,6 @@ and merge happens on green CI plus review. Follow along via
 | Email and threaded chat | 07-MAIL-01… | ✅ workstream complete ([#39](https://github.com/Gane2506/rust-crm/issues/39), [#40](https://github.com/Gane2506/rust-crm/pull/40)) |
 | Campaigns and bulk outreach | 08-CAMP-01… | ✅ workstream complete ([#45](https://github.com/Gane2506/rust-crm/issues/45), [#46](https://github.com/Gane2506/rust-crm/pull/46)) |
 | Jev agents | 09-JEV-01… | 🔨 09-JEV-01 in progress |
-| Email and threaded chat | 07-MAIL-01…03 | ⬜ Not started |
-| Campaigns | 08-CAMP-01…03 | ⬜ Not started |
-| Jev agents | 09-JEV-01…03 | ⬜ Not started |
 | Workflow builder | 10-WORK-01…03 | ⬜ Not started |
 | Form builder | 11-FORM-01…03 | ⬜ Not started |
 | Billing | 12-BILL-01…03 | ⬜ Not started |

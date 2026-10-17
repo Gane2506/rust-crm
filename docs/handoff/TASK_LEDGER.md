@@ -46,8 +46,6 @@ Statuses: TODO / IN_PROGRESS / BLOCKED / DONE. Never mark DONE without linked co
 | 07-MAIL-03 | TODO | | | |
 | 08-CAMP-01 | TODO | | | |
 | 08-CAMP-02 | TODO | | | |
-| 08-CAMP-03 | TODO | | | |
-| 09-JEV-01 | TODO | | | |
 | 09-JEV-02 | TODO | | | |
 | 09-JEV-03 | TODO | | | |
 | 10-WORK-01 | TODO | | | |

@@ -287,10 +287,27 @@ pub trait ModelAdapter {
 /// [`FallbackChain::next_after`] and retries the run on the next
 /// adapter. The chain is a pure value type so the ordering logic stays
 /// unit-testable without providers.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// Invariants (non-empty, trimmed, deduplicated names) are enforced
+/// both at construction and on deserialization.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct FallbackChain {
     /// Adapter names in preference order; the first is the default.
-    pub adapters: Vec<String>,
+    adapters: Vec<String>,
+}
+
+impl<'de> Deserialize<'de> for FallbackChain {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct FallbackChainShape {
+            adapters: Vec<String>,
+        }
+        let shape = FallbackChainShape::deserialize(deserializer)?;
+        FallbackChain::new(shape.adapters).map_err(serde::de::Error::custom)
+    }
 }
 
 impl FallbackChain {
@@ -314,6 +331,12 @@ impl FallbackChain {
             }
         }
         Ok(Self { adapters: cleaned })
+    }
+
+    /// Adapter names in preference order; the first is the default.
+    #[must_use]
+    pub fn adapters(&self) -> &[String] {
+        &self.adapters
     }
 
     /// The preferred (first) adapter.
@@ -550,6 +573,10 @@ pub struct ApprovalGate {
     pub decision: Option<ApprovalDecision>,
     /// Reason recorded with the decision (required on deny).
     pub reason: Option<String>,
+    /// Who recorded the decision, for later review.
+    pub decided_by: Option<ActorId>,
+    /// When the decision was recorded.
+    pub decided_at: Option<DateTime<Utc>>,
     /// When the gate was created.
     pub created_at: DateTime<Utc>,
 }
@@ -562,6 +589,8 @@ impl ApprovalGate {
             approver_role: None,
             decision: None,
             reason: None,
+            decided_by: None,
+            decided_at: None,
             created_at: Utc::now(),
         }
     }
@@ -579,14 +608,22 @@ impl ApprovalGate {
             approver_role: Some(role),
             decision: None,
             reason: None,
+            decided_by: None,
+            decided_at: None,
             created_at: Utc::now(),
         })
     }
 
     /// Records the human's decision. Immutable: a second call is
     /// rejected, so an approval can never be silently reversed.
+    ///
+    /// The decider must be the gate's named approver when the gate is
+    /// person-specific; role-based gates record whoever decided (role
+    /// membership is checked by the service layer). The decider and the
+    /// decision time are recorded for later review.
     pub fn decide(
         &mut self,
+        decider: ActorId,
         decision: ApprovalDecision,
         reason: String,
     ) -> Result<(), DomainError> {
@@ -594,6 +631,11 @@ impl ApprovalGate {
             return Err(DomainError::Validation(
                 "approval decision is immutable once made".to_string(),
             ));
+        }
+        if let Some(required) = &self.approver {
+            if required != &decider {
+                return Err(DomainError::Unauthorized);
+            }
         }
         let reason = reason.trim().to_owned();
         if decision == ApprovalDecision::Denied && reason.is_empty() {
@@ -607,6 +649,8 @@ impl ApprovalGate {
         } else {
             Some(reason)
         };
+        self.decided_by = Some(decider);
+        self.decided_at = Some(Utc::now());
         Ok(())
     }
 }
@@ -811,23 +855,36 @@ mod tests {
 
     #[test]
     fn approval_gate_decision_is_immutable() {
-        let mut gate = ApprovalGate::for_actor(ActorId::new());
+        let approver = ActorId::new();
+        let mut gate = ApprovalGate::for_actor(approver);
         assert!(gate.decision.is_none());
-        gate.decide(ApprovalDecision::Approved, String::new())
+        // Wrong actor cannot decide a person-specific gate.
+        assert!(gate
+            .decide(ActorId::new(), ApprovalDecision::Approved, String::new())
+            .is_err());
+        gate.decide(approver, ApprovalDecision::Approved, String::new())
             .expect("approve");
         assert_eq!(gate.decision, Some(ApprovalDecision::Approved));
+        assert_eq!(gate.decided_by, Some(approver));
+        assert!(gate.decided_at.is_some());
         // Second decision rejected — approvals cannot be reversed.
         assert!(gate
-            .decide(ApprovalDecision::Denied, "changed mind".to_string())
+            .decide(
+                approver,
+                ApprovalDecision::Denied,
+                "changed mind".to_string()
+            )
             .is_err());
 
         let mut role_gate = ApprovalGate::for_role("manager".to_string()).expect("role gate");
         assert!(role_gate
-            .decide(ApprovalDecision::Denied, String::new())
+            .decide(ActorId::new(), ApprovalDecision::Denied, String::new())
             .is_err());
+        let decider = ActorId::new();
         role_gate
-            .decide(ApprovalDecision::Denied, "not now".to_string())
+            .decide(decider, ApprovalDecision::Denied, "not now".to_string())
             .expect("deny with reason");
+        assert_eq!(role_gate.decided_by, Some(decider));
         assert!(ApprovalGate::for_role("  ".to_string()).is_err());
     }
 
