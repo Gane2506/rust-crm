@@ -31,6 +31,7 @@ mod assets;
 mod audit;
 mod auth;
 mod contacts;
+mod emails;
 mod observability;
 #[cfg(test)]
 mod pg_tests;
@@ -281,6 +282,9 @@ where
             "/v1/assets/{id}/archive",
             post(assets::archive_asset::<R, A, I>),
         )
+        .route("/v1/emails/send", post(emails::send_email::<R, A, I>))
+        .route("/v1/threads", get(emails::list_threads::<R, A, I>))
+        .route("/v1/threads/{id}", get(emails::get_thread::<R, A, I>))
         .route("/v1/audit/events", get(audit::audit_events::<R, A, I>))
         .route("/v1/audit/verify", get(audit::audit_verify::<R, A, I>))
         .fallback(not_found);
@@ -295,11 +299,18 @@ where
         Some(api_auth) => Router::new()
             .route("/v1/auth/login", post(auth::login::<R, A, I>))
             .route("/v1/auth/logout", post(auth::logout::<R, A, I>))
+            // The email ingest webhook is NOT bearer-authenticated
+            // (providers cannot hold staff sessions); it is gated by
+            // the `CRM_EMAIL_WEBHOOK_SECRET` shared secret inside the
+            // handler, so it lives outside the auth middleware.
+            .route("/v1/emails/ingest", post(emails::ingest_email::<R, A, I>))
             .merge(api.layer(middleware::from_fn_with_state(
                 api_auth,
                 auth::auth_middleware,
             ))),
-        None => api,
+        // No auth configured (in-memory test slice): the ingest route
+        // still registers; the handler returns 501 without `ApiAuth`.
+        None => api.route("/v1/emails/ingest", post(emails::ingest_email::<R, A, I>)),
     };
 
     // Defensive security headers on every API response — successes,

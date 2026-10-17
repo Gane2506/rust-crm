@@ -40,6 +40,11 @@ use uuid::Uuid;
 /// any backend. See the module docs for the exact limitations.
 pub mod memory;
 
+/// Email service implementation (task 07-MAIL-02): the generic
+/// [`email::EmailServiceImpl`] plus the [`email::StubEmailProvider`]
+/// test/dev adapter.
+pub mod email;
+
 /// Errors raised by [`crm-core`](crate) utilities.
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum CoreError {

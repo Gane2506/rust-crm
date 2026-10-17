@@ -20,13 +20,18 @@ use tower::ServiceExt;
 use crm_core::IdempotencyKey;
 use crm_db::audit_log::PgAuditLogService;
 use crm_db::auth::hash_password;
+use crm_db::email::{PgEmailMessageRepository, PgEmailThreadRepository};
 use crm_db::postgres::{
     PgAuditRepository, PgContactRepository, PgGrantRepository, PgStaffRepository,
 };
 use crm_domain::audit::{fingerprint, ActorKind, SecurityEvent};
-use crm_domain::ids::{ActorId, AgencyId, ClientProfileId, ContactId, GrantId, StaffId};
+use crm_domain::email::EmailStatus;
+use crm_domain::ids::{
+    ActorId, AgencyId, ClientProfileId, ContactId, EmailMessageId, GrantId, StaffId,
+};
 use crm_domain::repositories::{
-    AuditRepository, ContactRepository, GrantRepository, SessionRepository, StaffRepository,
+    AuditRepository, ContactRepository, EmailMessageRepository, EmailThreadRepository,
+    GrantRepository, SessionRepository, StaffRepository,
 };
 use crm_domain::security::{
     Action, Grant, Operation, PasswordCredential, Resource, Scope, StaffStatus, StaffUser,
@@ -2490,5 +2495,404 @@ async fn pg_core_crm_full_slice() {
     .await;
     assert_eq!(status, StatusCode::OK);
 
+    drop_db(&admin_url, &db_name, pool).await;
+}
+
+// Email vertical-slice tests (task 07-MAIL-02).
+//
+// These drive the email HTTP routes against a real PostgreSQL database:
+// send → status transitions, ingest → thread matching, profile scope
+// isolation, and idempotency replay on the send endpoint.
+
+/// Seeds a staff user holding `Email:Create` and `EmailThread:Read`
+/// grants on `profile`, then logs them in. Returns the bearer token.
+async fn seed_email_user(
+    pool: &PgPool,
+    router: &axum::Router,
+    profile: uuid::Uuid,
+    email: &str,
+) -> (String, StaffId, AgencyId) {
+    let (token, staff_id, agency_id) = seed_authed_user(pool, router, profile, email).await;
+    let grant_repo = PgGrantRepository::new(pool.clone());
+    let scope = Scope::ClientProfile {
+        agency_id,
+        client_profile_id: ClientProfileId::from(profile),
+    };
+    for (resource, operation) in [
+        (Resource::Email, Operation::Create),
+        (Resource::EmailThread, Operation::Read),
+    ] {
+        grant_repo
+            .assign(
+                staff_id,
+                Grant {
+                    grant_id: GrantId::new(),
+                    action: Action {
+                        resource,
+                        operation,
+                    },
+                    scope,
+                },
+            )
+            .await
+            .expect("assign email grant");
+    }
+    (token, staff_id, agency_id)
+}
+
+fn send_email_body(profile: uuid::Uuid) -> serde_json::Value {
+    serde_json::json!({
+        "client_profile_id": profile,
+        "from": "agency@example.com",
+        "to": ["customer@example.com"],
+        "subject": "Welcome",
+        "body_text": "Hello from the agency."
+    })
+}
+
+fn post_emails_send(body: serde_json::Value, key: Option<&str>, token: &str) -> Request<Body> {
+    let mut builder = Request::builder()
+        .method("POST")
+        .uri("/api/v1/emails/send")
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::AUTHORIZATION, format!("Bearer {token}"));
+    if let Some(key) = key {
+        builder = builder.header(IDEMPOTENCY_KEY_HEADER, key);
+    }
+    builder
+        .body(Body::from(
+            serde_json::to_vec(&body).expect("serialize send body"),
+        ))
+        .expect("build send request")
+}
+
+#[tokio::test]
+async fn pg_email_send_transitions_to_sent() {
+    let Some((pool, admin_url, db_name)) = fresh_db().await else {
+        eprintln!("pg_email_send_transitions_to_sent: DATABASE_URL not set, skipping");
+        return;
+    };
+    let router = pg_router(&pool);
+    let profile = uuid::Uuid::new_v4();
+    let (token, _staff, _agency) =
+        seed_email_user(&pool, &router, profile, "mailer@example.com").await;
+
+    let (status, body) = read_json(
+        router
+            .clone()
+            .oneshot(post_emails_send(send_email_body(profile), None, &token))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "send body: {body}");
+    assert_eq!(body["status"], "Sent");
+    assert!(body["provider_message_id"]
+        .as_str()
+        .unwrap_or_default()
+        .starts_with("stub-"));
+
+    // The row is persisted as Sent.
+    let repo = PgEmailMessageRepository::new(pool.clone());
+    let message_id =
+        uuid::Uuid::parse_str(body["message_id"].as_str().expect("message_id")).expect("uuid");
+    let stored = repo
+        .get(EmailMessageId::from(message_id))
+        .await
+        .expect("fetch sent message");
+    assert_eq!(stored.status, EmailStatus::Sent);
+
+    drop_db(&admin_url, &db_name, pool).await;
+}
+
+#[tokio::test]
+async fn pg_email_send_replay_returns_200_without_duplicating() {
+    let Some((pool, admin_url, db_name)) = fresh_db().await else {
+        eprintln!("pg_email_send_replay: DATABASE_URL not set, skipping");
+        return;
+    };
+    let router = pg_router(&pool);
+    let profile = uuid::Uuid::new_v4();
+    let (token, _staff, _agency) =
+        seed_email_user(&pool, &router, profile, "mailer2@example.com").await;
+
+    let key = IdempotencyKey::generate().to_string();
+    let (first_status, first_body) = read_json(
+        router
+            .clone()
+            .oneshot(post_emails_send(
+                send_email_body(profile),
+                Some(&key),
+                &token,
+            ))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(first_status, StatusCode::CREATED);
+
+    let (replay_status, replay_body) = read_json(
+        router
+            .clone()
+            .oneshot(post_emails_send(
+                send_email_body(profile),
+                Some(&key),
+                &token,
+            ))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(replay_status, StatusCode::OK, "replay body: {replay_body}");
+    assert_eq!(first_body["message_id"], replay_body["message_id"]);
+
+    // Exactly one message row exists for the profile.
+    let repo = PgEmailMessageRepository::new(pool.clone());
+    let messages = repo
+        .list_for_client(ClientProfileId::from(profile), 100)
+        .await
+        .expect("list messages");
+    assert_eq!(messages.len(), 1);
+
+    drop_db(&admin_url, &db_name, pool).await;
+}
+
+#[tokio::test]
+async fn pg_email_send_forbidden_without_grant() {
+    let Some((pool, admin_url, db_name)) = fresh_db().await else {
+        eprintln!("pg_email_send_forbidden: DATABASE_URL not set, skipping");
+        return;
+    };
+    let router = pg_router(&pool);
+    let profile = uuid::Uuid::new_v4();
+    // seed_authed_user grants Contact only — no Email grant.
+    let (token, _staff, _agency) =
+        seed_authed_user(&pool, &router, profile, "nogrant@example.com").await;
+
+    let (status, _) = read_json(
+        router
+            .clone()
+            .oneshot(post_emails_send(send_email_body(profile), None, &token))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    drop_db(&admin_url, &db_name, pool).await;
+}
+
+fn ingest_body(profile: uuid::Uuid, provider_message_id: &str) -> serde_json::Value {
+    serde_json::json!({
+        "client_profile_id": profile,
+        "provider_message_id": provider_message_id,
+        "provider_thread_id": "provider-thread-1",
+        "from": "customer@example.com",
+        "to": ["agency@example.com"],
+        "subject": "Re: Welcome",
+        "body_text": "Thanks for reaching out."
+    })
+}
+
+fn post_ingest(body: serde_json::Value, secret: &str) -> Request<Body> {
+    Request::builder()
+        .method("POST")
+        .uri("/api/v1/emails/ingest")
+        .header(header::CONTENT_TYPE, "application/json")
+        .header("x-webhook-secret", secret)
+        .body(Body::from(
+            serde_json::to_vec(&body).expect("serialize ingest"),
+        ))
+        .expect("build ingest request")
+}
+
+/// Shared webhook secret for the ingest tests. The same value is used
+/// by every ingest test, and the lock serializes them: `set_var` /
+/// `remove_var` on a process-global env var is not safe under parallel
+/// test threads.
+const TEST_WEBHOOK_SECRET: &str = "test-webhook-secret-07-mail-02";
+static WEBHOOK_SECRET_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[tokio::test]
+async fn pg_email_ingest_matches_thread_and_creates_message() {
+    let _lock = WEBHOOK_SECRET_LOCK.lock().expect("webhook lock");
+    let Some((pool, admin_url, db_name)) = fresh_db().await else {
+        eprintln!("pg_email_ingest: DATABASE_URL not set, skipping");
+        return;
+    };
+    std::env::set_var("CRM_EMAIL_WEBHOOK_SECRET", TEST_WEBHOOK_SECRET);
+    let router = pg_router(&pool);
+    let profile = uuid::Uuid::new_v4();
+    let (token, _staff, _agency) =
+        seed_email_user(&pool, &router, profile, "mailer3@example.com").await;
+
+    // First ingest opens a new thread (no provider thread known yet).
+    let (status, first) = read_json(
+        router
+            .clone()
+            .oneshot(post_ingest(
+                ingest_body(profile, "provider-msg-1"),
+                TEST_WEBHOOK_SECRET,
+            ))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "ingest body: {first}");
+    assert_eq!(first["direction"], "Inbound");
+    assert_eq!(first["status"], "Delivered");
+    let thread_id = first["thread_id"].as_str().expect("thread_id").to_owned();
+
+    // Second ingest with the same provider thread id joins the thread.
+    let (status, second) = read_json(
+        router
+            .clone()
+            .oneshot(post_ingest(
+                ingest_body(profile, "provider-msg-2"),
+                TEST_WEBHOOK_SECRET,
+            ))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    assert_eq!(second["thread_id"].as_str(), Some(thread_id.as_str()));
+
+    // The thread now holds two messages.
+    let (status, detail) = read_json(
+        router
+            .clone()
+            .oneshot(get(format!("/api/v1/threads/{thread_id}"), &token))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "detail body: {detail}");
+    assert_eq!(detail["thread"]["message_count"], 2);
+    assert_eq!(detail["messages"].as_array().map(Vec::len), Some(2));
+
+    // Duplicate provider message id is at-most-once: no new message.
+    let (status, _) = read_json(
+        router
+            .clone()
+            .oneshot(post_ingest(
+                ingest_body(profile, "provider-msg-1"),
+                TEST_WEBHOOK_SECRET,
+            ))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    let threads = PgEmailThreadRepository::new(pool.clone())
+        .list_for_client(ClientProfileId::from(profile), 100)
+        .await
+        .expect("list threads");
+    assert_eq!(threads.len(), 1);
+    assert_eq!(threads[0].message_count, 2);
+
+    std::env::remove_var("CRM_EMAIL_WEBHOOK_SECRET");
+    drop_db(&admin_url, &db_name, pool).await;
+}
+
+#[tokio::test]
+async fn pg_email_ingest_rejects_bad_secret() {
+    let _lock = WEBHOOK_SECRET_LOCK.lock().expect("webhook lock");
+    let Some((pool, admin_url, db_name)) = fresh_db().await else {
+        eprintln!("pg_email_ingest_secret: DATABASE_URL not set, skipping");
+        return;
+    };
+    std::env::set_var("CRM_EMAIL_WEBHOOK_SECRET", TEST_WEBHOOK_SECRET);
+    let router = pg_router(&pool);
+    let profile = uuid::Uuid::new_v4();
+
+    let (status, _) = read_json(
+        router
+            .clone()
+            .oneshot(post_ingest(
+                ingest_body(profile, "provider-msg-x"),
+                "wrong-secret",
+            ))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    std::env::remove_var("CRM_EMAIL_WEBHOOK_SECRET");
+    drop_db(&admin_url, &db_name, pool).await;
+}
+
+#[tokio::test]
+async fn pg_email_threads_are_profile_scoped() {
+    let _lock = WEBHOOK_SECRET_LOCK.lock().expect("webhook lock");
+    let Some((pool, admin_url, db_name)) = fresh_db().await else {
+        eprintln!("pg_email_scope: DATABASE_URL not set, skipping");
+        return;
+    };
+    std::env::set_var("CRM_EMAIL_WEBHOOK_SECRET", TEST_WEBHOOK_SECRET);
+    let router = pg_router(&pool);
+    let profile_a = uuid::Uuid::new_v4();
+    let profile_b = uuid::Uuid::new_v4();
+    // The user holds email grants on profile A only.
+    let (token, _staff, _agency) =
+        seed_email_user(&pool, &router, profile_a, "scoped@example.com").await;
+
+    // Ingest into profile A so a thread exists there.
+    let (status, ingested) = read_json(
+        router
+            .clone()
+            .oneshot(post_ingest(
+                ingest_body(profile_a, "provider-msg-scope"),
+                TEST_WEBHOOK_SECRET,
+            ))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    let thread_id = ingested["thread_id"].as_str().expect("thread_id");
+
+    // Listing profile A's threads works.
+    let (status, list) = read_json(
+        router
+            .clone()
+            .oneshot(get(
+                format!("/api/v1/threads?client_profile_id={profile_a}"),
+                &token,
+            ))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "list body: {list}");
+    assert_eq!(list["total"], 1);
+
+    // Listing profile B's threads is denied: no grant on B.
+    let (status, _) = read_json(
+        router
+            .clone()
+            .oneshot(get(
+                format!("/api/v1/threads?client_profile_id={profile_b}"),
+                &token,
+            ))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    // Fetching the profile-A thread directly works.
+    let (status, _) = read_json(
+        router
+            .clone()
+            .oneshot(get(format!("/api/v1/threads/{thread_id}"), &token))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    std::env::remove_var("CRM_EMAIL_WEBHOOK_SECRET");
     drop_db(&admin_url, &db_name, pool).await;
 }

@@ -20,10 +20,14 @@
 //!
 //! [`core_crm`] holds the SQLx repositories for the Core CRM vertical
 //! slice: client profiles and file/media assets.
+//!
+//! [`email`] holds the SQLx repositories for the Email vertical slice:
+//! messages, threads and attachments.
 
 pub mod audit_log;
 pub mod auth;
 pub mod core_crm;
+pub mod email;
 pub mod postgres;
 
 use thiserror::Error;
