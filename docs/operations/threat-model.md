@@ -208,6 +208,81 @@ boundary:
   nothing else. With real providers, add timeouts and move
   execution to a background worker before raising pool sizes.
 
+## Jev agents surface
+
+The Jev agents vertical slice (tasks 09-JEV-01 through 09-JEV-03)
+adds autonomous, model-driven execution to the boundary. The
+novel risks are all about the model acting on untrusted content
+and staff delegating authority to it:
+
+- **Prompt injection via tool inputs/outputs.** The agent
+  processes untrusted content: tool outputs, handoff contexts,
+  and ingested replies can all carry attacker-crafted text that
+  reaches the model's context. The domain treats tool *inputs*
+  as opaque JSON — there is no sanitization boundary between
+  "data" and "instruction" today. Mitigations in place: typed
+  tools (the model can only request named tools with
+  schema-shaped inputs), profile scoping (injected content can
+  only reach the run's own profile), and the audit trail on
+  every tool call. Missing: an explicit injection policy for
+  tool outputs, output redaction before display, and any
+  restriction on which tools a run may call (there is no tool
+  registry yet — see below). Treat every tool output as
+  untrusted input to the next model call.
+- **Approval bypass.** The approval gate is the human brake on
+  dangerous tools. What the checks cover: person-specific gates
+  reject the wrong actor *in the domain type* (`decide()` returns
+  `Unauthorized`); role-based gates check `agent_approver`
+  membership through the `RoleMembership` port *before*
+  `decide()`, failing closed. What they don't cover: the
+  `requires_approval` flag is caller-declared (a malicious or
+  buggy caller can mark a dangerous tool ungated — the tool
+  registry task must make this authoritative); approving a run
+  approves *all* its pending gated calls at once (no
+  per-call review); and `decide()` is only as strong as the
+  service that calls it — a future service path that skips the
+  role check would silently open role-based gates. Grep for
+  `decide(` when adding service methods.
+- **Model provider trust boundary.** Prompts and contact PII
+  leave the agency to the model provider (OpenRouter, …) the
+  moment a real adapter is wired in. Mitigations in place: the
+  `ModelAdapter` implementor contract forbids PII logging and
+  requires bounded timeouts; adapters never execute tools
+  themselves. Missing: data-processing agreements with
+  providers, prompt PII minimization (send the minimum contact
+  fields the task needs), and any provider-side retention
+  controls. Today only `StubModelAdapter` exists — no data
+  leaves the process — so this boundary is dormant but must be
+  addressed *before* the first real adapter ships, not after.
+- **PII at rest in agent tables.** `agent_runs.input` /
+  `output`, `tool_calls.input` / `output`, and
+  `handoffs.context` are stored as plaintext JSONB. Access is
+  gated by profile-scoped `AgentRun` grants and lifecycle
+  changes are audited — but anyone with database read access
+  sees every prompt and tool result, same as contacts and
+  email. No field-level encryption is planned.
+- **Runaway runs.** There is no execution timeout, no step
+  budget, and no cancellation daemon: a run can sit in
+  `Running` or `AwaitingApproval` indefinitely, and nothing
+  escalates a stalled approval. With the stub adapter this is
+  inert; with real adapters and a future execution loop, add
+  per-run timeouts and step caps before enabling unattended
+  runs.
+- **Tool-call blast radius.** Tools execute with the run's
+  authority — a tool the model requests runs as the agency, not
+  as the model. The blast radius is bounded by the run's
+  profile scope and the grants the *service* holds, but there
+  is no per-tool allowlist and no per-run tool budget today.
+  The tool registry task must add both.
+- **Audit coverage.** The run lifecycle, approvals, tool
+  recordings, and handoffs all emit audit events with pinned
+  action names (`agent.*`, see `jev-agents.md`). Audit is
+  fail-loud, never fail-blocking — a recording failure cannot
+  stop agent work, which is the right tradeoff, but it means a
+  degraded audit pipeline is silent from the operator's side.
+  Watch for gaps in `agent.*` event volume the way login
+  anomalies are watched today.
+
 ## Frontend (SPA) security posture
 
 The Leptos frontend (`crates/crm-web`, task 06-UI) is a thin client:
