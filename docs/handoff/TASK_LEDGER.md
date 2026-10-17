@@ -23,7 +23,8 @@ Statuses: TODO / IN_PROGRESS / BLOCKED / DONE. Never mark DONE without linked co
 | 06-UI-02 | DONE | issue #31 / PR #32 (merge `27a4a50`) | | Frontend: views implemented, polish items addressed |
 | 06-UI-03 | DONE | issue #33 / PR #34 (merge `d2de9aa`) | | Frontend: verify + polish, runbook, threat model |
 | 07-MAIL-01 | DONE | issue #35 / PR #36 (merge `7e08cef`) | | Email: domain types, traits, adapter contract |
-| 07-MAIL-02 | IN_PROGRESS | issue #37 / branch `task/07-MAIL-02` | | Email: implement vertical slice |
+| 07-MAIL-02 | DONE | issue #37 / PR #38 (merge `b00f278`) | | Email: vertical slice (persistence, service, HTTP, 6 integration tests) |
+| 07-MAIL-03 | IN_PROGRESS | issue #39 / branch `task/07-MAIL-03` | | Email: verify + operationalize |
 | 02-DB-02 | TODO | | | |
 | 02-DB-03 | TODO | | | |
 | 03-SEC-01 | TODO | | | |
