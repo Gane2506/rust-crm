@@ -417,6 +417,8 @@ pub enum Resource {
     /// the run lifecycle (start, approve, cancel, handoff); tool-call
     /// audit records stay under `AgentAction`.
     AgentRun,
+    /// Automation workflows inside a client profile (task 10-WORK-02).
+    Workflow,
 }
 
 /// Operations on a resource.

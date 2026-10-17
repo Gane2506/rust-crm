@@ -62,6 +62,10 @@ use crm_db::jev::{
     PgAgentRunRepository, PgHandoffRepository, PgRoleMembership, PgToolCallRepository,
 };
 use crm_db::postgres::{PgAuditService, PgContactRepository};
+use crm_db::workflow::{
+    PgTriggerRepository, PgWorkflowEdgeRepository, PgWorkflowNodeRepository, PgWorkflowRepository,
+    PgWorkflowVersionRepository,
+};
 use crm_domain::services::AuditService;
 
 /// Production authentication + authorization services.
@@ -115,6 +119,16 @@ pub struct ApiAuth {
     pub handoffs: PgHandoffRepository,
     /// Role-membership checker for agent-run approvals.
     pub roles: PgRoleMembership,
+    /// Workflow repository for the workflow endpoints.
+    pub workflows: PgWorkflowRepository,
+    /// Workflow-node repository for the workflow endpoints.
+    pub workflow_nodes: PgWorkflowNodeRepository,
+    /// Workflow-edge repository for the workflow endpoints.
+    pub workflow_edges: PgWorkflowEdgeRepository,
+    /// Workflow-trigger repository for the workflow endpoints.
+    pub workflow_triggers: PgTriggerRepository,
+    /// Workflow-version repository for the workflow endpoints.
+    pub workflow_versions: PgWorkflowVersionRepository,
 }
 
 impl ApiAuth {
@@ -155,6 +169,11 @@ impl ApiAuth {
             tool_calls: PgToolCallRepository::new(pool.clone()),
             handoffs: PgHandoffRepository::new(pool.clone()),
             roles: PgRoleMembership::new(pool.clone()),
+            workflows: PgWorkflowRepository::new(pool.clone()),
+            workflow_nodes: PgWorkflowNodeRepository::new(pool.clone()),
+            workflow_edges: PgWorkflowEdgeRepository::new(pool.clone()),
+            workflow_triggers: PgTriggerRepository::new(pool.clone()),
+            workflow_versions: PgWorkflowVersionRepository::new(pool.clone()),
         }
     }
 }
