@@ -459,6 +459,127 @@ async fn seed_agent_run(pool: &sqlx::PgPool) -> Result<bool, DomainError> {
     Ok(true)
 }
 
+/// Seeds one draft demo workflow on the demo profile: a manual
+/// trigger node, an action node, a delay node, and edges connecting
+/// trigger → action → delay. Idempotent via the demo workflow name.
+/// Stays in `Draft` — publishing is the operator's explicit action.
+async fn seed_workflow(pool: &sqlx::PgPool) -> Result<bool, DomainError> {
+    use crm_core::workflow::WorkflowServiceImpl;
+    use crm_db::workflow::{
+        PgTriggerRepository, PgWorkflowEdgeRepository, PgWorkflowNodeRepository,
+        PgWorkflowRepository, PgWorkflowVersionRepository,
+    };
+    use crm_domain::repositories::WorkflowRepository;
+    use crm_domain::services::{
+        NewTrigger, NewWorkflow, NewWorkflowEdge, NewWorkflowNode, WorkflowService,
+    };
+    use crm_domain::workflow::{TriggerType, WorkflowNodeType};
+
+    const DEMO_WORKFLOW_NAME: &str = "demo-seed-workflow";
+
+    let profile =
+        ClientProfileId::from(Uuid::parse_str(DEMO_PROFILE_ID).expect("demo profile id parses"));
+    let workflows = PgWorkflowRepository::new(pool.clone());
+    // Idempotency anchor: the demo workflow.
+    if workflows
+        .list_by_profile(profile, 100)
+        .await?
+        .iter()
+        .any(|w| w.name == DEMO_WORKFLOW_NAME)
+    {
+        return Ok(false);
+    }
+
+    let ctx = ActionContext {
+        actor_kind: ActorKind::System,
+        actor_id: ActorId::from(Uuid::nil()),
+        client_profile_id: Some(profile),
+        correlation_id: Uuid::new_v4(),
+    };
+
+    let service = WorkflowServiceImpl::new(
+        workflows,
+        PgWorkflowNodeRepository::new(pool.clone()),
+        PgWorkflowEdgeRepository::new(pool.clone()),
+        PgTriggerRepository::new(pool.clone()),
+        PgWorkflowVersionRepository::new(pool.clone()),
+        PgAuditService::new(PgAuditRepository::new(pool.clone())),
+    );
+
+    let workflow = service
+        .create_workflow(
+            NewWorkflow {
+                client_profile_id: profile,
+                name: DEMO_WORKFLOW_NAME.to_string(),
+            },
+            &ctx,
+        )
+        .await?;
+
+    let trigger = service
+        .add_node(
+            NewWorkflowNode {
+                workflow_id: workflow.workflow_id,
+                node_type: WorkflowNodeType::TriggerNode,
+                config: serde_json::json!({"trigger": "manual"}),
+                position: (0, 0),
+            },
+            &ctx,
+        )
+        .await?;
+    let action = service
+        .add_node(
+            NewWorkflowNode {
+                workflow_id: workflow.workflow_id,
+                node_type: WorkflowNodeType::ActionNode,
+                config: serde_json::json!({"action": "email.send"}),
+                position: (200, 0),
+            },
+            &ctx,
+        )
+        .await?;
+    let delay = service
+        .add_node(
+            NewWorkflowNode {
+                workflow_id: workflow.workflow_id,
+                node_type: WorkflowNodeType::DelayNode,
+                config: serde_json::json!({"duration_secs": 300}),
+                position: (400, 0),
+            },
+            &ctx,
+        )
+        .await?;
+
+    for (from, to) in [
+        (trigger.node_id, action.node_id),
+        (action.node_id, delay.node_id),
+    ] {
+        service
+            .add_edge(
+                NewWorkflowEdge {
+                    workflow_id: workflow.workflow_id,
+                    from_node: from,
+                    to_node: to,
+                    label: None,
+                },
+                &ctx,
+            )
+            .await?;
+    }
+
+    service
+        .set_trigger(
+            NewTrigger {
+                workflow_id: workflow.workflow_id,
+                trigger_type: TriggerType::ManualTrigger,
+                config: serde_json::json!({}),
+            },
+            &ctx,
+        )
+        .await?;
+    Ok(true)
+}
+
 /// Env var gating writes: `CRM_SEED_DEV=1` is the explicit opt-in that
 /// lets this example write to the database.
 const SEED_DEV_ENV: &str = "CRM_SEED_DEV";
@@ -551,6 +672,29 @@ async fn seed_staff(pool: &sqlx::PgPool, agency_id: AgencyId) -> Result<bool, Do
             )
             .await?;
     }
+    // Grants for the workflow builder slice (task 10-WORK-02): full
+    // workflow lifecycle on the demo profile, so the demo user can
+    // try the workflow endpoints after logging in.
+    for operation in [
+        Operation::Create,
+        Operation::Read,
+        Operation::Update,
+        Operation::Delete,
+    ] {
+        grant_repo
+            .assign(
+                user.staff_id,
+                Grant {
+                    grant_id: GrantId::new(),
+                    action: Action {
+                        resource: Resource::Workflow,
+                        operation,
+                    },
+                    scope,
+                },
+            )
+            .await?;
+    }
     Ok(true)
 }
 
@@ -584,6 +728,7 @@ async fn run() -> Result<(), String> {
             "  7. seed demo campaign (draft, 1 email step) + prospect pool + opt-out (idempotent)"
         );
         println!("  8. seed demo agent run (completed, chain [stub, local]) (idempotent)");
+        println!("  9. seed demo workflow (draft, trigger → action → delay) (idempotent)");
         return Ok(());
     }
 
@@ -633,6 +778,14 @@ async fn run() -> Result<(), String> {
         println!("seed complete: demo agent run (completed) created");
     } else {
         println!("seed complete: demo agent run already present");
+    }
+    if seed_workflow(&pool)
+        .await
+        .map_err(|error| format!("seed workflow: {error}"))?
+    {
+        println!("seed complete: demo workflow (draft, trigger → action → delay) created");
+    } else {
+        println!("seed complete: demo workflow already present");
     }
     println!("dev login: email {DEMO_STAFF_EMAIL}, password {DEMO_STAFF_PASSWORD} (local only)");
     Ok(())

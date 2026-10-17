@@ -283,6 +283,68 @@ and staff delegating authority to it:
   Watch for gaps in `agent.*` event volume the way login
   anomalies are watched today.
 
+## Workflow builder surface
+
+The workflow builder (tasks 10-WORK-01 through 10-WORK-03)
+adds operator-authored automation *definitions* — canvas
+workflows with typed nodes, triggers, immutable versions, and a
+dry-run simulator. There is **no execution engine yet**: no
+runner, no scheduler, no webhook ingestion endpoint. Most of
+this surface is therefore dormant-but-designed, and the
+threat model for execution must be addressed *before* that
+task ships, not after:
+
+- **Trigger abuse (dormant).** `WebhookTrigger` looks like an
+  unauthenticated entry point — but no endpoint exists to call
+  it, so today it cannot fire. When the execution task adds an
+  ingestion endpoint, that endpoint needs its own auth
+  posture: per-workflow secrets (not bearer staff tokens),
+  signature verification, replay protection, and rate limits.
+  `EventTrigger` and `ScheduleTrigger` are equally inert
+  until a runner exists. Do not let the presence of trigger
+  definitions imply a live attack surface — but do not ship
+  the runner without the endpoint hardening either.
+- **Version tampering.** Published versions are append-only:
+  the type has no mutators, the repository has no
+  update/delete, and `version_number` is monotonic. What that
+  protects: a published definition can always be reconstructed
+  exactly, and a compromised operator cannot rewrite history
+  to hide what a workflow did. What it doesn't protect:
+  *publishing itself* is just `workflow/update` — anyone with
+  that grant can publish a malicious workflow as a new
+  version. Publishing is the privileged act; treat the grant
+  accordingly.
+- **Simulator vs execution confusion.** The simulator's trace
+  says what *would* happen; nothing ran. The danger is
+  operational, not technical: an operator (or a future agent)
+  reading a trace as a guarantee that actions fired. The API
+  never marks anything executed, and the runbook calls this
+  out — but any UI or automation built on top of simulate
+  must keep the dry-run framing visible.
+- **Node config injection.** Node and trigger configs are
+  opaque operator-controlled JSONB. The domain validates
+  shape (non-null, positive delay durations) but the payload
+  is otherwise trusted. Today that's safe because nothing
+  executes configs. The execution task must validate every
+  config at the execution boundary — allowlisted action
+  names, typed parameters, no template evaluation of
+  untrusted fields — before the first real run.
+- **Workflow privilege.** When execution ships, runs will act
+  with the authority of whoever *published* the workflow, not
+  whoever triggered it. That makes `workflow/update` (which
+  covers publish) a privilege-escalation-adjacent grant: a
+  staffer with `update` but no direct grant on the target
+  resource could publish a workflow that touches it. The
+  execution design must define the run's authority model
+  (publisher authority vs triggerer authority vs per-action
+  grants) explicitly.
+- **PII at rest in workflow tables.** Node configs, trigger
+  configs, version snapshots, and simulate inputs are stored
+  as plaintext JSONB. Access is gated by profile-scoped
+  `Workflow` grants — but anyone with database read access
+  sees every workflow definition, same as contacts and
+  email. No field-level encryption is planned.
+
 ## Frontend (SPA) security posture
 
 The Leptos frontend (`crates/crm-web`, task 06-UI) is a thin client:

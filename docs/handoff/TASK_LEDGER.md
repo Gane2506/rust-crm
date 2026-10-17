@@ -32,7 +32,8 @@ Statuses: TODO / IN_PROGRESS / BLOCKED / DONE. Never mark DONE without linked co
 | 09-JEV-02 | DONE | issue #49 / PR #50 (merge `62bb65f`) | | Jev agents: vertical slice (259 tests) |
 | 09-JEV-03 | DONE | issue #51 / PR #52 (merge `64f9257`) | | Jev agents: runbook, threat model, seed — **workstream COMPLETE** |
 | 10-WORK-01 | DONE | issue #53 / PR #54 (merge `b71e532`) | | Workflow builder: domain, traits, interfaces (274 tests) |
-| 10-WORK-02 | IN_PROGRESS | issue #55 / branch `task/10-WORK-02` | | Workflow builder: implement vertical slice |
+| 10-WORK-02 | DONE | issue #55 / PR #56 (merge `f285926`) | | Workflow builder: vertical slice (282 tests) |
+| 10-WORK-03 | IN_PROGRESS | issue #57 / branch `task/10-WORK-03` | | Workflow builder: verify + operationalize |
 | 02-DB-02 | TODO | | | |
 | 02-DB-03 | TODO | | | |
 | 03-SEC-01 | TODO | | | |
