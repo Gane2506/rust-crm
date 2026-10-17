@@ -26,6 +26,7 @@
 
 pub mod audit_log;
 pub mod auth;
+pub mod campaign;
 pub mod core_crm;
 pub mod email;
 pub mod postgres;

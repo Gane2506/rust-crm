@@ -2889,3 +2889,512 @@ async fn pg_email_threads_are_profile_scoped() {
 
     drop_db(&admin_url, &db_name, pool).await;
 }
+
+/// Seeds an active staff user with campaign grants for `profile`.
+///
+/// Returns `(token, staff_id, agency_id)`.
+async fn seed_campaign_user(
+    pool: &PgPool,
+    router: &axum::Router,
+    profile: uuid::Uuid,
+    email: &str,
+) -> (String, StaffId, AgencyId) {
+    let (token, staff_id, agency_id) = seed_authed_user(pool, router, profile, email).await;
+    let grant_repo = PgGrantRepository::new(pool.clone());
+    let scope = Scope::ClientProfile {
+        agency_id,
+        client_profile_id: ClientProfileId::from(profile),
+    };
+    for operation in [Operation::Create, Operation::Read, Operation::Update] {
+        grant_repo
+            .assign(
+                staff_id,
+                Grant {
+                    grant_id: GrantId::new(),
+                    action: Action {
+                        resource: Resource::Campaign,
+                        operation,
+                    },
+                    scope,
+                },
+            )
+            .await
+            .expect("assign campaign grant");
+    }
+    (token, staff_id, agency_id)
+}
+
+fn create_campaign_body(profile: uuid::Uuid, pool_id: &str) -> serde_json::Value {
+    serde_json::json!({
+        "name": "Q4 Outreach",
+        "owner_kind": "client_profile",
+        "client_profile_id": profile,
+        "channel": "email",
+        "prospect_pool_id": pool_id,
+        "schedule": "0 9 * * MON",
+        "suppression_policy": "global-opt-outs",
+        "conversion_rules": "last-touch",
+        "attribution_window_days": 30
+    })
+}
+
+fn post_campaigns(body: serde_json::Value, token: &str) -> Request<Body> {
+    Request::builder()
+        .method("POST")
+        .uri("/api/v1/campaigns")
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .body(Body::from(body.to_string()))
+        .expect("test request builds")
+}
+
+fn post_campaign_step(campaign_id: &str, body: serde_json::Value, token: &str) -> Request<Body> {
+    Request::builder()
+        .method("POST")
+        .uri(format!("/api/v1/campaigns/{campaign_id}/steps"))
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .body(Body::from(body.to_string()))
+        .expect("test request builds")
+}
+
+fn post_campaign_action(campaign_id: &str, action: &str, token: &str) -> Request<Body> {
+    Request::builder()
+        .method("POST")
+        .uri(format!("/api/v1/campaigns/{campaign_id}/{action}"))
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .body(Body::empty())
+        .expect("test request builds")
+}
+
+fn create_pool_body(profile: uuid::Uuid) -> serde_json::Value {
+    serde_json::json!({
+        "client_profile_id": profile,
+        "name": "Q4 Prospects"
+    })
+}
+
+#[tokio::test]
+async fn pg_campaign_lifecycle_create_schedule_launch_complete() {
+    let Some((pool, admin_url, db_name)) = fresh_db().await else {
+        eprintln!("pg_campaign_lifecycle: DATABASE_URL not set, skipping");
+        return;
+    };
+    let router = pg_router(&pool);
+    let profile = uuid::Uuid::new_v4();
+    let (token, _staff, _agency) =
+        seed_campaign_user(&pool, &router, profile, "campaigner@example.com").await;
+
+    // Create a prospect pool.
+    let (status, body) = read_json(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/prospect-pools")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                    .body(Body::from(create_pool_body(profile).to_string()))
+                    .expect("test request builds"),
+            )
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "create pool: {body}");
+    let pool_id = body["pool_id"]
+        .as_str()
+        .expect("pool_id in body")
+        .to_owned();
+
+    // Create a campaign.
+    let (status, body) = read_json(
+        router
+            .clone()
+            .oneshot(post_campaigns(
+                create_campaign_body(profile, &pool_id),
+                &token,
+            ))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "create campaign: {body}");
+    let campaign_id = body["campaign_id"]
+        .as_str()
+        .expect("campaign_id")
+        .to_owned();
+    assert_eq!(body["delivery_state"], "Draft");
+
+    // Add an email step.
+    let (status, body) = read_json(
+        router
+            .clone()
+            .oneshot(post_campaign_step(
+                &campaign_id,
+                serde_json::json!({
+                    "kind": "email",
+                    "position": 0,
+                    "template_id": "welcome-template"
+                }),
+                &token,
+            ))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "add step: {body}");
+
+    // Launch the campaign (no pool members, so no sends).
+    let (status, body) = read_json(
+        router
+            .clone()
+            .oneshot(post_campaign_action(&campaign_id, "launch", &token))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "launch: {body}");
+    assert_eq!(body["delivery_state"], "Running");
+
+    // Complete the campaign.
+    let (status, body) = read_json(
+        router
+            .clone()
+            .oneshot(post_campaign_action(&campaign_id, "complete", &token))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "complete: {body}");
+    assert_eq!(body["delivery_state"], "Completed");
+
+    drop_db(&admin_url, &db_name, pool).await;
+}
+
+#[tokio::test]
+async fn pg_campaign_launch_skips_opted_out_contacts() {
+    let Some((pool, admin_url, db_name)) = fresh_db().await else {
+        eprintln!("pg_campaign_optout: DATABASE_URL not set, skipping");
+        return;
+    };
+    let router = pg_router(&pool);
+    let profile = uuid::Uuid::new_v4();
+    let (token, _staff, _agency) =
+        seed_campaign_user(&pool, &router, profile, "bulk@example.com").await;
+
+    // Create two contacts.
+    let mut contact_ids = Vec::new();
+    for email in ["alice@example.com", "bob@example.com"] {
+        let (status, body) = read_json(
+            router
+                .clone()
+                .oneshot(post_contacts(
+                    serde_json::json!({
+                        "client_profile_id": profile,
+                        "emails": [email],
+                        "phones": [],
+                        "source": "web-form"
+                    }),
+                    None,
+                    &token,
+                ))
+                .await
+                .expect("oneshot"),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::CREATED,
+            "create contact {email}: {body}"
+        );
+        contact_ids.push(body["contact_id"].as_str().expect("contact_id").to_owned());
+    }
+
+    // Create a pool and add both contacts.
+    let (status, body) = read_json(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/prospect-pools")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                    .body(Body::from(create_pool_body(profile).to_string()))
+                    .expect("test request builds"),
+            )
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let pool_id = body["pool_id"].as_str().expect("pool_id").to_owned();
+
+    for contact_id in &contact_ids {
+        let (status, _) = read_json(
+            router
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri(format!("/api/v1/prospect-pools/{pool_id}/members"))
+                        .header(header::CONTENT_TYPE, "application/json")
+                        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                        .body(Body::from(
+                            serde_json::json!({ "contact_id": contact_id }).to_string(),
+                        ))
+                        .expect("test request builds"),
+                )
+                .await
+                .expect("oneshot"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "add member {contact_id}");
+    }
+
+    // Opt out the second contact (bob) from email.
+    let (status, _) = read_json(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/opt-outs")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                    .body(Body::from(
+                        serde_json::json!({
+                            "client_profile_id": profile,
+                            "contact_id": contact_ids[1],
+                            "channel": "email"
+                        })
+                        .to_string(),
+                    ))
+                    .expect("test request builds"),
+            )
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "record opt-out");
+
+    // Create a campaign and add an email step.
+    let (status, body) = read_json(
+        router
+            .clone()
+            .oneshot(post_campaigns(
+                create_campaign_body(profile, &pool_id),
+                &token,
+            ))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let campaign_id = body["campaign_id"]
+        .as_str()
+        .expect("campaign_id")
+        .to_owned();
+
+    let (status, _) = read_json(
+        router
+            .clone()
+            .oneshot(post_campaign_step(
+                &campaign_id,
+                serde_json::json!({
+                    "kind": "email",
+                    "position": 0,
+                    "template_id": "bulk-template"
+                }),
+                &token,
+            ))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    // Launch: only alice (not opted out) should receive an email.
+    let (status, _) = read_json(
+        router
+            .clone()
+            .oneshot(post_campaign_action(&campaign_id, "launch", &token))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "launch");
+
+    // Verify via the database: exactly one email message was created,
+    // addressed to alice.
+    let count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM email_messages WHERE client_profile_id = $1")
+            .bind(profile)
+            .fetch_one(&pool)
+            .await
+            .expect("count emails");
+    assert_eq!(count, 1, "only the non-opted-out contact receives email");
+
+    let recipient: Vec<String> =
+        sqlx::query_scalar("SELECT to_addresses FROM email_messages WHERE client_profile_id = $1")
+            .bind(profile)
+            .fetch_one(&pool)
+            .await
+            .expect("fetch recipient");
+    assert_eq!(recipient, vec!["alice@example.com".to_owned()]);
+
+    drop_db(&admin_url, &db_name, pool).await;
+}
+
+#[tokio::test]
+async fn pg_campaign_scope_isolation() {
+    let Some((pool, admin_url, db_name)) = fresh_db().await else {
+        eprintln!("pg_campaign_scope: DATABASE_URL not set, skipping");
+        return;
+    };
+    let router = pg_router(&pool);
+    let profile_a = uuid::Uuid::new_v4();
+    let profile_b = uuid::Uuid::new_v4();
+    // The user holds campaign grants on profile A only.
+    let (token, _staff, _agency) =
+        seed_campaign_user(&pool, &router, profile_a, "scoped@example.com").await;
+
+    // Create a pool and campaign on profile A.
+    let (status, body) = read_json(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/prospect-pools")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                    .body(Body::from(create_pool_body(profile_a).to_string()))
+                    .expect("test request builds"),
+            )
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let pool_id = body["pool_id"].as_str().expect("pool_id").to_owned();
+
+    let (status, body) = read_json(
+        router
+            .clone()
+            .oneshot(post_campaigns(
+                create_campaign_body(profile_a, &pool_id),
+                &token,
+            ))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let campaign_id = body["campaign_id"]
+        .as_str()
+        .expect("campaign_id")
+        .to_owned();
+
+    // Listing profile B's campaigns: no grant → 403.
+    let (status, _) = read_json(
+        router
+            .clone()
+            .oneshot(get(
+                format!("/api/v1/campaigns?client_profile_id={profile_b}"),
+                &token,
+            ))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "profile B list without grant"
+    );
+
+    // Getting the profile-A campaign works.
+    let (status, _) = read_json(
+        router
+            .clone()
+            .oneshot(get(format!("/api/v1/campaigns/{campaign_id}"), &token))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    drop_db(&admin_url, &db_name, pool).await;
+}
+
+#[tokio::test]
+async fn pg_campaign_conversion_recording() {
+    let Some((pool, admin_url, db_name)) = fresh_db().await else {
+        eprintln!("pg_campaign_conversion: DATABASE_URL not set, skipping");
+        return;
+    };
+    let router = pg_router(&pool);
+    let profile = uuid::Uuid::new_v4();
+    let (token, _staff, _agency) =
+        seed_campaign_user(&pool, &router, profile, "converter@example.com").await;
+
+    // Create a contact.
+    let (status, body) = read_json(
+        router
+            .clone()
+            .oneshot(post_contacts(
+                serde_json::json!({
+                    "client_profile_id": profile,
+                    "emails": ["buyer@example.com"],
+                    "phones": [],
+                    "source": "web-form"
+                }),
+                None,
+                &token,
+            ))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let contact_id = body["contact_id"].as_str().expect("contact_id").to_owned();
+
+    // Record a conversion (no campaign attribution).
+    let (status, body) = read_json(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/conversions")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                    .body(Body::from(
+                        serde_json::json!({
+                            "client_profile_id": profile,
+                            "contact_id": contact_id,
+                            "touchpoint_campaign_ids": [],
+                            "attribution_model": "last_touch",
+                            "value_cents": 5000,
+                            "occurred_at": chrono::Utc::now().to_rfc3339()
+                        })
+                        .to_string(),
+                    ))
+                    .expect("test request builds"),
+            )
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "record conversion: {body}");
+    assert_eq!(body["value_cents"], 5000);
+    assert!(
+        body["campaign_id"].is_null(),
+        "no attribution without touchpoints"
+    );
+
+    drop_db(&admin_url, &db_name, pool).await;
+}

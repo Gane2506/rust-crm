@@ -51,11 +51,14 @@ use crate::problem_response;
 use crate::rate_limit::{LoginRateLimitConfig, LoginRateLimiter};
 use crm_core::memory::{ContactReadModel, ContactServiceImpl};
 use crm_db::audit_log::PgAuditLogService;
+use crm_db::campaign::{
+    PgCampaignRepository, PgConversionRepository, PgOptOutRepository, PgProspectPoolRepository,
+};
 use crm_db::core_crm::{PgAssetRepository, PgClientProfileRepository};
 use crm_db::email::{
     PgEmailAttachmentRepository, PgEmailMessageRepository, PgEmailThreadRepository,
 };
-use crm_db::postgres::PgAuditService;
+use crm_db::postgres::{PgAuditService, PgContactRepository};
 use crm_domain::services::AuditService;
 
 /// Production authentication + authorization services.
@@ -91,6 +94,16 @@ pub struct ApiAuth {
     pub email_attachments: PgEmailAttachmentRepository,
     /// Business-action audit service for email send/receive events.
     pub audit_service: PgAuditService,
+    /// Campaign repository for the campaign endpoints.
+    pub campaigns: PgCampaignRepository,
+    /// Prospect-pool repository for the campaign endpoints.
+    pub prospect_pools: PgProspectPoolRepository,
+    /// Opt-out repository for the campaign endpoints.
+    pub opt_outs: PgOptOutRepository,
+    /// Conversion repository for the campaign endpoints.
+    pub conversions: PgConversionRepository,
+    /// Contact repository for campaign bulk sends.
+    pub contacts: PgContactRepository,
 }
 
 impl ApiAuth {
@@ -122,6 +135,11 @@ impl ApiAuth {
             audit_service: PgAuditService::new(crm_db::postgres::PgAuditRepository::new(
                 pool.clone(),
             )),
+            campaigns: PgCampaignRepository::new(pool.clone()),
+            prospect_pools: PgProspectPoolRepository::new(pool.clone()),
+            opt_outs: PgOptOutRepository::new(pool.clone()),
+            conversions: PgConversionRepository::new(pool.clone()),
+            contacts: PgContactRepository::new(pool.clone()),
         }
     }
 }

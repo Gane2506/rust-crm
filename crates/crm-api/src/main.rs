@@ -14,7 +14,7 @@ use axum::{
     http::{header, HeaderMap, HeaderName, StatusCode},
     middleware,
     response::{IntoResponse, Json, Response},
-    routing::{get, post},
+    routing::{delete, get, post},
     Router,
 };
 use serde::Serialize;
@@ -30,6 +30,7 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 mod assets;
 mod audit;
 mod auth;
+mod campaigns;
 mod contacts;
 mod emails;
 mod observability;
@@ -285,6 +286,59 @@ where
         .route("/v1/emails/send", post(emails::send_email::<R, A, I>))
         .route("/v1/threads", get(emails::list_threads::<R, A, I>))
         .route("/v1/threads/{id}", get(emails::get_thread::<R, A, I>))
+        .route(
+            "/v1/campaigns",
+            post(campaigns::create_campaign::<R, A, I>).get(campaigns::list_campaigns::<R, A, I>),
+        )
+        .route(
+            "/v1/campaigns/{id}",
+            get(campaigns::get_campaign::<R, A, I>),
+        )
+        .route(
+            "/v1/campaigns/{id}/steps",
+            post(campaigns::add_campaign_step::<R, A, I>),
+        )
+        .route(
+            "/v1/campaigns/{id}/schedule",
+            post(campaigns::schedule_campaign::<R, A, I>),
+        )
+        .route(
+            "/v1/campaigns/{id}/launch",
+            post(campaigns::launch_campaign::<R, A, I>),
+        )
+        .route(
+            "/v1/campaigns/{id}/pause",
+            post(campaigns::pause_campaign::<R, A, I>),
+        )
+        .route(
+            "/v1/campaigns/{id}/resume",
+            post(campaigns::resume_campaign::<R, A, I>),
+        )
+        .route(
+            "/v1/campaigns/{id}/complete",
+            post(campaigns::complete_campaign::<R, A, I>),
+        )
+        .route(
+            "/v1/campaigns/{id}/cancel",
+            post(campaigns::cancel_campaign::<R, A, I>),
+        )
+        .route(
+            "/v1/prospect-pools",
+            post(campaigns::create_pool::<R, A, I>).get(campaigns::list_pools::<R, A, I>),
+        )
+        .route(
+            "/v1/prospect-pools/{id}/members",
+            post(campaigns::add_pool_member::<R, A, I>),
+        )
+        .route(
+            "/v1/prospect-pools/{id}/members/{contact_id}",
+            delete(campaigns::remove_pool_member::<R, A, I>),
+        )
+        .route("/v1/opt-outs", post(campaigns::record_opt_out::<R, A, I>))
+        .route(
+            "/v1/conversions",
+            post(campaigns::record_conversion::<R, A, I>),
+        )
         .route("/v1/audit/events", get(audit::audit_events::<R, A, I>))
         .route("/v1/audit/verify", get(audit::audit_verify::<R, A, I>))
         .fallback(not_found);

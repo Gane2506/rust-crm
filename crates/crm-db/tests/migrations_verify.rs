@@ -47,10 +47,16 @@ const MIGRATED_TABLES: &[&str] = &[
     "email_threads",
     "email_messages",
     "email_attachments",
+    "campaigns",
+    "campaign_steps",
+    "prospect_pools",
+    "pool_members",
+    "opt_outs",
+    "conversions",
 ];
 
 /// Migration versions the chain currently ships, in apply order.
-const MIGRATED_VERSIONS: &[i64] = &[1, 2, 3, 4, 5, 6];
+const MIGRATED_VERSIONS: &[i64] = &[1, 2, 3, 4, 5, 6, 7];
 
 /// Reads the applied versions from the sqlx migration journal.
 async fn journal_versions(pool: &sqlx::PgPool) -> Vec<i64> {
