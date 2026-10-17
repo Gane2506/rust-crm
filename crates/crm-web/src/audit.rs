@@ -152,6 +152,7 @@ pub fn AuditPage(token: String) -> impl IntoView {
                                     <th style=styles::TH>"Actor"</th>
                                     <th style=styles::TH>"Target"</th>
                                     <th style=styles::TH>"Decision"</th>
+                                    <th style=styles::TH>"Payload"</th>
                                 </tr>
                             </thead>
                             <tbody>
@@ -177,13 +178,19 @@ pub fn AuditPage(token: String) -> impl IntoView {
     }
 }
 
-/// One audit event row: time, action, short actor id, target, decision.
+/// One audit event row: time, action, short actor id, target, decision, payload.
 #[component]
 fn AuditRow(item: crate::api::AuditEventItem) -> impl IntoView {
     let event = item.event;
     let actor: String = event.actor_id.to_string().chars().take(8).collect();
     let time = event.occurred_at.format("%Y-%m-%d %H:%M:%S").to_string();
     let decision = format!("{:?}/{:?}", event.permission_decision, event.result);
+    // Forensic payload as compact JSON; `None` renders as an em dash.
+    let payload = item
+        .payload
+        .as_ref()
+        .map(|v| v.to_string())
+        .unwrap_or_else(|| "—".to_string());
     view! {
         <tr>
             <td style=styles::TD>{time}</td>
@@ -193,6 +200,7 @@ fn AuditRow(item: crate::api::AuditEventItem) -> impl IntoView {
                 {format!("{} {}", event.target_kind, event.target_id.chars().take(8).collect::<String>())}
             </td>
             <td style=styles::TD>{decision}</td>
+            <td style=styles::MONO>{payload}</td>
         </tr>
     }
 }

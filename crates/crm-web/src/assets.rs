@@ -129,7 +129,15 @@ fn AssetBrowser(token: String, selected: RwSignal<String>) -> impl IntoView {
                         Some(Ok(page)) => {
                             // Own copy for the `For` children closure.
                             let row_token = list_token.clone();
+                            let total = page.total;
                             view! {
+                                <p style=styles::MUTED>
+                                    {format!(
+                                        "{} asset{} total",
+                                        total,
+                                        if total == 1 { "" } else { "s" }
+                                    )}
+                                </p>
                                 <ul style="list-style: none; margin: 0; padding: 0; display: grid; gap: 0.75rem;">
                                     <For
                                         each=move || page.assets.clone()
