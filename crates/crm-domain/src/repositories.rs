@@ -876,3 +876,107 @@ pub trait TriggerRepository {
         workflow_id: crate::ids::WorkflowId,
     ) -> impl Future<Output = Result<Option<crate::workflow::Trigger>, DomainError>> + Send + 'a;
 }
+
+/// Persistence port for [`Form`](crate::form::Form) records.
+///
+/// Intended storage shape (task 11-FORM-02): `forms` table keyed by
+/// `form_id`, with `client_profile_id`, `name`, `status` and
+/// timestamps.
+pub trait FormRepository {
+    /// Persists a new form.
+    fn create<'a>(
+        &'a self,
+        form: crate::form::Form,
+    ) -> impl Future<Output = Result<crate::form::Form, DomainError>> + Send + 'a;
+
+    /// Fetches a form by id.
+    fn get<'a>(
+        &'a self,
+        form_id: crate::ids::FormId,
+    ) -> impl Future<Output = Result<crate::form::Form, DomainError>> + Send + 'a;
+
+    /// Persists form changes (name, status).
+    fn update<'a>(
+        &'a self,
+        form: crate::form::Form,
+    ) -> impl Future<Output = Result<crate::form::Form, DomainError>> + Send + 'a;
+
+    /// Lists forms for one client profile, newest first, capped at
+    /// `limit`.
+    fn list_by_profile<'a>(
+        &'a self,
+        client_profile_id: crate::ids::ClientProfileId,
+        limit: u64,
+    ) -> impl Future<Output = Result<Vec<crate::form::Form>, DomainError>> + Send + 'a;
+}
+
+/// Persistence port for [`FormField`](crate::form::FormField) records.
+///
+/// Intended storage shape (task 11-FORM-02): `form_fields` table
+/// keyed by `field_id`, with `form_id` foreign key, `field_type`,
+/// `label`, `required`, `position` and `config` JSONB. Fields are
+/// cheap to delete and recreate, so there is deliberately no update
+/// method.
+pub trait FormFieldRepository {
+    /// Persists a new field.
+    fn create<'a>(
+        &'a self,
+        field: crate::form::FormField,
+    ) -> impl Future<Output = Result<crate::form::FormField, DomainError>> + Send + 'a;
+
+    /// Fetches a field by id.
+    fn get<'a>(
+        &'a self,
+        field_id: crate::ids::FormFieldId,
+    ) -> impl Future<Output = Result<crate::form::FormField, DomainError>> + Send + 'a;
+
+    /// Deletes a field.
+    fn delete<'a>(
+        &'a self,
+        field_id: crate::ids::FormFieldId,
+    ) -> impl Future<Output = Result<(), DomainError>> + Send + 'a;
+
+    /// Lists fields for one form ordered by `position`, capped at
+    /// `limit`.
+    fn list_by_form<'a>(
+        &'a self,
+        form_id: crate::ids::FormId,
+        limit: u64,
+    ) -> impl Future<Output = Result<Vec<crate::form::FormField>, DomainError>> + Send + 'a;
+}
+
+/// Persistence port for
+/// [`FormSubmission`](crate::form::FormSubmission) records.
+///
+/// Intended storage shape (task 11-FORM-02): `form_submissions`
+/// table keyed by `submission_id`, with `form_id` foreign key,
+/// `client_profile_id`, submitter attribution, `answers` JSONB,
+/// `status` and `submitted_at`. Append-mostly: answers never change
+/// after submission, so only the status is updatable.
+pub trait FormSubmissionRepository {
+    /// Persists a new submission.
+    fn create<'a>(
+        &'a self,
+        submission: crate::form::FormSubmission,
+    ) -> impl Future<Output = Result<crate::form::FormSubmission, DomainError>> + Send + 'a;
+
+    /// Fetches a submission by id.
+    fn get<'a>(
+        &'a self,
+        submission_id: crate::ids::FormSubmissionId,
+    ) -> impl Future<Output = Result<crate::form::FormSubmission, DomainError>> + Send + 'a;
+
+    /// Persists submission status changes (review / archive).
+    fn set_status<'a>(
+        &'a self,
+        submission: crate::form::FormSubmission,
+    ) -> impl Future<Output = Result<crate::form::FormSubmission, DomainError>> + Send + 'a;
+
+    /// Lists submissions for one form, newest first, capped at
+    /// `limit`.
+    fn list_by_form<'a>(
+        &'a self,
+        form_id: crate::ids::FormId,
+        limit: u64,
+    ) -> impl Future<Output = Result<Vec<crate::form::FormSubmission>, DomainError>> + Send + 'a;
+}

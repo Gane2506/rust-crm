@@ -188,6 +188,18 @@ define_id!(
     /// Identifies one immutable workflow version snapshot (task 10-WORK-01).
     WorkflowVersionId
 );
+define_id!(
+    /// Identifies one form definition (task 11-FORM-01).
+    FormId
+);
+define_id!(
+    /// Identifies one typed field on a form (task 11-FORM-01).
+    FormFieldId
+);
+define_id!(
+    /// Identifies one form submission (task 11-FORM-01).
+    FormSubmissionId
+);
 
 impl From<StaffId> for ActorId {
     /// Renders a staff member as the actor of an audit event.
@@ -251,6 +263,9 @@ mod tests {
         assert_id_round_trip(WorkflowEdgeId::new());
         assert_id_round_trip(TriggerId::new());
         assert_id_round_trip(WorkflowVersionId::new());
+        assert_id_round_trip(FormId::new());
+        assert_id_round_trip(FormFieldId::new());
+        assert_id_round_trip(FormSubmissionId::new());
     }
 
     #[test]

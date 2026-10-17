@@ -1558,3 +1558,119 @@ pub trait WorkflowService {
         ctx: &'a ActionContext,
     ) -> impl Future<Output = Result<crate::workflow::SimulationTrace, DomainError>> + Send + 'a;
 }
+
+/// Input for [`FormService::create_form`]: a new intake/lead form.
+#[derive(Debug, Clone)]
+pub struct NewForm {
+    /// Owning client profile (tenant boundary).
+    pub client_profile_id: ClientProfileId,
+    /// Human-readable form name (validated non-blank).
+    pub name: String,
+}
+
+/// Input for [`FormService::add_field`]: a new typed form field.
+#[derive(Debug, Clone)]
+pub struct NewFormField {
+    /// The form the field belongs to.
+    pub form_id: crate::ids::FormId,
+    /// What kind of input this is.
+    pub field_type: crate::form::FormFieldType,
+    /// Human-readable label (validated non-blank).
+    pub label: String,
+    /// Whether a submission must answer this field.
+    pub required: bool,
+    /// Display ordering within the form.
+    pub position: u32,
+    /// Field configuration (opaque JSON, never null).
+    pub config: serde_json::Value,
+}
+
+/// Input for [`FormService::submit`]: one submitted form.
+#[derive(Debug, Clone)]
+pub struct NewFormSubmission {
+    /// The form being submitted.
+    pub form_id: crate::ids::FormId,
+    /// The contact this submission is attributed to, when known.
+    pub submitted_by_contact: Option<crate::ids::ContactId>,
+    /// Human-readable submitter label (validated non-blank).
+    pub submitted_by_label: String,
+    /// The submitted answers.
+    pub answers: Vec<crate::form::FormAnswer>,
+}
+
+/// Authorized operations on intake/lead forms.
+///
+/// All mutations authorize against `Resource::Form` (profile-scoped;
+/// the variant lands in task 11-FORM-02 — see the
+/// [`crate::form`] module docs) and record an [`AuditEvent`] with
+/// the pinned action name documented on each method.
+pub trait FormService {
+    /// Creates a form via [`Form::new`](crate::form::Form::new).
+    /// Records a `"form.created"` audit event.
+    fn create_form<'a>(
+        &'a self,
+        input: NewForm,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<crate::form::Form, DomainError>> + Send + 'a;
+
+    /// Publishes a draft form via [`Form::publish`](crate::form::Form::publish)
+    /// so it starts accepting submissions. Records a `"form.published"`
+    /// audit event.
+    fn publish_form<'a>(
+        &'a self,
+        form_id: crate::ids::FormId,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<crate::form::Form, DomainError>> + Send + 'a;
+
+    /// Archives a form via [`Form::archive`](crate::form::Form::archive).
+    /// Idempotent. Records a `"form.archived"` audit event.
+    fn archive_form<'a>(
+        &'a self,
+        form_id: crate::ids::FormId,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<crate::form::Form, DomainError>> + Send + 'a;
+
+    /// Adds a typed field via
+    /// [`FormField::new`](crate::form::FormField::new). Records a
+    /// `"form.field_added"` audit event.
+    fn add_field<'a>(
+        &'a self,
+        input: NewFormField,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<crate::form::FormField, DomainError>> + Send + 'a;
+
+    /// Removes a field. Records a `"form.field_removed"` audit event.
+    fn remove_field<'a>(
+        &'a self,
+        field_id: crate::ids::FormFieldId,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<(), DomainError>> + Send + 'a;
+
+    /// Submits a form's answers via
+    /// [`FormSubmission::new`](crate::form::FormSubmission::new) and
+    /// validates them against the form's fields. Records a
+    /// `"form.submitted"` audit event.
+    fn submit<'a>(
+        &'a self,
+        input: NewFormSubmission,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<crate::form::FormSubmission, DomainError>> + Send + 'a;
+
+    /// Lists submissions for one form, newest first, capped at
+    /// `limit`. Read-only.
+    fn list_submissions<'a>(
+        &'a self,
+        form_id: crate::ids::FormId,
+        limit: u64,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<Vec<crate::form::FormSubmission>, DomainError>> + Send + 'a;
+
+    /// Marks a submission reviewed via
+    /// [`FormSubmission::review`](crate::form::FormSubmission::review).
+    /// Records a `"form.submission_reviewed"` audit event.
+    fn review_submission<'a>(
+        &'a self,
+        submission_id: crate::ids::FormSubmissionId,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<crate::form::FormSubmission, DomainError>> + Send + 'a;
+}
