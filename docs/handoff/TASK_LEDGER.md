@@ -15,7 +15,8 @@ Statuses: TODO / IN_PROGRESS / BLOCKED / DONE. Never mark DONE without linked co
 | 03-SEC-03 | DONE | issue #15 / PR #16 (merge `2ba2860`) | | Identity and RBAC: rate limiting, security headers, runbooks (verified) |
 | 04-AUD-01 | DONE | issue #17 / PR #18 (merge `86eb7d5`) | | Audit and observability: SecurityEvent taxonomy, AuditLogService trait, observability ports |
 | 04-AUD-02 | DONE | issue #19 / PR #20 (merge `15028ab`) | | Audit and observability: PgAuditLogService, event recording, query/verify endpoints, observability wiring |
-| 04-AUD-03 | IN_PROGRESS | issue #21 / branch `task/04-AUD-03` | | Audit and observability: verify + operationalize |
+| 04-AUD-03 | DONE | issue #21 / PR #22 (merge `ec6b2e5`) | | Audit and observability: runbook, tunable thresholds, E2E verification, retention policy |
+| 05-CRM-01 | IN_PROGRESS | issue #23 / branch `task/05-CRM-01` | | Core CRM: define domain and interfaces |
 | 02-DB-02 | TODO | | | |
 | 02-DB-03 | TODO | | | |
 | 03-SEC-01 | TODO | | | |
