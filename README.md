@@ -232,7 +232,8 @@ and merge happens on green CI plus review. Follow along via
 | Identity and RBAC | 03-SEC-01…03 | ✅ done ([#11](https://github.com/Gane2506/rust-crm/issues/11), [#12](https://github.com/Gane2506/rust-crm/pull/12); [#13](https://github.com/Gane2506/rust-crm/issues/13), [#14](https://github.com/Gane2506/rust-crm/pull/14); [#15](https://github.com/Gane2506/rust-crm/issues/15), [#16](https://github.com/Gane2506/rust-crm/pull/16)) |
 | Audit and observability | 04-AUD-01…03 | ✅ done ([#21](https://github.com/Gane2506/rust-crm/issues/21), [#22](https://github.com/Gane2506/rust-crm/pull/22)) |
 | Core CRM | 05-CRM-01…03 | ✅ done ([#27](https://github.com/Gane2506/rust-crm/issues/27), [#28](https://github.com/Gane2506/rust-crm/pull/28)) |
-| Frontend | 06-UI-01… | ✅ 06-UI-02 done ([#31](https://github.com/Gane2506/rust-crm/issues/31), [#32](https://github.com/Gane2506/rust-crm/pull/32)); 🔨 06-UI-03 in progress |
+| Frontend | 06-UI-01…03 | ✅ done ([#33](https://github.com/Gane2506/rust-crm/issues/33), [#34](https://github.com/Gane2506/rust-crm/pull/34)) |
+| Email and threaded chat | 07-MAIL-01… | 🔨 07-MAIL-01 in progress |
 | Email and threaded chat | 07-MAIL-01…03 | ⬜ Not started |
 | Campaigns | 08-CAMP-01…03 | ⬜ Not started |
 | Jev agents | 09-JEV-01…03 | ⬜ Not started |
