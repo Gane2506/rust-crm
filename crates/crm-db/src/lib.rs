@@ -14,7 +14,11 @@
 //! [`auth`] holds the Argon2id password hashing helpers and the
 //! authentication/authorization services over the [`postgres`]
 //! repositories.
+//!
+//! [`audit_log`] implements the [`AuditLogService`] security audit log
+//! over the shared `audit_events` table.
 
+pub mod audit_log;
 pub mod auth;
 pub mod postgres;
 

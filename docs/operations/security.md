@@ -185,6 +185,35 @@ proxy's job. No `Content-Security-Policy` on API responses (JSON gains
 nothing from one); the SPA's document policy belongs to the UI
 workstream.
 
+## Security audit log (04-AUD-02)
+
+Security-relevant occurrences are appended to the shared `audit_events`
+table as hash-chained [`AuditEvent`]s whose `payload` JSONB column carries
+the serialized [`SecurityEvent`]. Recorded on the request path: login
+succeeded, login failed (email fingerprint only — never the address),
+rate-limit tripped (fingerprinted bucket key), logout, and
+authorization denials (counted toward the probing anomaly signal).
+Contact-lifecycle events share the same chain with a NULL payload.
+
+- `GET /api/v1/audit/events` — filtered query (actor, action, profile,
+  time range, cursor, limit; chain order). Authorized as
+  `AuditLog:Read` **at agency scope**: a profile-scoped caller gets 403,
+  so profile readers can never learn whether agency-level events exist.
+- `GET /api/v1/audit/verify` — verifies the whole chain from genesis
+  (same authorization). `valid: false` with a `first_bad_event` means
+  the audit store itself is suspect — treat as an incident.
+
+### Audit-write failure tradeoff
+
+Recording a security event never fails the request it describes: a
+failed audit write logs at `error!` and the request continues. This is
+deliberate — turning a login into a 500 because the audit table hiccuped
+would make an observability dependency an availability dependency, and
+would let an attacker deny logins by filling the disk. The cost is a
+possible gap in the log under storage failure; watch for the
+`security audit write failed` error in logs and treat a burst as an
+operational incident.
+
 ## Incident response: suspected credential compromise
 
 Per `docs/handoff/24-security-incident-response.md`:
@@ -204,9 +233,9 @@ Per `docs/handoff/24-security-incident-response.md`:
     ORDER BY seq;
    ```
 
-   Verify the chain with the `verify_chain` domain function
-   (`crm_domain::audit::verify_chain`) over the queried events — a broken
-   chain means the audit store itself is suspect.
+   Verify the chain with `GET /api/v1/audit/verify` (authorized as
+   `AuditLog:Read` at agency scope) — a broken chain (`valid: false`)
+   means the audit store itself is suspect.
 4. **Recover:** reactivate the account only after the new credential is
    delivered out of band, and confirm the user can log in.
 5. **Review:** check for grants assigned to the account during the

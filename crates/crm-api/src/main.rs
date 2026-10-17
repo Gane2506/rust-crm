@@ -27,8 +27,10 @@ use tower_http::{
 };
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
+mod audit;
 mod auth;
 mod contacts;
+mod observability;
 #[cfg(test)]
 mod pg_tests;
 mod rate_limit;
@@ -247,6 +249,8 @@ where
             post(contacts::create_contact::<R, A, I>).get(contacts::list_contacts::<R, A, I>),
         )
         .route("/v1/contacts/{id}", get(contacts::get_contact::<R, A, I>))
+        .route("/v1/audit/events", get(audit::audit_events::<R, A, I>))
+        .route("/v1/audit/verify", get(audit::audit_verify::<R, A, I>))
         .fallback(not_found);
 
     // When authentication is configured (the Postgres-backed server), the

@@ -38,15 +38,19 @@ use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 
 use crm_db::auth::{PgAuthenticationService, PgAuthorizationService};
+use crm_domain::audit::{fingerprint, RateLimitBucket, SecurityEvent};
 use crm_domain::error::DomainError;
-use crm_domain::ids::{AgencyId, ClientProfileId};
+use crm_domain::ids::{ActorId, AgencyId, ClientProfileId};
+use crm_domain::observability::{AnomalySignal, AnomalySink, TraceEvent, Tracer};
 use crm_domain::security::{Action, Scope, SessionToken};
 use crm_domain::services::{ActionContext, AuthenticationService, AuthorizationService};
 
 use crate::contacts::{request_id, AppState};
+use crate::observability::{DenialTracker, LoggingAnomalySink, TracingTracer};
 use crate::problem_response;
 use crate::rate_limit::{LoginRateLimitConfig, LoginRateLimiter};
 use crm_core::memory::{ContactReadModel, ContactServiceImpl};
+use crm_db::audit_log::PgAuditLogService;
 use crm_domain::services::AuditService;
 
 /// Production authentication + authorization services.
@@ -62,6 +66,14 @@ pub struct ApiAuth {
     pub authorization: PgAuthorizationService,
     /// Brute-force mitigation for the login endpoint (shared, in-memory).
     pub login_limiter: Arc<LoginRateLimiter>,
+    /// Tamper-evident security audit log.
+    pub audit_log: PgAuditLogService,
+    /// Structured trace emitter (fire-and-forget).
+    pub tracer: TracingTracer,
+    /// Anomaly signal sink (fire-and-forget).
+    pub anomaly_sink: LoggingAnomalySink,
+    /// Per-actor authorization-denial counter for probing detection.
+    pub denial_tracker: Arc<DenialTracker>,
 }
 
 impl ApiAuth {
@@ -79,6 +91,10 @@ impl ApiAuth {
             authentication: PgAuthenticationService::new(pool.clone()),
             authorization: PgAuthorizationService::new(pool.clone()),
             login_limiter: Arc::new(LoginRateLimiter::new(config)),
+            audit_log: PgAuditLogService::new(pool.clone()),
+            tracer: TracingTracer,
+            anomaly_sink: LoggingAnomalySink,
+            denial_tracker: Arc::new(DenialTracker::new()),
         }
     }
 }
@@ -275,7 +291,7 @@ where
     A: AuditService + Clone + Send + Sync + 'static,
     I: crate::contacts::IdempotencyStore,
 {
-    let (instance, _) = request_id(&headers);
+    let (instance, correlation_id) = request_id(&headers);
     let Some(api_auth) = &state.auth else {
         return problem_response(
             StatusCode::NOT_IMPLEMENTED,
@@ -300,7 +316,40 @@ where
     // `Op@Example.com` and `op@example.com` share one bucket.
     let email_key = body.email.trim().to_lowercase();
     let ip_key = client_ip_key(connect_info.0, &headers);
-    if let Err(retry_after) = api_auth.login_limiter.check(&ip_key, &email_key) {
+    if let Err((bucket, retry_after)) = api_auth.login_limiter.check(&ip_key, &email_key) {
+        // The rate-limit trip is itself a security event: record it with
+        // a fingerprinted bucket key (never the raw IP or email), then
+        // emit the login-velocity anomaly signal for the email bucket.
+        let sys_ctx = crate::audit::system_action_context(correlation_id);
+        let bucket_key = match bucket {
+            RateLimitBucket::Ip => &ip_key,
+            RateLimitBucket::Email => &email_key,
+        };
+        crate::audit::record_security_event(
+            &api_auth.audit_log,
+            &sys_ctx,
+            &SecurityEvent::rate_limit_tripped(bucket, bucket_key),
+        )
+        .await;
+        if bucket == RateLimitBucket::Email {
+            api_auth
+                .anomaly_sink
+                .emit(AnomalySignal::LoginVelocity {
+                    email_fingerprint: fingerprint(&email_key),
+                    attempts: api_auth.login_limiter.config().max_attempts_per_email,
+                    window_secs: api_auth.login_limiter.config().email_window.as_secs(),
+                })
+                .await;
+        }
+        api_auth
+            .tracer
+            .emit(TraceEvent::now(
+                "auth.login_attempt",
+                correlation_id,
+                None,
+                vec![("result".to_string(), "rate_limited".to_string())],
+            ))
+            .await;
         return rate_limited(&instance, retry_after);
     }
     if body.email.trim().is_empty() || body.password.is_empty() {
@@ -312,12 +361,54 @@ where
         .await
     {
         Ok(issued) => {
+            // Record the successful login against the staff actor, then
+            // trace it. The audit write never fails the login (see
+            // `record_security_event`).
+            let staff_id = issued.session.staff_id;
+            let ctx =
+                crate::audit::staff_action_context(ActorId::from(staff_id), None, correlation_id);
+            crate::audit::record_security_event(
+                &api_auth.audit_log,
+                &ctx,
+                &SecurityEvent::LoginSucceeded { staff_id },
+            )
+            .await;
+            api_auth
+                .tracer
+                .emit(TraceEvent::now(
+                    "auth.login_attempt",
+                    correlation_id,
+                    Some(ActorId::from(staff_id)),
+                    vec![("result".to_string(), "allow".to_string())],
+                ))
+                .await;
             // The one boundary where the token leaves the server, in UUID
             // form. It is never logged.
             let token = issued.token.as_uuid().to_string();
             (StatusCode::OK, Json(LoginResponse { token })).into_response()
         }
-        Err(DomainError::Unauthorized) => unauthorized(&instance),
+        Err(DomainError::Unauthorized) => {
+            // Failed login: record with a fingerprinted email (never the
+            // raw address). Suspended accounts are indistinguishable from
+            // wrong passwords here by design.
+            let sys_ctx = crate::audit::system_action_context(correlation_id);
+            crate::audit::record_security_event(
+                &api_auth.audit_log,
+                &sys_ctx,
+                &SecurityEvent::login_failed(&body.email),
+            )
+            .await;
+            api_auth
+                .tracer
+                .emit(TraceEvent::now(
+                    "auth.login_attempt",
+                    correlation_id,
+                    None,
+                    vec![("result".to_string(), "deny".to_string())],
+                ))
+                .await;
+            unauthorized(&instance)
+        }
         Err(error) => crate::contacts::domain_error_response(error, instance),
     }
 }
@@ -337,7 +428,7 @@ where
     A: AuditService + Clone + Send + Sync + 'static,
     I: crate::contacts::IdempotencyStore,
 {
-    let (instance, _) = request_id(&headers);
+    let (instance, correlation_id) = request_id(&headers);
     let Some(api_auth) = &state.auth else {
         return problem_response(
             StatusCode::NOT_IMPLEMENTED,
@@ -350,6 +441,31 @@ where
         Ok(token) => token,
         Err(()) => return unauthorized(&instance),
     };
+    // Resolve the session so the logout is attributed to the staff
+    // member; an unresolvable token still revokes idempotently (204)
+    // without an audit event, since there is no actor to attribute.
+    if let Ok(validated) = api_auth.authentication.validate_token(&token).await {
+        let staff_id = validated.staff.staff_id;
+        let ctx = crate::audit::staff_action_context(ActorId::from(staff_id), None, correlation_id);
+        crate::audit::record_security_event(
+            &api_auth.audit_log,
+            &ctx,
+            &SecurityEvent::Logout {
+                staff_id,
+                session_id: validated.session.session_id,
+            },
+        )
+        .await;
+        api_auth
+            .tracer
+            .emit(TraceEvent::now(
+                "auth.logout",
+                correlation_id,
+                Some(ActorId::from(staff_id)),
+                vec![("result".to_string(), "allow".to_string())],
+            ))
+            .await;
+    }
     match api_auth.authentication.revoke(&token).await {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(error) => crate::contacts::domain_error_response(error, instance),
@@ -401,7 +517,34 @@ pub async fn resolve_context<S, I>(
     {
         Ok(ctx) => Ok(ctx),
         Err(DomainError::Unauthorized) => Err(Box::new(unauthorized(&instance))),
-        Err(DomainError::Forbidden(_)) => Err(Box::new(forbidden(&instance))),
+        Err(DomainError::Forbidden(_)) => {
+            // Probing signal: a valid token without a covering grant.
+            // Resolve the actor for the denial counter; if resolution
+            // fails the 403 still stands, just untracked.
+            if let Ok(validated) = api_auth
+                .authentication
+                .validate_token(&req_auth.token)
+                .await
+            {
+                let actor = ActorId::from(validated.staff.staff_id);
+                if let Some(signal) = api_auth.denial_tracker.note_denial(actor) {
+                    api_auth.anomaly_sink.emit(signal).await;
+                }
+            }
+            api_auth
+                .tracer
+                .emit(TraceEvent::now(
+                    "authz.denied",
+                    correlation_id,
+                    None,
+                    vec![
+                        ("resource".to_string(), format!("{:?}", action.resource)),
+                        ("operation".to_string(), format!("{:?}", action.operation)),
+                    ],
+                ))
+                .await;
+            Err(Box::new(forbidden(&instance)))
+        }
         Err(error) => Err(Box::new(crate::contacts::domain_error_response(
             error, instance,
         ))),

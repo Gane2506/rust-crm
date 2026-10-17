@@ -58,7 +58,7 @@ const UNIQUE_VIOLATION: &str = "23505";
 /// Maps storage failures onto [`DomainError`].
 ///
 /// See the module docs for the mapping contract.
-fn map_storage_error(error: sqlx::Error) -> DomainError {
+pub(crate) fn map_storage_error(error: sqlx::Error) -> DomainError {
     if let sqlx::Error::Database(db_error) = &error {
         if db_error.code().as_deref() == Some(UNIQUE_VIOLATION) {
             return DomainError::Conflict(format!("storage conflict: {}", db_error.message()));
@@ -73,7 +73,7 @@ fn map_storage_error(error: sqlx::Error) -> DomainError {
 /// (the agency-managed profile lifecycle lands in a later task), so the
 /// repositories satisfy the `contacts`/`audit_events` foreign keys with an
 /// idempotent upsert instead of failing on unknown profiles.
-async fn ensure_client_profile<'e, E>(
+pub(crate) async fn ensure_client_profile<'e, E>(
     executor: E,
     client_profile_id: ClientProfileId,
 ) -> Result<(), DomainError>
@@ -117,7 +117,7 @@ fn lifecycle_from_str(raw: &str) -> Result<Lifecycle, DomainError> {
 ///
 /// Mirrors the strings used in
 /// [`AuditEvent::canonical_bytes`](crm_domain::audit::AuditEvent::canonical_bytes).
-fn actor_kind_as_str(kind: ActorKind) -> &'static str {
+pub(crate) fn actor_kind_as_str(kind: ActorKind) -> &'static str {
     match kind {
         ActorKind::Human => "human",
         ActorKind::Agent => "agent",
@@ -126,7 +126,7 @@ fn actor_kind_as_str(kind: ActorKind) -> &'static str {
 }
 
 /// Parses an [`ActorKind`] from its database string.
-fn actor_kind_from_str(raw: &str) -> Result<ActorKind, DomainError> {
+pub(crate) fn actor_kind_from_str(raw: &str) -> Result<ActorKind, DomainError> {
     match raw {
         "human" => Ok(ActorKind::Human),
         "agent" => Ok(ActorKind::Agent),
@@ -138,7 +138,7 @@ fn actor_kind_from_str(raw: &str) -> Result<ActorKind, DomainError> {
 }
 
 /// Renders a [`PermissionDecision`] as its stable database string.
-fn permission_decision_as_str(decision: PermissionDecision) -> &'static str {
+pub(crate) fn permission_decision_as_str(decision: PermissionDecision) -> &'static str {
     match decision {
         PermissionDecision::Allow => "allow",
         PermissionDecision::Deny => "deny",
@@ -146,7 +146,7 @@ fn permission_decision_as_str(decision: PermissionDecision) -> &'static str {
 }
 
 /// Parses a [`PermissionDecision`] from its database string.
-fn permission_decision_from_str(raw: &str) -> Result<PermissionDecision, DomainError> {
+pub(crate) fn permission_decision_from_str(raw: &str) -> Result<PermissionDecision, DomainError> {
     match raw {
         "allow" => Ok(PermissionDecision::Allow),
         "deny" => Ok(PermissionDecision::Deny),
@@ -157,7 +157,7 @@ fn permission_decision_from_str(raw: &str) -> Result<PermissionDecision, DomainE
 }
 
 /// Renders an [`ActionResult`] as its stable database string.
-fn action_result_as_str(result: ActionResult) -> &'static str {
+pub(crate) fn action_result_as_str(result: ActionResult) -> &'static str {
     match result {
         ActionResult::Success => "success",
         ActionResult::Failure => "failure",
@@ -166,7 +166,7 @@ fn action_result_as_str(result: ActionResult) -> &'static str {
 }
 
 /// Parses an [`ActionResult`] from its database string.
-fn action_result_from_str(raw: &str) -> Result<ActionResult, DomainError> {
+pub(crate) fn action_result_from_str(raw: &str) -> Result<ActionResult, DomainError> {
     match raw {
         "success" => Ok(ActionResult::Success),
         "failure" => Ok(ActionResult::Failure),
@@ -178,7 +178,7 @@ fn action_result_from_str(raw: &str) -> Result<ActionResult, DomainError> {
 }
 
 /// Converts a stored 32-byte hash into a fixed array.
-fn hash_from_bytes(raw: Vec<u8>) -> Result<[u8; 32], DomainError> {
+pub(crate) fn hash_from_bytes(raw: Vec<u8>) -> Result<[u8; 32], DomainError> {
     raw.try_into()
         .map_err(|_| DomainError::Validation("storage error: corrupt chain hash length".to_owned()))
 }
@@ -226,7 +226,7 @@ const CONTACT_COLUMNS: &str = "contact_id, client_profile_id, normalized_emails,
 
 /// Row shape of the `audit_events` table.
 #[derive(Debug, sqlx::FromRow)]
-struct AuditEventRow {
+pub(crate) struct AuditEventRow {
     event_id: Uuid,
     occurred_at: DateTime<Utc>,
     actor_kind: String,
@@ -245,7 +245,7 @@ struct AuditEventRow {
 
 impl AuditEventRow {
     /// Converts the row into a domain [`AuditEvent`].
-    fn into_event(self) -> Result<AuditEvent, DomainError> {
+    pub(crate) fn into_event(self) -> Result<AuditEvent, DomainError> {
         Ok(AuditEvent {
             event_id: AuditEventId::from(self.event_id),
             occurred_at: self.occurred_at,
@@ -266,7 +266,7 @@ impl AuditEventRow {
 }
 
 /// Columns read for every audit-event query.
-const AUDIT_EVENT_COLUMNS: &str = "event_id, occurred_at, actor_kind, actor_id, client_profile_id, action, target_kind, target_id, correlation_id, permission_decision, result, before_ref, after_ref, chain_hash";
+pub(crate) const AUDIT_EVENT_COLUMNS: &str = "event_id, occurred_at, actor_kind, actor_id, client_profile_id, action, target_kind, target_id, correlation_id, permission_decision, result, before_ref, after_ref, chain_hash";
 
 /// SQLx implementation of [`ContactRepository`].
 #[derive(Debug, Clone)]
