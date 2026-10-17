@@ -52,6 +52,10 @@ use crate::rate_limit::{LoginRateLimitConfig, LoginRateLimiter};
 use crm_core::memory::{ContactReadModel, ContactServiceImpl};
 use crm_db::audit_log::PgAuditLogService;
 use crm_db::core_crm::{PgAssetRepository, PgClientProfileRepository};
+use crm_db::email::{
+    PgEmailAttachmentRepository, PgEmailMessageRepository, PgEmailThreadRepository,
+};
+use crm_db::postgres::PgAuditService;
 use crm_domain::services::AuditService;
 
 /// Production authentication + authorization services.
@@ -79,6 +83,14 @@ pub struct ApiAuth {
     pub profiles: PgClientProfileRepository,
     /// Asset repository for the asset endpoints.
     pub assets: PgAssetRepository,
+    /// Email message repository for the email endpoints.
+    pub email_messages: PgEmailMessageRepository,
+    /// Email thread repository for the email endpoints.
+    pub email_threads: PgEmailThreadRepository,
+    /// Email attachment repository for the email endpoints.
+    pub email_attachments: PgEmailAttachmentRepository,
+    /// Business-action audit service for email send/receive events.
+    pub audit_service: PgAuditService,
 }
 
 impl ApiAuth {
@@ -104,6 +116,12 @@ impl ApiAuth {
             denial_tracker: Arc::new(DenialTracker::with_config(DenialTrackerConfig::from_env())),
             profiles: PgClientProfileRepository::new(pool.clone()),
             assets: PgAssetRepository::new(pool.clone()),
+            email_messages: PgEmailMessageRepository::new(pool.clone()),
+            email_threads: PgEmailThreadRepository::new(pool.clone()),
+            email_attachments: PgEmailAttachmentRepository::new(pool.clone()),
+            audit_service: PgAuditService::new(crm_db::postgres::PgAuditRepository::new(
+                pool.clone(),
+            )),
         }
     }
 }

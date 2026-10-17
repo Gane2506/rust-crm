@@ -409,6 +409,10 @@ pub enum Resource {
     StaffUser,
     /// Login sessions (revocation, inspection).
     Session,
+    /// Email messages inside a client profile (task 07-MAIL-02).
+    Email,
+    /// Email conversation threads inside a client profile (task 07-MAIL-02).
+    EmailThread,
 }
 
 /// Operations on a resource.
