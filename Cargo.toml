@@ -1,0 +1,47 @@
+# rust-crm — Rust-only agent-native CRM
+#
+# Task 01-FND-01: workspace scaffold. License: GPL-3.0-only (see LICENSE).
+
+[workspace]
+resolver = "2"
+members = [
+    "crates/crm-api",
+    "crates/crm-core",
+    "crates/crm-db",
+    "crates/crm-domain",
+    "crates/crm-web",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-only"
+
+# Central dependency pins. Versions verified against crates.io 2026-10-16:
+# tokio 1.53.3, axum 0.8.9, serde 1.0.229, serde_json 1.0.154, uuid 1.28.0,
+# chrono 0.4.45, thiserror 2.0.21, sqlx 0.8.6, tower 0.5.3, tower-http 0.6.11,
+# tracing 0.1.44, tracing-subscriber 0.3.23, leptos 0.8.22,
+# leptos_router 0.8.17, sha2 0.10.9.
+[workspace.dependencies]
+# "signal" added to the task's macros+rt-multi-thread list: required for
+# graceful shutdown on SIGINT/SIGTERM in crm-api.
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal"] }
+axum = { version = "0.8" }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1" }
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+thiserror = { version = "2" }
+# default-features = false: sqlx's defaults pull `any` -> sqlx-mysql -> `rsa`
+# (RUSTSEC-2023-0071, no fixed upgrade). We use PostgreSQL only; `macros`
+# and `json` are kept from the default set for the 02-DB work.
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "postgres", "uuid", "chrono", "migrate", "macros", "json"] }
+# "util" for tower::ServiceExt (oneshot tests).
+tower = { version = "0.5", features = ["util"] }
+tower-http = { version = "0.6", features = ["trace", "request-id", "cors"] }
+tracing = { version = "0.1" }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+# leptos 0.8 splits the router into the leptos_router crate.
+leptos = { version = "0.8", features = ["csr"] }
+leptos_router = { version = "0.8" }
+sha2 = { version = "0.10" }

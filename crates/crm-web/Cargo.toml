@@ -1,0 +1,10 @@
+[package]
+name = "crm-web"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Leptos CSR single-page application for the Rust CRM (WASM)"
+
+[dependencies]
+leptos.workspace = true
+leptos_router.workspace = true
