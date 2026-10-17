@@ -23,14 +23,16 @@ use std::future::Future;
 use crate::agent::AgentAction;
 use crate::asset::Asset;
 use crate::audit::AuditEvent;
-use crate::campaign::{Campaign, OptOut, OptOutChannel, OwnerContext, ProspectPool};
+use crate::campaign::{
+    Campaign, CampaignStep, Conversion, OptOut, OptOutChannel, OwnerContext, ProspectPool,
+};
 use crate::contact::Contact;
 use crate::contract::Contract;
 use crate::email::{EmailAttachment, EmailMessage, EmailThread};
 use crate::error::DomainError;
 use crate::ids::{
     AgencyId, AgentActionId, AssetId, AuditEventId, CampaignId, ClientProfileId, ContactId,
-    ContractId, EmailAttachmentId, EmailMessageId, EmailThreadId, GrantId, OptOutId,
+    ContractId, ConversionId, EmailAttachmentId, EmailMessageId, EmailThreadId, GrantId, OptOutId,
     ProspectPoolId, StaffId,
 };
 use crate::profile::ClientProfile;
@@ -173,6 +175,19 @@ pub trait CampaignRepository {
         client_profile_id: ClientProfileId,
         limit: u64,
     ) -> impl Future<Output = Result<Vec<Campaign>, DomainError>> + Send + 'a;
+
+    /// Persists a new step on a campaign. Position uniqueness within
+    /// the campaign is enforced by storage (unique constraint).
+    fn add_step<'a>(
+        &'a self,
+        step: CampaignStep,
+    ) -> impl Future<Output = Result<CampaignStep, DomainError>> + Send + 'a;
+
+    /// Lists a campaign's steps in position order.
+    fn list_steps<'a>(
+        &'a self,
+        campaign_id: CampaignId,
+    ) -> impl Future<Output = Result<Vec<CampaignStep>, DomainError>> + Send + 'a;
 }
 
 /// CRUD for [`ProspectPool`]s.
@@ -247,6 +262,39 @@ pub trait OptOutRepository {
         contact_id: ContactId,
         channel: OptOutChannel,
     ) -> impl Future<Output = Result<bool, DomainError>> + Send + 'a;
+}
+
+/// Append-only store for [`Conversion`] records.
+///
+/// Conversions are never updated or deleted; a correction is a new
+/// record (the audit trail of the original attribution is preserved).
+pub trait ConversionRepository {
+    /// Persists a new conversion.
+    fn create<'a>(
+        &'a self,
+        conversion: Conversion,
+    ) -> impl Future<Output = Result<Conversion, DomainError>> + Send + 'a;
+
+    /// Fetches a conversion by id.
+    fn get<'a>(
+        &'a self,
+        conversion_id: ConversionId,
+    ) -> impl Future<Output = Result<Conversion, DomainError>> + Send + 'a;
+
+    /// Lists conversions credited to one campaign, newest first, capped
+    /// at `limit`.
+    fn list_by_campaign<'a>(
+        &'a self,
+        campaign_id: CampaignId,
+        limit: u64,
+    ) -> impl Future<Output = Result<Vec<Conversion>, DomainError>> + Send + 'a;
+
+    /// Lists a contact's conversions, newest first, capped at `limit`.
+    fn list_by_contact<'a>(
+        &'a self,
+        contact_id: ContactId,
+        limit: u64,
+    ) -> impl Future<Output = Result<Vec<Conversion>, DomainError>> + Send + 'a;
 }
 
 /// Append-mostly store for [`AgentAction`] records.

@@ -45,6 +45,11 @@ pub mod memory;
 /// test/dev adapter.
 pub mod email;
 
+/// Campaign service implementation (task 08-CAMP-02): the generic
+/// [`campaign::CampaignServiceImpl`] over the campaign repositories,
+/// contact repository, email service and audit service.
+pub mod campaign;
+
 /// Errors raised by [`crm-core`](crate) utilities.
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum CoreError {

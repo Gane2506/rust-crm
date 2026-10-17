@@ -25,7 +25,8 @@ Statuses: TODO / IN_PROGRESS / BLOCKED / DONE. Never mark DONE without linked co
 | 07-MAIL-01 | DONE | issue #35 / PR #36 (merge `7e08cef`) | | Email: domain types, traits, adapter contract |
 | 07-MAIL-02 | DONE | issue #37 / PR #38 (merge `b00f278`) | | Email: vertical slice (persistence, service, HTTP, 6 integration tests) |
 | 07-MAIL-03 | DONE | issue #39 / PR #40 (merge `111811c`) | | Email: runbook, threat model, seed — **workstream COMPLETE** |
-| 08-CAMP-01 | IN_PROGRESS | issue #41 / branch `task/08-CAMP-01` | | Campaigns: define domain and interfaces |
+| 08-CAMP-01 | DONE | issue #41 / PR #42 (merge `c33f74f`) | | Campaigns: domain, traits, lifecycle (231 tests) |
+| 08-CAMP-02 | IN_PROGRESS | issue #43 / branch `task/08-CAMP-02` | | Campaigns: implement vertical slice |
 | 02-DB-02 | TODO | | | |
 | 02-DB-03 | TODO | | | |
 | 03-SEC-01 | TODO | | | |
