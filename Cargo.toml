@@ -39,7 +39,8 @@ thiserror = { version = "2" }
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "postgres", "uuid", "chrono", "migrate", "macros", "json"] }
 # "util" for tower::ServiceExt (oneshot tests).
 tower = { version = "0.5", features = ["util"] }
-tower-http = { version = "0.6", features = ["trace", "request-id", "cors"] }
+# "fs" for tower_http::services::{ServeDir, ServeFile} (static frontend).
+tower-http = { version = "0.6", features = ["trace", "request-id", "cors", "fs"] }
 tracing = { version = "0.1" }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 # leptos 0.8 splits the router into the leptos_router crate.
