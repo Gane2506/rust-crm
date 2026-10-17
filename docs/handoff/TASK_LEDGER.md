@@ -35,7 +35,8 @@ Statuses: TODO / IN_PROGRESS / BLOCKED / DONE. Never mark DONE without linked co
 | 10-WORK-02 | DONE | issue #55 / PR #56 (merge `f285926`) | | Workflow builder: vertical slice (282 tests) |
 | 10-WORK-03 | DONE | issue #57 / PR #58 (merge `e27f5b1`) | | Workflow builder: verify + operationalize (282 tests) |
 | 11-FORM-01 | DONE | issue #59 / PR #60 (merge `b03574e`) | | Form builder: define domain and interfaces (298 tests) |
-| 11-FORM-02 | IN_PROGRESS | issue #61 / branch `task/11-FORM-02` | | Form builder: implement vertical slice |
+| 11-FORM-02 | DONE | issue #61 / PR #62 (merge `18154a5`) | | Form builder: vertical slice (304 tests) |
+| 11-FORM-03 | IN_PROGRESS | issue #63 / branch `task/11-FORM-03` | | Form builder: verify + operationalize |
 | 02-DB-02 | TODO | | | |
 | 02-DB-03 | TODO | | | |
 | 03-SEC-01 | TODO | | | |
