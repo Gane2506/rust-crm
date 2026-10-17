@@ -4,7 +4,7 @@ Statuses: TODO / IN_PROGRESS / BLOCKED / DONE. Never mark DONE without linked co
 
 | Task ID | Status | Commit/PR | CI evidence | Notes |
 |---|---|---|---|---|
-| 01-FND-01 | IN_PROGRESS | branch `task/01-FND-01` (PR pending) | local: fmt/clippy(-D warnings)/test/release/wasm/audit/deny all green | Workspace scaffold + domain interfaces; awaiting CI + merge to mark DONE |
+| 01-FND-01 | DONE | commit `f324985` / PR #1 (merged) | CI run 39001237365: all 9 jobs green (fmt, clippy -D warnings, test, release build, wasm32 build, audit, deny, forbidden-source scan, unsafe report) | Workspace scaffold + domain interfaces shipped; local gates all green; security review clean (2 Lows fixed) |
 | 01-FND-02 | TODO | | | |
 | 01-FND-03 | TODO | | | |
 | 02-DB-01 | TODO | | | |
