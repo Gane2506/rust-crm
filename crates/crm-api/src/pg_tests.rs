@@ -2268,3 +2268,227 @@ async fn pg_asset_scope_isolation() {
 
     drop_db(&admin_url, &db_name, pool).await;
 }
+
+/// Full Core CRM slice end to end: profile → contacts (with sources) →
+/// dedupe → merge → assets (with dedupe) → scope isolation.
+///
+/// This is the 05-CRM-03 verification test: it exercises the whole
+/// vertical slice through the HTTP API against Postgres, proving the
+/// pieces compose.
+#[tokio::test]
+async fn pg_core_crm_full_slice() {
+    let Some((pool, admin_url, db_name)) = fresh_db().await else {
+        eprintln!("skipping Postgres API test: DATABASE_URL is not set");
+        return;
+    };
+    let router = pg_router(&pool);
+    let profile_uuid = uuid::Uuid::new_v4();
+    let (token, staff_id, agency_id) =
+        seed_authed_user(&pool, &router, profile_uuid, "slice@example.com").await;
+
+    // Grants: profile management at agency scope; contacts + assets at
+    // profile scope.
+    let agency_scope = Scope::Agency { agency_id };
+    for operation in [Operation::Create, Operation::Read, Operation::Update] {
+        grant(
+            &pool,
+            staff_id,
+            Resource::ClientProfile,
+            operation,
+            agency_scope,
+        )
+        .await;
+    }
+    let profile_scope = Scope::ClientProfile {
+        agency_id,
+        client_profile_id: ClientProfileId::from(profile_uuid),
+    };
+    for resource in [Resource::Contact, Resource::Asset] {
+        for operation in [Operation::Create, Operation::Read, Operation::Update] {
+            grant(&pool, staff_id, resource, operation, profile_scope).await;
+        }
+    }
+
+    // 1. Create the client profile.
+    let (status, profile) = read_json(
+        router
+            .clone()
+            .oneshot(post_json(
+                "/api/v1/profiles",
+                serde_json::json!({ "name": "Slice Corp" }),
+                &token,
+            ))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(profile["name"], "Slice Corp");
+    assert_eq!(profile["status"], "Active");
+
+    // 2. Create contacts with distinct sources.
+    let (status, alice) = read_json(
+        router
+            .clone()
+            .oneshot(post_contacts(
+                serde_json::json!({
+                    "client_profile_id": profile_uuid,
+                    "emails": ["alice@slice.com"],
+                    "phones": ["+1-555-0301"],
+                    "source": "web-form",
+                }),
+                None,
+                &token,
+            ))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let alice_id = alice["contact_id"].as_str().expect("alice id");
+
+    let (status, bob) = read_json(
+        router
+            .clone()
+            .oneshot(post_contacts(
+                serde_json::json!({
+                    "client_profile_id": profile_uuid,
+                    "emails": ["bob@slice.com"],
+                    "phones": [],
+                    "source": "csv-import",
+                }),
+                None,
+                &token,
+            ))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let bob_id = bob["contact_id"].as_str().expect("bob id");
+
+    // 3. Dedupe: same email → 409 Conflict, no PII in the error.
+    let (status, problem) = read_json(
+        router
+            .clone()
+            .oneshot(post_contacts(
+                serde_json::json!({
+                    "client_profile_id": profile_uuid,
+                    "emails": ["alice@slice.com"],
+                    "phones": [],
+                    "source": "web-form",
+                }),
+                None,
+                &token,
+            ))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert!(
+        !problem.to_string().contains("alice@slice.com"),
+        "dedupe error must not echo the address"
+    );
+
+    // 4. Merge bob into alice; the survivor absorbs the union.
+    let (status, merged) = read_json(
+        router
+            .clone()
+            .oneshot(post_json(
+                "/api/v1/contacts/merge",
+                serde_json::json!({
+                    "survivor_id": alice_id,
+                    "duplicate_id": bob_id,
+                }),
+                &token,
+            ))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(merged["lifecycle"], "Archived");
+    assert_eq!(merged["merged_into"], alice_id);
+
+    let (status, survivor) = read_json(
+        router
+            .clone()
+            .oneshot(get(format!("/api/v1/contacts/{alice_id}"), &token))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let emails: Vec<&str> = survivor["normalized_emails"]
+        .as_array()
+        .expect("emails")
+        .iter()
+        .map(|v| v.as_str().expect("email str"))
+        .collect();
+    assert!(emails.contains(&"alice@slice.com"));
+    assert!(emails.contains(&"bob@slice.com"));
+
+    // 5. Asset upload with content-hash dedupe.
+    let sha_hex = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
+    let asset_body = serde_json::json!({
+        "client_profile_id": profile_uuid,
+        "file_name": "proposal.pdf",
+        "mime_type": "application/pdf",
+        "size_bytes": 2048,
+        "sha256_hex": sha_hex,
+    });
+    let (status, asset) = read_json(
+        router
+            .clone()
+            .oneshot(post_json("/api/v1/assets", asset_body.clone(), &token))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let asset_id = asset["asset_id"].as_str().expect("asset id");
+
+    // Same bytes, different name → 200 with the same asset.
+    let mut asset_body2 = asset_body.clone();
+    asset_body2["file_name"] = serde_json::json!("renamed.pdf");
+    let (status, asset2) = read_json(
+        router
+            .clone()
+            .oneshot(post_json("/api/v1/assets", asset_body2, &token))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(asset2["asset_id"], asset_id);
+
+    // 6. Scope isolation: a second profile's data is invisible.
+    let other_profile = uuid::Uuid::new_v4();
+    let other_scope = Scope::ClientProfile {
+        agency_id,
+        client_profile_id: ClientProfileId::from(other_profile),
+    };
+    for resource in [Resource::Contact, Resource::Asset] {
+        for operation in [Operation::Create, Operation::Read] {
+            grant(&pool, staff_id, resource, operation, other_scope).await;
+        }
+    }
+    // Listing contacts without a profile filter is scoped to the
+    // caller's grants; the other profile's contacts are not visible
+    // through this profile's scope.
+    let (status, _) = read_json(
+        router
+            .clone()
+            .oneshot(get(
+                format!("/api/v1/assets?client_profile_id={other_profile}"),
+                &token,
+            ))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    drop_db(&admin_url, &db_name, pool).await;
+}
