@@ -16,13 +16,14 @@
 
 use std::future::Future;
 
+use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
-use crate::audit::{ActionResult, ActorKind, AuditEvent, PermissionDecision};
+use crate::audit::{ActionResult, ActorKind, AuditEvent, PermissionDecision, SecurityEvent};
 use crate::contact::{Contact, Lifecycle};
 use crate::contract::{Contract, ContractState};
 use crate::error::DomainError;
-use crate::ids::{ActorId, ClientProfileId, ContactId, ContractId};
+use crate::ids::{ActorId, AuditEventId, ClientProfileId, ContactId, ContractId};
 use crate::security::{Action, IssuedSession, Scope, Session, SessionToken};
 
 /// Who is performing an operation and under what scope.
@@ -66,6 +67,116 @@ pub trait AuditService {
         before_ref: Option<&'a str>,
         after_ref: Option<&'a str>,
     ) -> impl Future<Output = Result<AuditEvent, DomainError>> + Send + 'a;
+}
+
+/// Filter for querying the audit log.
+///
+/// Every field is optional; unset fields do not constrain the query.
+/// Implementations must enforce the caller's client-profile isolation:
+/// a query scoped to a client profile never returns another profile's
+/// events, and an agency-wide query requires an agency-scoped context.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AuditQuery {
+    /// Only events by this actor.
+    pub actor_id: Option<ActorId>,
+    /// Only events with this action name (see
+    /// [`SecurityEvent::action_name`]).
+    pub action: Option<String>,
+    /// Only events attributed to this client profile.
+    pub client_profile_id: Option<ClientProfileId>,
+    /// Only events at or after this time.
+    pub from: Option<DateTime<Utc>>,
+    /// Only events before this time.
+    pub to: Option<DateTime<Utc>>,
+    /// Cursor: only events after this event id, in chain order.
+    pub after: Option<AuditEventId>,
+    /// Maximum events to return. Implementations cap this at a sane
+    /// bound and document it.
+    pub limit: u64,
+}
+
+/// One page of audit events in chain (ascending time) order.
+///
+/// Chain order — not newest-first — so a reader can stream the log and
+/// verify each link as it goes. Display layers reverse for timelines.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuditPage {
+    /// The events in this page, chain order.
+    pub events: Vec<AuditEvent>,
+    /// Whether more events match beyond this page.
+    pub has_more: bool,
+}
+
+/// Outcome of verifying the audit chain from genesis.
+///
+/// The chain is global — one log, one chain — so verification always
+/// covers the whole log; scope filtering is a query concern, not a
+/// chain concern. (Per-scope sub-chains would need a different schema;
+/// the existing `audit_events` table chains globally.)
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChainVerification {
+    /// Whether every checked event links correctly from
+    /// [`crate::audit::GENESIS_CHAIN_HASH`].
+    pub valid: bool,
+    /// Number of events checked.
+    pub events_checked: u64,
+    /// Chain hash of the last checked event — the verified head.
+    /// `None` when the log is empty (a vacuous `valid` chain).
+    pub head: Option<[u8; 32]>,
+    /// The first event that failed verification, if any.
+    pub first_bad_event: Option<AuditEventId>,
+}
+
+/// Append-only security audit log with chain verification and query.
+///
+/// This is the domain port the 04-AUD-02 persistence task implements.
+/// It extends the [`AuditService`] contract with the security-event
+/// taxonomy ([`SecurityEvent`]), idempotent recording, chain
+/// verification and filtered queries.
+///
+/// ## Storage shape (for the 04-AUD-02 implementer)
+///
+/// One row per event with a column for every [`AuditEvent`] field;
+/// `chain_hash` (and the predecessor link) as `BYTEA`; the serialized
+/// [`SecurityEvent`] payload alongside (e.g. a `JSONB` column) for
+/// forensic detail; `idempotency_key UUID UNIQUE` so re-recording with
+/// the same key returns the original event instead of appending a
+/// duplicate. Suggested indexes to serve [`AuditQuery`]:
+/// `(client_profile_id, occurred_at)`, `(actor_id, occurred_at)` and
+/// `(action, occurred_at)`.
+pub trait AuditLogService {
+    /// Records one [`SecurityEvent`] as a chained [`AuditEvent`].
+    ///
+    /// The actor is stamped from `ctx` — never from the event payload —
+    /// so a caller cannot forge another identity into the log.
+    /// `idempotency_key` is a UUID minted per logical operation (render
+    /// `crm_core::IdempotencyKey::as_uuid()` at the boundary);
+    /// re-recording with the same key returns the original event.
+    /// Implementations assign `chain_hash` from the log head at append
+    /// time and surface [`DomainError::ConcurrencyConflict`] on head
+    /// races, like [`crate::repositories::AuditRepository::append`].
+    fn record<'a>(
+        &'a self,
+        ctx: &'a ActionContext,
+        event: &'a SecurityEvent,
+        idempotency_key: Uuid,
+    ) -> impl Future<Output = Result<AuditEvent, DomainError>> + Send + 'a;
+
+    /// Verifies the whole chain from genesis, returning a
+    /// [`ChainVerification`]. Any tampering — rewritten, missing or
+    /// reordered events — yields `valid: false` with `first_bad_event`
+    /// set.
+    fn verify_chain<'a>(
+        &'a self,
+    ) -> impl Future<Output = Result<ChainVerification, DomainError>> + Send + 'a;
+
+    /// Queries the log with `filter`, enforcing `ctx`'s client-profile
+    /// isolation. Events come back in chain (ascending time) order.
+    fn query<'a>(
+        &'a self,
+        ctx: &'a ActionContext,
+        filter: &'a AuditQuery,
+    ) -> impl Future<Output = Result<AuditPage, DomainError>> + Send + 'a;
 }
 
 /// Input for creating a contact.
@@ -207,4 +318,506 @@ pub trait AuthorizationService {
         scope: &'a Scope,
         correlation_id: Uuid,
     ) -> impl Future<Output = Result<ActionContext, DomainError>> + Send + 'a;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::audit::{
+        compute_chain_hash, verify_chain as verify_event_chain, GENESIS_CHAIN_HASH,
+    };
+    use crate::ids::StaffId;
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+
+    /// In-memory reference implementation of [`AuditLogService`].
+    ///
+    /// This is a test double, but it is written as a faithful
+    /// implementation of the trait contract — the tests below prove the
+    /// contract is implementable and precise, which is what the 04-AUD-02
+    /// persistence task will build against.
+    struct MemoryAuditLog {
+        events: Mutex<Vec<AuditEvent>>,
+        by_idempotency_key: Mutex<HashMap<Uuid, AuditEventId>>,
+    }
+
+    impl MemoryAuditLog {
+        fn new() -> Self {
+            Self {
+                events: Mutex::new(Vec::new()),
+                by_idempotency_key: Mutex::new(HashMap::new()),
+            }
+        }
+
+        /// Scope gate shared by `record` and `query`: a context scoped to
+        /// a client profile only ever sees that profile's events.
+        fn event_visible(ctx: &ActionContext, event: &AuditEvent) -> bool {
+            match (ctx.client_profile_id, event.client_profile_id) {
+                (Some(ctx_profile), Some(event_profile)) => ctx_profile == event_profile,
+                // Agency-scoped contexts see everything; a
+                // profile-scoped context never sees agency-wide events.
+                (None, _) => true,
+                (Some(_), None) => false,
+            }
+        }
+    }
+
+    impl AuditLogService for MemoryAuditLog {
+        async fn record<'a>(
+            &'a self,
+            ctx: &'a ActionContext,
+            event: &'a SecurityEvent,
+            idempotency_key: Uuid,
+        ) -> Result<AuditEvent, DomainError> {
+            // Idempotent replay: the same key returns the original event.
+            if let Some(event_id) = self
+                .by_idempotency_key
+                .lock()
+                .expect("test lock")
+                .get(&idempotency_key)
+            {
+                let events = self.events.lock().expect("test lock");
+                return events
+                    .iter()
+                    .find(|e| e.event_id == *event_id)
+                    .cloned()
+                    .ok_or_else(|| {
+                        DomainError::Validation("idempotency index corrupt".to_string())
+                    });
+            }
+            // The actor is stamped from the context — never the payload.
+            let mut envelope = event.to_audit_event(
+                ctx.actor_kind,
+                ctx.actor_id,
+                ctx.client_profile_id,
+                ctx.correlation_id,
+                Utc::now(),
+            );
+            let mut events = self.events.lock().expect("test lock");
+            let prev = events
+                .last()
+                .map(|e| e.chain_hash)
+                .unwrap_or(GENESIS_CHAIN_HASH);
+            envelope.chain_hash = compute_chain_hash(&prev, &envelope.canonical_bytes());
+            self.by_idempotency_key
+                .lock()
+                .expect("test lock")
+                .insert(idempotency_key, envelope.event_id);
+            events.push(envelope.clone());
+            Ok(envelope)
+        }
+
+        async fn verify_chain(&self) -> Result<ChainVerification, DomainError> {
+            let events = self.events.lock().expect("test lock");
+            let mut prev = GENESIS_CHAIN_HASH;
+            for event in events.iter() {
+                if event.chain_hash != compute_chain_hash(&prev, &event.canonical_bytes()) {
+                    return Ok(ChainVerification {
+                        valid: false,
+                        events_checked: events.len() as u64,
+                        head: events.last().map(|e| e.chain_hash),
+                        first_bad_event: Some(event.event_id),
+                    });
+                }
+                prev = event.chain_hash;
+            }
+            Ok(ChainVerification {
+                valid: true,
+                events_checked: events.len() as u64,
+                head: events.last().map(|e| e.chain_hash),
+                first_bad_event: None,
+            })
+        }
+
+        async fn query<'a>(
+            &'a self,
+            ctx: &'a ActionContext,
+            filter: &'a AuditQuery,
+        ) -> Result<AuditPage, DomainError> {
+            let events = self.events.lock().expect("test lock");
+            let mut matched: Vec<AuditEvent> = events
+                .iter()
+                .filter(|e| Self::event_visible(ctx, e))
+                .filter(|e| filter.actor_id.map(|a| e.actor_id == a).unwrap_or(true))
+                .filter(|e| {
+                    filter
+                        .action
+                        .as_deref()
+                        .map(|a| e.action == a)
+                        .unwrap_or(true)
+                })
+                .filter(|e| {
+                    filter
+                        .client_profile_id
+                        .map(|p| e.client_profile_id == Some(p))
+                        .unwrap_or(true)
+                })
+                .filter(|e| {
+                    filter
+                        .from
+                        .map(|from| e.occurred_at >= from)
+                        .unwrap_or(true)
+                })
+                .filter(|e| filter.to.map(|to| e.occurred_at < to).unwrap_or(true))
+                .cloned()
+                .collect();
+            // Cursor: exclusive, in chain order.
+            if let Some(after) = filter.after {
+                if let Some(pos) = matched.iter().position(|e| e.event_id == after) {
+                    matched = matched.split_off(pos + 1);
+                }
+            }
+            let limit = filter.limit.max(1) as usize;
+            let has_more = matched.len() > limit;
+            matched.truncate(limit);
+            Ok(AuditPage {
+                events: matched,
+                has_more,
+            })
+        }
+    }
+
+    fn test_ctx(actor: ActorId, profile: Option<ClientProfileId>) -> ActionContext {
+        ActionContext {
+            actor_kind: ActorKind::Human,
+            actor_id: actor,
+            client_profile_id: profile,
+            correlation_id: Uuid::from_u128(500),
+        }
+    }
+
+    #[tokio::test]
+    async fn record_assigns_chain_link_from_head() {
+        let log = MemoryAuditLog::new();
+        let actor = ActorId::from(Uuid::from_u128(1));
+        let ctx = test_ctx(actor, None);
+        let first = log
+            .record(
+                &ctx,
+                &SecurityEvent::LoginSucceeded {
+                    staff_id: StaffId::from(Uuid::from_u128(2)),
+                },
+                Uuid::from_u128(11),
+            )
+            .await
+            .expect("record");
+        let second = log
+            .record(
+                &ctx,
+                &SecurityEvent::Logout {
+                    staff_id: StaffId::from(Uuid::from_u128(2)),
+                    session_id: crate::ids::SessionId::from(Uuid::from_u128(3)),
+                },
+                Uuid::from_u128(12),
+            )
+            .await
+            .expect("record");
+        // The second event links from the first.
+        assert_eq!(
+            second.chain_hash,
+            compute_chain_hash(&first.chain_hash, &second.canonical_bytes())
+        );
+        // ...and the whole log verifies from genesis.
+        let verification = log.verify_chain().await.expect("verify");
+        assert!(verification.valid);
+        assert_eq!(verification.events_checked, 2);
+        assert_eq!(verification.head, Some(second.chain_hash));
+        assert_eq!(verification.first_bad_event, None);
+    }
+
+    #[tokio::test]
+    async fn record_is_idempotent_on_key_reuse() {
+        let log = MemoryAuditLog::new();
+        let ctx = test_ctx(ActorId::from(Uuid::from_u128(1)), None);
+        let event = SecurityEvent::StaffSuspended {
+            staff_id: StaffId::from(Uuid::from_u128(2)),
+        };
+        let key = Uuid::from_u128(21);
+        let first = log.record(&ctx, &event, key).await.expect("record");
+        // Same key, even with a different event: the original comes back,
+        // and nothing is appended twice.
+        let replay = log
+            .record(
+                &ctx,
+                &SecurityEvent::StaffReactivated {
+                    staff_id: StaffId::from(Uuid::from_u128(2)),
+                },
+                key,
+            )
+            .await
+            .expect("replay");
+        assert_eq!(replay.event_id, first.event_id);
+        assert_eq!(replay.action, "staff.suspended");
+        let page = log
+            .query(
+                &ctx,
+                &AuditQuery {
+                    limit: 10,
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect("query");
+        assert_eq!(page.events.len(), 1);
+        assert!(!page.has_more);
+    }
+
+    #[tokio::test]
+    async fn record_stamps_actor_from_context_not_payload() {
+        // The event payload names a *subject* (the staff account being
+        // suspended); the audit actor must be the caller from the
+        // context, so a compromised caller cannot forge another
+        // identity into the log.
+        let log = MemoryAuditLog::new();
+        let caller = ActorId::from(Uuid::from_u128(7));
+        let ctx = test_ctx(caller, None);
+        let recorded = log
+            .record(
+                &ctx,
+                &SecurityEvent::StaffSuspended {
+                    staff_id: StaffId::from(Uuid::from_u128(2)),
+                },
+                Uuid::from_u128(31),
+            )
+            .await
+            .expect("record");
+        assert_eq!(recorded.actor_id, caller);
+        assert_eq!(recorded.actor_kind, ActorKind::Human);
+        // ...while the subject stays in the payload target.
+        assert_eq!(recorded.target_kind, "staff");
+    }
+
+    #[tokio::test]
+    async fn query_filters_by_actor_action_and_time() {
+        let log = MemoryAuditLog::new();
+        let alice = ActorId::from(Uuid::from_u128(1));
+        let bob = ActorId::from(Uuid::from_u128(2));
+        let before = Utc::now();
+        log.record(
+            &test_ctx(alice, None),
+            &SecurityEvent::LoginSucceeded {
+                staff_id: StaffId::from(Uuid::from_u128(10)),
+            },
+            Uuid::from_u128(41),
+        )
+        .await
+        .expect("record");
+        let cutoff = Utc::now();
+        log.record(
+            &test_ctx(bob, None),
+            &SecurityEvent::login_failed("bob@example.com"),
+            Uuid::from_u128(42),
+        )
+        .await
+        .expect("record");
+
+        let ctx = test_ctx(alice, None);
+        let by_actor = log
+            .query(
+                &ctx,
+                &AuditQuery {
+                    actor_id: Some(bob),
+                    limit: 10,
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect("query");
+        assert_eq!(by_actor.events.len(), 1);
+        assert_eq!(by_actor.events[0].action, "auth.login_failed");
+
+        let by_action = log
+            .query(
+                &ctx,
+                &AuditQuery {
+                    action: Some("auth.login".to_string()),
+                    limit: 10,
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect("query");
+        assert_eq!(by_action.events.len(), 1);
+        assert_eq!(by_action.events[0].actor_id, alice);
+
+        let by_time = log
+            .query(
+                &ctx,
+                &AuditQuery {
+                    from: Some(cutoff),
+                    limit: 10,
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect("query");
+        assert_eq!(by_time.events.len(), 1);
+        assert_eq!(by_time.events[0].action, "auth.login_failed");
+
+        // `to` is exclusive: everything before the cutoff is just Alice.
+        let before_cutoff = log
+            .query(
+                &ctx,
+                &AuditQuery {
+                    from: Some(before),
+                    to: Some(cutoff),
+                    limit: 10,
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect("query");
+        assert_eq!(before_cutoff.events.len(), 1);
+        assert_eq!(before_cutoff.events[0].action, "auth.login");
+    }
+
+    #[tokio::test]
+    async fn query_enforces_client_profile_isolation() {
+        let log = MemoryAuditLog::new();
+        let profile_a = ClientProfileId::from(Uuid::from_u128(61));
+        let profile_b = ClientProfileId::from(Uuid::from_u128(62));
+        let actor = ActorId::from(Uuid::from_u128(1));
+        log.record(
+            &test_ctx(actor, Some(profile_a)),
+            &SecurityEvent::GrantAssigned {
+                staff_id: StaffId::from(Uuid::from_u128(2)),
+                grant_id: crate::ids::GrantId::from(Uuid::from_u128(3)),
+                action: "contact:read".to_string(),
+                scope: "profile".to_string(),
+            },
+            Uuid::from_u128(51),
+        )
+        .await
+        .expect("record");
+        log.record(
+            &test_ctx(actor, Some(profile_b)),
+            &SecurityEvent::GrantRevoked {
+                staff_id: StaffId::from(Uuid::from_u128(2)),
+                grant_id: crate::ids::GrantId::from(Uuid::from_u128(3)),
+            },
+            Uuid::from_u128(52),
+        )
+        .await
+        .expect("record");
+
+        // A profile-A context sees only profile A's events.
+        let page = log
+            .query(
+                &test_ctx(actor, Some(profile_a)),
+                &AuditQuery {
+                    limit: 10,
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect("query");
+        assert_eq!(page.events.len(), 1);
+        assert_eq!(page.events[0].action, "rbac.grant_assigned");
+
+        // An agency-wide context sees both.
+        let page = log
+            .query(
+                &test_ctx(actor, None),
+                &AuditQuery {
+                    limit: 10,
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect("query");
+        assert_eq!(page.events.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn query_paginates_in_chain_order() {
+        let log = MemoryAuditLog::new();
+        let ctx = test_ctx(ActorId::from(Uuid::from_u128(1)), None);
+        for i in 0..5u128 {
+            log.record(
+                &ctx,
+                &SecurityEvent::PasswordEnrolled {
+                    staff_id: StaffId::from(Uuid::from_u128(100 + i)),
+                },
+                Uuid::from_u128(70 + i),
+            )
+            .await
+            .expect("record");
+        }
+        let first_page = log
+            .query(
+                &ctx,
+                &AuditQuery {
+                    limit: 2,
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect("query");
+        assert_eq!(first_page.events.len(), 2);
+        assert!(first_page.has_more);
+        // Chain order: oldest first.
+        assert!(verify_event_chain(&first_page.events));
+
+        let cursor = first_page.events[1].event_id;
+        let second_page = log
+            .query(
+                &ctx,
+                &AuditQuery {
+                    after: Some(cursor),
+                    limit: 2,
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect("query");
+        assert_eq!(second_page.events.len(), 2);
+        assert!(second_page.has_more);
+        assert_ne!(
+            second_page.events[0].event_id,
+            first_page.events[0].event_id
+        );
+
+        let last_page = log
+            .query(
+                &ctx,
+                &AuditQuery {
+                    after: Some(second_page.events[1].event_id),
+                    limit: 2,
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect("query");
+        assert_eq!(last_page.events.len(), 1);
+        assert!(!last_page.has_more);
+    }
+
+    #[tokio::test]
+    async fn verify_chain_reports_the_first_bad_event() {
+        // Tampering is detected through the service port, not just the
+        // free function: the double's own store is mutated behind its
+        // back to simulate a compromised row.
+        let log = MemoryAuditLog::new();
+        let ctx = test_ctx(ActorId::from(Uuid::from_u128(1)), None);
+        for i in 0..3u128 {
+            log.record(
+                &ctx,
+                &SecurityEvent::LoginSucceeded {
+                    staff_id: StaffId::from(Uuid::from_u128(200 + i)),
+                },
+                Uuid::from_u128(80 + i),
+            )
+            .await
+            .expect("record");
+        }
+        let bad_id = {
+            let mut events = log.events.lock().expect("test lock");
+            events[1].action = "auth.login_failed".to_string();
+            events[1].event_id
+        };
+        let verification = log.verify_chain().await.expect("verify");
+        assert!(!verification.valid);
+        assert_eq!(verification.first_bad_event, Some(bad_id));
+        assert_eq!(verification.events_checked, 3);
+    }
 }
