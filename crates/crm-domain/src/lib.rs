@@ -51,6 +51,9 @@ pub mod email;
 pub mod error;
 /// Typed UUID newtypes used as stable entity identifiers.
 pub mod ids;
+/// Jev agent domain: runs, model adapters, tools, approval gates and
+/// handoffs (task 09-JEV-01).
+pub mod jev;
 /// Domain-level observability hooks: tracing, health and anomaly signals.
 pub mod observability;
 /// Client profile aggregate: agency-managed workspace lifecycle.
@@ -76,6 +79,10 @@ pub use email::{
     ThreadStatus,
 };
 pub use error::DomainError;
+pub use jev::{
+    AgentRun, AgentRunStatus, AgentTool, ApprovalDecision, ApprovalGate, FallbackChain, Handoff,
+    ModelAdapter, ModelCompletion, ToolCall, ToolCallRequest, ToolCallStatus,
+};
 pub use profile::{ClientProfile, ProfileStatus};
 pub use security::{
     Action, Delegation, Grant, Operation, Resource, Role, Scope, Session, SessionToken, StaffUser,

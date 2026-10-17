@@ -152,6 +152,22 @@ define_id!(
     /// Identifies one recorded conversion.
     ConversionId
 );
+define_id!(
+    /// Identifies one agent run (task 09-JEV-01).
+    AgentRunId
+);
+define_id!(
+    /// Identifies one agent tool definition (task 09-JEV-01).
+    AgentToolId
+);
+define_id!(
+    /// Identifies one tool invocation inside an agent run (task 09-JEV-01).
+    ToolCallId
+);
+define_id!(
+    /// Identifies one agent-to-agent context transfer (task 09-JEV-01).
+    HandoffId
+);
 
 impl From<StaffId> for ActorId {
     /// Renders a staff member as the actor of an audit event.
@@ -206,6 +222,10 @@ mod tests {
         assert_id_round_trip(ProspectPoolId::new());
         assert_id_round_trip(OptOutId::new());
         assert_id_round_trip(ConversionId::new());
+        assert_id_round_trip(AgentRunId::new());
+        assert_id_round_trip(AgentToolId::new());
+        assert_id_round_trip(ToolCallId::new());
+        assert_id_round_trip(HandoffId::new());
     }
 
     #[test]

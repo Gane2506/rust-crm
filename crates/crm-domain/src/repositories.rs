@@ -620,3 +620,75 @@ pub trait EmailAttachmentRepository {
         message_id: EmailMessageId,
     ) -> impl Future<Output = Result<Vec<EmailAttachment>, DomainError>> + Send + 'a;
 }
+
+/// Persistence port for [`AgentRun`](crate::jev::AgentRun) records.
+///
+/// Intended storage shape (task 09-JEV-02): `agent_runs` table keyed by
+/// `run_id`, with `client_profile_id`, `agent_kind`, `status`,
+/// `adapter_name`, `input`/`output` JSONB and timestamps.
+pub trait AgentRunRepository {
+    /// Persists a new agent run.
+    fn create<'a>(
+        &'a self,
+        run: crate::jev::AgentRun,
+    ) -> impl Future<Output = Result<crate::jev::AgentRun, DomainError>> + Send + 'a;
+
+    /// Fetches a run by id.
+    fn get<'a>(
+        &'a self,
+        run_id: crate::ids::AgentRunId,
+    ) -> impl Future<Output = Result<crate::jev::AgentRun, DomainError>> + Send + 'a;
+
+    /// Persists run changes (status, output, adapter).
+    fn update<'a>(
+        &'a self,
+        run: crate::jev::AgentRun,
+    ) -> impl Future<Output = Result<crate::jev::AgentRun, DomainError>> + Send + 'a;
+
+    /// Lists runs for one client profile, newest first, capped at `limit`.
+    fn list_by_profile<'a>(
+        &'a self,
+        client_profile_id: crate::ids::ClientProfileId,
+        limit: u64,
+    ) -> impl Future<Output = Result<Vec<crate::jev::AgentRun>, DomainError>> + Send + 'a;
+
+    /// Lists runs in one status for one client profile, capped at `limit`.
+    fn list_by_status<'a>(
+        &'a self,
+        client_profile_id: crate::ids::ClientProfileId,
+        status: crate::jev::AgentRunStatus,
+        limit: u64,
+    ) -> impl Future<Output = Result<Vec<crate::jev::AgentRun>, DomainError>> + Send + 'a;
+}
+
+/// Persistence port for [`ToolCall`](crate::jev::ToolCall) records.
+///
+/// Intended storage shape (task 09-JEV-02): `tool_calls` table keyed by
+/// `call_id`, with `run_id` foreign key, `tool_name`, `input`/`output`
+/// JSONB, `status` and timestamps.
+pub trait ToolCallRepository {
+    /// Persists a new tool call.
+    fn create<'a>(
+        &'a self,
+        call: crate::jev::ToolCall,
+    ) -> impl Future<Output = Result<crate::jev::ToolCall, DomainError>> + Send + 'a;
+
+    /// Fetches a tool call by id.
+    fn get<'a>(
+        &'a self,
+        call_id: crate::ids::ToolCallId,
+    ) -> impl Future<Output = Result<crate::jev::ToolCall, DomainError>> + Send + 'a;
+
+    /// Persists tool-call changes (status, output).
+    fn update<'a>(
+        &'a self,
+        call: crate::jev::ToolCall,
+    ) -> impl Future<Output = Result<crate::jev::ToolCall, DomainError>> + Send + 'a;
+
+    /// Lists tool calls for one run, oldest first, capped at `limit`.
+    fn list_by_run<'a>(
+        &'a self,
+        run_id: crate::ids::AgentRunId,
+        limit: u64,
+    ) -> impl Future<Output = Result<Vec<crate::jev::ToolCall>, DomainError>> + Send + 'a;
+}
