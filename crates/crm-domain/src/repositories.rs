@@ -719,3 +719,132 @@ pub trait HandoffRepository {
         limit: u64,
     ) -> impl Future<Output = Result<Vec<crate::jev::Handoff>, DomainError>> + Send + 'a;
 }
+
+/// Persistence port for [`Workflow`](crate::workflow::Workflow) records.
+///
+/// Intended storage shape (task 10-WORK-02): `workflows` table keyed by
+/// `workflow_id`, with `client_profile_id`, `name`, `status` and
+/// timestamps.
+pub trait WorkflowRepository {
+    /// Persists a new workflow.
+    fn create<'a>(
+        &'a self,
+        workflow: crate::workflow::Workflow,
+    ) -> impl Future<Output = Result<crate::workflow::Workflow, DomainError>> + Send + 'a;
+
+    /// Fetches a workflow by id.
+    fn get<'a>(
+        &'a self,
+        workflow_id: crate::ids::WorkflowId,
+    ) -> impl Future<Output = Result<crate::workflow::Workflow, DomainError>> + Send + 'a;
+
+    /// Persists workflow changes (name, status).
+    fn update<'a>(
+        &'a self,
+        workflow: crate::workflow::Workflow,
+    ) -> impl Future<Output = Result<crate::workflow::Workflow, DomainError>> + Send + 'a;
+
+    /// Lists workflows for one client profile, newest first, capped at
+    /// `limit`.
+    fn list_by_profile<'a>(
+        &'a self,
+        client_profile_id: crate::ids::ClientProfileId,
+        limit: u64,
+    ) -> impl Future<Output = Result<Vec<crate::workflow::Workflow>, DomainError>> + Send + 'a;
+}
+
+/// Persistence port for [`WorkflowNode`](crate::workflow::WorkflowNode)
+/// records.
+///
+/// Intended storage shape (task 10-WORK-02): `workflow_nodes` table
+/// keyed by `node_id`, with `workflow_id` foreign key, `node_type`,
+/// `config` JSONB and canvas `position`.
+pub trait WorkflowNodeRepository {
+    /// Persists a new node.
+    fn create<'a>(
+        &'a self,
+        node: crate::workflow::WorkflowNode,
+    ) -> impl Future<Output = Result<crate::workflow::WorkflowNode, DomainError>> + Send + 'a;
+
+    /// Fetches a node by id.
+    fn get<'a>(
+        &'a self,
+        node_id: crate::ids::WorkflowNodeId,
+    ) -> impl Future<Output = Result<crate::workflow::WorkflowNode, DomainError>> + Send + 'a;
+
+    /// Persists node changes (config, position).
+    fn update<'a>(
+        &'a self,
+        node: crate::workflow::WorkflowNode,
+    ) -> impl Future<Output = Result<crate::workflow::WorkflowNode, DomainError>> + Send + 'a;
+
+    /// Deletes a node. The service removes dangling edges first.
+    fn delete<'a>(
+        &'a self,
+        node_id: crate::ids::WorkflowNodeId,
+    ) -> impl Future<Output = Result<(), DomainError>> + Send + 'a;
+
+    /// Lists nodes for one workflow, capped at `limit`.
+    fn list_by_workflow<'a>(
+        &'a self,
+        workflow_id: crate::ids::WorkflowId,
+        limit: u64,
+    ) -> impl Future<Output = Result<Vec<crate::workflow::WorkflowNode>, DomainError>> + Send + 'a;
+}
+
+/// Persistence port for [`WorkflowEdge`](crate::workflow::WorkflowEdge)
+/// records.
+///
+/// Intended storage shape (task 10-WORK-02): `workflow_edges` table
+/// keyed by `edge_id`, with `workflow_id` foreign key, `from_node` /
+/// `to_node` node references and an optional `label`. Edges are cheap
+/// to delete and recreate, so there is deliberately no update method.
+pub trait WorkflowEdgeRepository {
+    /// Persists a new edge.
+    fn create<'a>(
+        &'a self,
+        edge: crate::workflow::WorkflowEdge,
+    ) -> impl Future<Output = Result<crate::workflow::WorkflowEdge, DomainError>> + Send + 'a;
+
+    /// Deletes an edge.
+    fn delete<'a>(
+        &'a self,
+        edge_id: crate::ids::WorkflowEdgeId,
+    ) -> impl Future<Output = Result<(), DomainError>> + Send + 'a;
+
+    /// Lists edges for one workflow, capped at `limit`.
+    fn list_by_workflow<'a>(
+        &'a self,
+        workflow_id: crate::ids::WorkflowId,
+        limit: u64,
+    ) -> impl Future<Output = Result<Vec<crate::workflow::WorkflowEdge>, DomainError>> + Send + 'a;
+}
+
+/// Persistence port for [`WorkflowVersion`](crate::workflow::WorkflowVersion)
+/// records.
+///
+/// Intended storage shape (task 10-WORK-02): `workflow_versions`
+/// table keyed by `version_id`, with `workflow_id` foreign key,
+/// `version_number`, `snapshot` JSONB and `created_at`. Append-only:
+/// there is deliberately no update or delete method.
+pub trait WorkflowVersionRepository {
+    /// Persists a new version snapshot.
+    fn create<'a>(
+        &'a self,
+        version: crate::workflow::WorkflowVersion,
+    ) -> impl Future<Output = Result<crate::workflow::WorkflowVersion, DomainError>> + Send + 'a;
+
+    /// Fetches a version by id.
+    fn get<'a>(
+        &'a self,
+        version_id: crate::ids::WorkflowVersionId,
+    ) -> impl Future<Output = Result<crate::workflow::WorkflowVersion, DomainError>> + Send + 'a;
+
+    /// Lists versions for one workflow, newest first, capped at
+    /// `limit`.
+    fn list_by_workflow<'a>(
+        &'a self,
+        workflow_id: crate::ids::WorkflowId,
+        limit: u64,
+    ) -> impl Future<Output = Result<Vec<crate::workflow::WorkflowVersion>, DomainError>> + Send + 'a;
+}

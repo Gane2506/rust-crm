@@ -64,6 +64,9 @@ pub mod repositories;
 pub mod security;
 /// Service traits (domain operations with authorization and audit).
 pub mod services;
+/// Workflow builder domain: typed visual workflows, triggers,
+/// versioning and the pure simulator (task 10-WORK-01).
+pub mod workflow;
 
 pub use agent::AgentAction;
 pub use asset::{Asset, AssetKind, AssetStatus};
@@ -86,4 +89,8 @@ pub use jev::{
 pub use profile::{ClientProfile, ProfileStatus};
 pub use security::{
     Action, Delegation, Grant, Operation, Resource, Role, Scope, Session, SessionToken, StaffUser,
+};
+pub use workflow::{
+    SimulationStep, SimulationStepStatus, SimulationTrace, Simulator, Trigger, TriggerType,
+    Workflow, WorkflowEdge, WorkflowNode, WorkflowNodeType, WorkflowStatus, WorkflowVersion,
 };

@@ -1421,3 +1421,140 @@ mod tests {
         assert_eq!(verification.events_checked, 3);
     }
 }
+
+/// Input for [`WorkflowService::create_workflow`]: a new automation workflow.
+#[derive(Debug, Clone)]
+pub struct NewWorkflow {
+    /// Owning client profile (tenant boundary).
+    pub client_profile_id: ClientProfileId,
+    /// Human-readable workflow name (validated non-blank).
+    pub name: String,
+}
+
+/// Input for [`WorkflowService::add_node`]: a new typed canvas node.
+#[derive(Debug, Clone)]
+pub struct NewWorkflowNode {
+    /// The workflow the node belongs to.
+    pub workflow_id: crate::ids::WorkflowId,
+    /// What kind of step this is.
+    pub node_type: crate::workflow::WorkflowNodeType,
+    /// Node configuration (opaque JSON, never null).
+    pub config: serde_json::Value,
+    /// Canvas position in pixels: `(x, y)`.
+    pub position: (i32, i32),
+}
+
+/// Input for [`WorkflowService::add_edge`]: a new typed connection.
+#[derive(Debug, Clone)]
+pub struct NewWorkflowEdge {
+    /// The workflow the edge belongs to.
+    pub workflow_id: crate::ids::WorkflowId,
+    /// The node the edge leaves.
+    pub from_node: crate::ids::WorkflowNodeId,
+    /// The node the edge enters.
+    pub to_node: crate::ids::WorkflowNodeId,
+    /// Optional label (e.g. the condition branch).
+    pub label: Option<String>,
+}
+
+/// Input for [`WorkflowService::set_trigger`]: the workflow's trigger.
+///
+/// Replaces any existing trigger: exactly one trigger per workflow.
+#[derive(Debug, Clone)]
+pub struct NewTrigger {
+    /// The workflow the trigger starts.
+    pub workflow_id: crate::ids::WorkflowId,
+    /// How runs are started.
+    pub trigger_type: crate::workflow::TriggerType,
+    /// Trigger configuration (opaque JSON, never null).
+    pub config: serde_json::Value,
+}
+
+/// Authorized operations on automation workflows.
+///
+/// All mutations authorize against `Resource::Workflow` (profile-scoped;
+/// the variant lands in task 10-WORK-02 — see the
+/// [`crate::workflow`] module docs) and record an [`AuditEvent`] with
+/// the pinned action name documented on each method.
+pub trait WorkflowService {
+    /// Creates a workflow via [`Workflow::new`](crate::workflow::Workflow::new).
+    /// Records a `"workflow.created"` audit event.
+    fn create_workflow<'a>(
+        &'a self,
+        input: NewWorkflow,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<crate::workflow::Workflow, DomainError>> + Send + 'a;
+
+    /// Publishes a draft workflow via
+    /// [`Workflow::publish`](crate::workflow::Workflow::publish) and
+    /// freezes a [`WorkflowVersion`](crate::workflow::WorkflowVersion)
+    /// snapshot. Records a `"workflow.published"` audit event.
+    fn publish_workflow<'a>(
+        &'a self,
+        workflow_id: crate::ids::WorkflowId,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<crate::workflow::Workflow, DomainError>> + Send + 'a;
+
+    /// Archives a workflow via
+    /// [`Workflow::archive`](crate::workflow::Workflow::archive).
+    /// Idempotent. Records a `"workflow.archived"` audit event.
+    fn archive_workflow<'a>(
+        &'a self,
+        workflow_id: crate::ids::WorkflowId,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<crate::workflow::Workflow, DomainError>> + Send + 'a;
+
+    /// Adds a typed node via
+    /// [`WorkflowNode::new`](crate::workflow::WorkflowNode::new).
+    /// Records a `"workflow.node_added"` audit event.
+    fn add_node<'a>(
+        &'a self,
+        input: NewWorkflowNode,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<crate::workflow::WorkflowNode, DomainError>> + Send + 'a;
+
+    /// Removes a node and its dangling edges. Records a
+    /// `"workflow.node_removed"` audit event.
+    fn remove_node<'a>(
+        &'a self,
+        node_id: crate::ids::WorkflowNodeId,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<(), DomainError>> + Send + 'a;
+
+    /// Adds a typed edge via
+    /// [`WorkflowEdge::new`](crate::workflow::WorkflowEdge::new);
+    /// both endpoints must exist in the workflow. Records a
+    /// `"workflow.edge_added"` audit event.
+    fn add_edge<'a>(
+        &'a self,
+        input: NewWorkflowEdge,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<crate::workflow::WorkflowEdge, DomainError>> + Send + 'a;
+
+    /// Removes an edge. Records a `"workflow.edge_removed"` audit event.
+    fn remove_edge<'a>(
+        &'a self,
+        edge_id: crate::ids::WorkflowEdgeId,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<(), DomainError>> + Send + 'a;
+
+    /// Sets (or replaces) the workflow's trigger via
+    /// [`Trigger::new`](crate::workflow::Trigger::new). Records a
+    /// `"workflow.trigger_set"` audit event.
+    fn set_trigger<'a>(
+        &'a self,
+        input: NewTrigger,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<crate::workflow::Trigger, DomainError>> + Send + 'a;
+
+    /// Dry-runs the workflow with
+    /// [`Simulator::simulate`](crate::workflow::Simulator::simulate).
+    /// Read-only: never executes actions, never mutates state. Records
+    /// a `"workflow.simulated"` audit event.
+    fn simulate<'a>(
+        &'a self,
+        workflow_id: crate::ids::WorkflowId,
+        input: serde_json::Value,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<crate::workflow::SimulationTrace, DomainError>> + Send + 'a;
+}
