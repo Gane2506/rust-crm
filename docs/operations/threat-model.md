@@ -157,6 +157,57 @@ adds an inbound webhook and PII-bearing storage to the boundary:
   webhook calls with a valid secret is bounded only by the
   database. Rate limiting the webhook is future work.
 
+## Campaigns surface
+
+The campaigns vertical slice (tasks 08-CAMP-01 through 08-CAMP-03)
+adds bulk sending and PII-bearing campaign content to the
+boundary:
+
+- **Bulk-send abuse.** `POST /api/v1/campaigns/{id}/launch`
+  sends one email per pool member, inline in the request. A
+  compromised staff account holding `campaign/update` on a
+  profile can spam that profile's entire prospect pool — the
+  per-launch cost is bounded only by pool size. Mitigations in
+  place: profile-scoped grants (a compromised account can only
+  reach profiles it holds grants on), the `campaign.launched` /
+  `campaign.bulk_send_completed` audit trail with sent/skipped
+  counts, and opt-out enforcement (opted-out contacts are never
+  mailed, even by an attacker). Missing: per-campaign or
+  per-profile send rate limits, pool-size caps, and anomaly
+  detection on send volume (a `campaign.bulk_send_completed`
+  with an unusual `sent=` count is the signal to watch today).
+  Do not expose launch to broader roles without these.
+- **Opt-out compliance.** Sending to an opted-out contact is a
+  legal risk (CAN-SPAM / CASL / GDPR territory depending on the
+  client's jurisdiction). Enforcement is a per-send
+  `is_opted_out` check inside `launch()` — no caching, no
+  bypass path. The check is only as good as its coverage: any
+  future send path (scheduling daemon, call execution, a new
+  bulk endpoint) must perform the same check; grep for
+  `is_opted_out` when adding one. Opt-out rows are immutable
+  (no update/delete API exists), so the suppression list can
+  only grow — an attacker cannot silently un-suppress a
+  contact through the API.
+- **PII in campaign content.** Campaign names, templates, pool
+  membership, and conversion values are stored plaintext and
+  are PII-adjacent. Access is gated by profile-scoped
+  `Campaign` grants and lifecycle changes are audited — but
+  anyone with database read access sees everything, same as
+  contacts and email. No field-level encryption is planned.
+- **No unsubscribe link.** Outbound campaign mail carries no
+  `List-Unsubscribe` header or one-click unsubscribe link;
+  opt-outs are recorded through the API only. Until this lands,
+  every campaign's template should include a manual
+  reply-to-unsubscribe instruction, and operators must record
+  those replies as opt-outs promptly. This is a compliance gap,
+  not just a UX one.
+- **Synchronous launch.** Bulk send executes inline in the HTTP
+  request, holding the connection open for the whole pool. A
+  very large pool is a self-inflicted slowloris on the
+  operator's own connection — and, with the stub provider, on
+  nothing else. With real providers, add timeouts and move
+  execution to a background worker before raising pool sizes.
+
 ## Frontend (SPA) security posture
 
 The Leptos frontend (`crates/crm-web`, task 06-UI) is a thin client:
