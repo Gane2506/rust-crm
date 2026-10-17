@@ -231,7 +231,7 @@ and merge happens on green CI plus review. Follow along via
 | Persistence foundation | 02-DB-01…03 | ✅ Done ([#5](https://github.com/Gane2506/rust-crm/issues/5)/[#6](https://github.com/Gane2506/rust-crm/pull/6), [#7](https://github.com/Gane2506/rust-crm/issues/7)/[#8](https://github.com/Gane2506/rust-crm/pull/8), [#9](https://github.com/Gane2506/rust-crm/issues/9)/[#10](https://github.com/Gane2506/rust-crm/pull/10)) |
 | Identity and RBAC | 03-SEC-01…03 | ✅ done ([#11](https://github.com/Gane2506/rust-crm/issues/11), [#12](https://github.com/Gane2506/rust-crm/pull/12); [#13](https://github.com/Gane2506/rust-crm/issues/13), [#14](https://github.com/Gane2506/rust-crm/pull/14); [#15](https://github.com/Gane2506/rust-crm/issues/15), [#16](https://github.com/Gane2506/rust-crm/pull/16)) |
 | Audit and observability | 04-AUD-01…03 | ✅ done ([#21](https://github.com/Gane2506/rust-crm/issues/21), [#22](https://github.com/Gane2506/rust-crm/pull/22)) |
-| Core CRM | 05-CRM-01… | ✅ 05-CRM-01 done ([#23](https://github.com/Gane2506/rust-crm/issues/23), [#24](https://github.com/Gane2506/rust-crm/pull/24)); 🔨 05-CRM-02 in progress |
+| Core CRM | 05-CRM-01… | ✅ 05-CRM-02 done ([#25](https://github.com/Gane2506/rust-crm/issues/25), [#26](https://github.com/Gane2506/rust-crm/pull/26)); 🔨 05-CRM-03 in progress |
 | Identity and RBAC | 03-SEC-01…03 | ⬜ Not started |
 | Audit and observability | 04-AUD-01…03 | ⬜ Not started |
 | Core CRM | 05-CRM-01…03 | ⬜ Not started |
