@@ -23,6 +23,7 @@ use crate::contact::{Contact, Lifecycle};
 use crate::contract::{Contract, ContractState};
 use crate::error::DomainError;
 use crate::ids::{ActorId, ClientProfileId, ContactId, ContractId};
+use crate::security::{Action, IssuedSession, Scope, Session, SessionToken};
 
 /// Who is performing an operation and under what scope.
 ///
@@ -135,4 +136,75 @@ pub trait ContractService {
         payment_verified: bool,
         ctx: &'a ActionContext,
     ) -> impl Future<Output = Result<Contract, DomainError>> + Send + 'a;
+}
+
+/// Authentication: verifies credentials and manages the session lifecycle.
+///
+/// Credential verification itself (constant-time hash comparison) is an
+/// implementation concern of task 03-SEC-02; the domain defines the
+/// contract: successful authentication yields an [`IssuedSession`] whose
+/// raw token is shown to the client exactly once, while only the token
+/// hash is persisted.
+pub trait AuthenticationService {
+    /// Verifies `username`/`password` and issues a session.
+    ///
+    /// Returns [`DomainError::Unauthorized`] when the credentials do not
+    /// match — without revealing whether the username exists. Suspended
+    /// accounts fail closed with [`DomainError::Forbidden`].
+    fn authenticate<'a>(
+        &'a self,
+        username: &'a str,
+        password: &'a [u8],
+    ) -> impl Future<Output = Result<IssuedSession, DomainError>> + Send + 'a;
+
+    /// Extends a live session's expiry (sliding expiration). The token
+    /// itself is not rotated. Returns [`DomainError::Unauthorized`] when
+    /// the token is unknown, expired, revoked or idle-timed-out.
+    fn refresh<'a>(
+        &'a self,
+        token: &'a SessionToken,
+    ) -> impl Future<Output = Result<Session, DomainError>> + Send + 'a;
+
+    /// Revokes the session for `token`. Idempotent: revoking an already
+    /// revoked or unknown token succeeds — logout must never leak whether
+    /// a token existed.
+    fn revoke<'a>(
+        &'a self,
+        token: &'a SessionToken,
+    ) -> impl Future<Output = Result<(), DomainError>> + Send + 'a;
+}
+
+/// Authorization: resolves a session token to an [`ActionContext`] or denies.
+///
+/// This is the server-side enforcement point: every request, event
+/// handler, workflow node and agent tool call must pass through it.
+/// It replaces ad-hoc actor attribution — the returned
+/// [`ActionContext`] carries the real actor (staff or agent principal),
+/// the scope and the correlation id that the domain services require.
+pub trait AuthorizationService {
+    /// Authorizes `action` within `scope` for the holder of `token`.
+    ///
+    /// Returns [`DomainError::Unauthorized`] when the token is unknown,
+    /// expired, revoked or idle-timed-out, or its staff account is not
+    /// active; [`DomainError::Forbidden`] when no grant covers the
+    /// action.
+    ///
+    /// For agent sessions the implementation MUST, in order:
+    /// 1. load the delegation and require
+    ///    [`Delegation::is_effective`](crate::security::Delegation::is_effective)
+    ///    with the delegator's current status — expired or revoked
+    ///    delegations, and delegations whose delegator is no longer
+    ///    active, yield `Unauthorized`;
+    /// 2. check the action against
+    ///    [`Delegation::effective_grants`](crate::security::Delegation::effective_grants)
+    ///    computed from the delegator's *current* grants — never the
+    ///    delegation's stored grants alone, and never the delegator's
+    ///    full grant set.
+    fn authorize<'a>(
+        &'a self,
+        token: &'a SessionToken,
+        action: &'a Action,
+        scope: &'a Scope,
+        correlation_id: Uuid,
+    ) -> impl Future<Output = Result<ActionContext, DomainError>> + Send + 'a;
 }

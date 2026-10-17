@@ -22,6 +22,10 @@
 //! * **Deny by default.** Services authorize every operation against an
 //!   explicit [`PermissionDecision`](audit::PermissionDecision); absence of
 //!   a grant is a denial, never an implicit allow.
+//! * **Identity and least privilege.** Staff sessions, RBAC grants and
+//!   bounded agent delegation ([`security`]): tokens are never stored
+//!   (only their hash), and a delegation can never exceed its delegator's
+//!   grants — enforced by construction.
 //! * **No secrets in errors.** [`DomainError`] messages never carry tokens,
 //!   credentials or PII.
 
@@ -44,6 +48,8 @@ pub mod error;
 pub mod ids;
 /// Repository traits (persistence ports; SQLx implementations land in 02-DB).
 pub mod repositories;
+/// Staff identity, sessions, RBAC grants and bounded agent delegation.
+pub mod security;
 /// Service traits (domain operations with authorization and audit).
 pub mod services;
 
@@ -53,3 +59,6 @@ pub use campaign::Campaign;
 pub use contact::Contact;
 pub use contract::Contract;
 pub use error::DomainError;
+pub use security::{
+    Action, Delegation, Grant, Operation, Resource, Role, Scope, Session, SessionToken, StaffUser,
+};

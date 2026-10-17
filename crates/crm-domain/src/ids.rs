@@ -93,11 +93,45 @@ define_id!(
     /// wraps the agent principal id; for system actors a well-known id.
     ActorId
 );
+define_id!(
+    /// Identifies the agency (the operator of the CRM). Staff users and
+    /// scopes are bound to one agency; cross-agency access is impossible
+    /// by construction in [`crate::security::Scope::covers`].
+    AgencyId
+);
+define_id!(
+    /// Identifies a staff login session.
+    SessionId
+);
+define_id!(
+    /// Identifies an RBAC grant (one action authorized within one scope).
+    GrantId
+);
+define_id!(
+    /// Identifies a named role (a reusable bundle of permissions).
+    RoleId
+);
+define_id!(
+    /// Identifies one bounded delegation of grants from a staff user to
+    /// an agent principal.
+    DelegationId
+);
+define_id!(
+    /// Identifies an AI agent principal acting under delegation.
+    AgentPrincipalId
+);
 
 impl From<StaffId> for ActorId {
     /// Renders a staff member as the actor of an audit event.
     fn from(staff: StaffId) -> Self {
         Self(staff.as_uuid())
+    }
+}
+
+impl From<AgentPrincipalId> for ActorId {
+    /// Renders an agent principal as the actor of an audit event.
+    fn from(agent: AgentPrincipalId) -> Self {
+        Self(agent.as_uuid())
     }
 }
 
@@ -126,6 +160,12 @@ mod tests {
         assert_id_round_trip(CampaignId::new());
         assert_id_round_trip(AuditEventId::new());
         assert_id_round_trip(ActorId::new());
+        assert_id_round_trip(AgencyId::new());
+        assert_id_round_trip(SessionId::new());
+        assert_id_round_trip(GrantId::new());
+        assert_id_round_trip(RoleId::new());
+        assert_id_round_trip(DelegationId::new());
+        assert_id_round_trip(AgentPrincipalId::new());
     }
 
     #[test]
@@ -149,5 +189,12 @@ mod tests {
         let staff = StaffId::new();
         let actor = ActorId::from(staff);
         assert_eq!(actor.as_uuid(), staff.as_uuid());
+    }
+
+    #[test]
+    fn agent_principal_id_converts_to_actor_id() {
+        let agent = AgentPrincipalId::new();
+        let actor = ActorId::from(agent);
+        assert_eq!(actor.as_uuid(), agent.as_uuid());
     }
 }
