@@ -21,7 +21,8 @@ Statuses: TODO / IN_PROGRESS / BLOCKED / DONE. Never mark DONE without linked co
 | 05-CRM-03 | DONE | issue #27 / PR #28 (merge `fe13a3a`) | | Core CRM: runbook, E2E full-slice test, seed + frontend verified |
 | 06-UI-01 | DONE | issue #29 / PR #30 (merge `5478c67`) | | Frontend: component inventory, routing, contracts |
 | 06-UI-02 | DONE | issue #31 / PR #32 (merge `27a4a50`) | | Frontend: views implemented, polish items addressed |
-| 06-UI-03 | IN_PROGRESS | issue #33 / branch `task/06-UI-03` | | Frontend: verify + polish |
+| 06-UI-03 | DONE | issue #33 / PR #34 (merge `d2de9aa`) | | Frontend: verify + polish, runbook, threat model |
+| 07-MAIL-01 | IN_PROGRESS | issue #35 / branch `task/07-MAIL-01` | | Email: define domain and interfaces |
 | 02-DB-02 | TODO | | | |
 | 02-DB-03 | TODO | | | |
 | 03-SEC-01 | TODO | | | |
