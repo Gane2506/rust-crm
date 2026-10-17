@@ -19,3 +19,7 @@ uuid.workspace = true
 # Domain types and shared utilities for the vertical slice.
 crm-domain = { path = "../crm-domain", version = "0.1.0" }
 crm-core = { path = "../crm-core", version = "0.1.0" }
+# SQLx/PostgreSQL backend (02-DB-02); the pool type also names the
+# Postgres-backed application state.
+crm-db = { path = "../crm-db", version = "0.1.0" }
+sqlx.workspace = true

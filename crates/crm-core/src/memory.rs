@@ -1,11 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-only
-//! In-memory implementations of the `crm-domain` repository and service traits.
+//! In-memory implementations of the `crm-domain` repository and service traits,
+//! plus the backend-agnostic [`ContactServiceImpl`] composing the contact
+//! lifecycle logic over any repository backend.
 //!
 //! # Vertical-slice stand-ins
 //!
-//! Everything in this module exists to back the 01-FND-02 vertical slice
-//! (HTTP API over the domain) **without a database**. The stores are
-//! `tokio::sync::RwLock`-guarded `HashMap`s:
+//! The *stores* ([`InMemoryContactRepository`], [`InMemoryAuditRepository`])
+//! exist to back the 01-FND-02 vertical slice (HTTP API over the domain)
+//! **without a database**. They are `tokio::sync::RwLock`-guarded
+//! `HashMap`s:
 //!
 //! * data does not survive restarts;
 //! * there is no cross-process consistency;
@@ -14,10 +17,14 @@
 //! * phone normalization is trim + dedupe only (full E.164 handling is
 //!   deferred to the telephony workstream).
 //!
-//! **Task 02-DB replaces these with SQLx/PostgreSQL implementations.**
-//! Do not build production behavior on these types.
+//! The *service* ([`ContactServiceImpl`]) is backend-agnostic: the
+//! production server (task 02-DB-02) instantiates it over the
+//! SQLx/PostgreSQL repositories from `crm-db`, while tests keep the
+//! in-memory instantiation ([`MemoryContactService`]). Do not build
+//! production behavior on the in-memory *stores*.
 
 use std::collections::{HashMap, HashSet};
+use std::future::Future;
 use std::sync::Arc;
 
 use chrono::Utc;
@@ -348,6 +355,29 @@ impl AuditService for MemoryAuditService {
     }
 }
 
+/// Repository read surface the vertical-slice HTTP layer needs on top of
+/// the domain [`ContactRepository`] trait.
+///
+/// The domain trait's `list_for_client` is limit-only by design; the list
+/// endpoint additionally needs the total count for its
+/// `{"contacts", "total"}` envelope.
+pub trait ContactReadModel: ContactRepository {
+    /// Counts contacts owned by one client profile.
+    fn count_for_client(
+        &self,
+        client_profile_id: ClientProfileId,
+    ) -> impl Future<Output = Result<usize, DomainError>> + Send;
+}
+
+impl ContactReadModel for InMemoryContactRepository {
+    async fn count_for_client(
+        &self,
+        client_profile_id: ClientProfileId,
+    ) -> Result<usize, DomainError> {
+        Ok(InMemoryContactRepository::count_for_client(self, client_profile_id).await)
+    }
+}
+
 /// A stubbed merge-review case.
 ///
 /// The review workflow and its approval state live in the workflow layer;
@@ -360,21 +390,31 @@ struct MergeReview {
     reason: String,
 }
 
-/// In-memory [`ContactService`].
+/// Contact lifecycle logic composed over any repository backend.
 ///
-/// **Vertical-slice stand-in** — replaced by the SQLx-backed service in
-/// task 02-DB.
+/// The service owns no storage: it normalizes input, enforces
+/// client-profile scope (grant-based authorization lands in task 03-SEC),
+/// delegates persistence to `R`, and records every mutation through `A`.
+///
+/// [`MemoryContactService`] is the in-memory instantiation backing the
+/// vertical-slice HTTP layer and its tests; the production server (task
+/// 02-DB-02) instantiates this over the SQLx/PostgreSQL repositories from
+/// `crm-db`.
 #[derive(Debug, Clone)]
-pub struct MemoryContactService {
-    contacts: InMemoryContactRepository,
-    audit: MemoryAuditService,
+pub struct ContactServiceImpl<R, A> {
+    contacts: R,
+    audit: A,
     merge_reviews: Arc<RwLock<HashMap<Uuid, MergeReview>>>,
 }
 
-impl MemoryContactService {
+/// In-memory [`ContactService`] instantiation for the vertical slice and
+/// its tests.
+pub type MemoryContactService = ContactServiceImpl<InMemoryContactRepository, MemoryAuditService>;
+
+impl<R, A> ContactServiceImpl<R, A> {
     /// Creates the service over the given repository and audit service.
     #[must_use]
-    pub fn new(contacts: InMemoryContactRepository, audit: MemoryAuditService) -> Self {
+    pub fn new(contacts: R, audit: A) -> Self {
         Self {
             contacts,
             audit,
@@ -386,7 +426,7 @@ impl MemoryContactService {
     /// vertical-slice HTTP layer; later tasks add a dedicated query
     /// service).
     #[must_use]
-    pub fn repository(&self) -> &InMemoryContactRepository {
+    pub fn repository(&self) -> &R {
         &self.contacts
     }
 
@@ -404,7 +444,11 @@ impl MemoryContactService {
     }
 }
 
-impl ContactService for MemoryContactService {
+impl<R, A> ContactService for ContactServiceImpl<R, A>
+where
+    R: ContactRepository + Sync,
+    A: AuditService + Sync,
+{
     async fn create_contact(
         &self,
         input: NewContact,

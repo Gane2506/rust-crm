@@ -39,6 +39,10 @@ use crm_domain::contact::{ConsentRecord, Contact, Lifecycle};
 use crm_domain::error::DomainError;
 use crm_domain::ids::{ActorId, AuditEventId, ClientProfileId, ContactId};
 use crm_domain::repositories::{AuditRepository, ContactRepository};
+use crm_domain::services::{ActionContext, AuditService};
+
+use crm_core::memory::ContactReadModel;
+use crm_core::IdempotencyKey;
 
 /// SQLSTATE for unique-violation (duplicate key) errors.
 const UNIQUE_VIOLATION: &str = "23505";
@@ -53,6 +57,29 @@ fn map_storage_error(error: sqlx::Error) -> DomainError {
         }
     }
     DomainError::Validation(format!("storage error: {error}"))
+}
+
+/// Ensures the tenant row exists for `client_profile_id`.
+///
+/// The vertical slice creates contacts under caller-supplied profile ids
+/// (the agency-managed profile lifecycle lands in a later task), so the
+/// repositories satisfy the `contacts`/`audit_events` foreign keys with an
+/// idempotent upsert instead of failing on unknown profiles.
+async fn ensure_client_profile<'e, E>(
+    executor: E,
+    client_profile_id: ClientProfileId,
+) -> Result<(), DomainError>
+where
+    E: Executor<'e, Database = Postgres>,
+{
+    sqlx::query(
+        "INSERT INTO client_profiles (client_profile_id) VALUES ($1) ON CONFLICT DO NOTHING",
+    )
+    .bind(client_profile_id.as_uuid())
+    .execute(executor)
+    .await
+    .map_err(map_storage_error)?;
+    Ok(())
 }
 
 /// Renders a [`Lifecycle`] as its stable database string.
@@ -244,10 +271,41 @@ impl PgContactRepository {
     pub fn new(pool: PgPool) -> Self {
         Self { pool }
     }
+
+    /// Counts contacts owned by one client profile.
+    ///
+    /// Read-model helper for the vertical-slice list endpoint's `total`;
+    /// see [`ContactReadModel`](crm_core::memory::ContactReadModel).
+    pub async fn count_for_client(
+        &self,
+        client_profile_id: ClientProfileId,
+    ) -> Result<usize, DomainError> {
+        let count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM contacts WHERE client_profile_id = $1")
+                .bind(client_profile_id.as_uuid())
+                .fetch_one(&self.pool)
+                .await
+                .map_err(map_storage_error)?;
+        usize::try_from(count).map_err(|_| {
+            DomainError::Validation(format!("storage error: absurd contact count {count}"))
+        })
+    }
+}
+
+impl ContactReadModel for PgContactRepository {
+    async fn count_for_client(
+        &self,
+        client_profile_id: ClientProfileId,
+    ) -> Result<usize, DomainError> {
+        PgContactRepository::count_for_client(self, client_profile_id).await
+    }
 }
 
 impl ContactRepository for PgContactRepository {
     async fn create(&self, contact: Contact) -> Result<Contact, DomainError> {
+        // The vertical slice addresses profiles by caller-supplied id;
+        // satisfy the foreign key before inserting the contact.
+        ensure_client_profile(&self.pool, contact.client_profile_id).await?;
         let consent_records = serde_json::to_value(&contact.consent_records).map_err(|error| {
             DomainError::Validation(format!(
                 "storage error: cannot encode consent_records: {error}"
@@ -401,6 +459,11 @@ impl AuditRepository for PgAuditRepository {
         if event.chain_hash != expected {
             return Err(DomainError::ConcurrencyConflict);
         }
+        // The vertical slice addresses profiles by caller-supplied id;
+        // satisfy the foreign key before inserting the event.
+        if let Some(profile_id) = event.client_profile_id {
+            ensure_client_profile(&mut *tx, profile_id).await?;
+        }
         sqlx::query(
             "INSERT INTO audit_events
              (event_id, occurred_at, actor_kind, actor_id, client_profile_id, action, target_kind, target_id, correlation_id, permission_decision, result, before_ref, after_ref, prev_hash, chain_hash)
@@ -472,6 +535,134 @@ impl AuditRepository for PgAuditRepository {
                 id: event_id.to_string(),
             }),
         }
+    }
+}
+
+/// SQLx implementation of [`AuditService`].
+///
+/// Builds the [`AuditEvent`] from its parts, links it to the current log
+/// head, and appends. Two writers racing on the head serialize inside
+/// [`AuditRepository::append`](PgAuditRepository); the loser gets
+/// [`DomainError::ConcurrencyConflict`] and retries with the new head, so
+/// the log never forks. Retries are bounded — a persistently contended log
+/// surfaces the last conflict instead of spinning forever.
+#[derive(Debug, Clone)]
+pub struct PgAuditService {
+    log: PgAuditRepository,
+}
+
+/// Maximum head-link retries for [`PgAuditService::record_action`] before
+/// the last [`DomainError::ConcurrencyConflict`] is returned.
+const AUDIT_APPEND_RETRIES: usize = 8;
+
+impl PgAuditService {
+    /// Creates the service over the given audit repository.
+    pub fn new(log: PgAuditRepository) -> Self {
+        Self { log }
+    }
+}
+
+impl AuditService for PgAuditService {
+    #[allow(clippy::too_many_arguments)]
+    async fn record_action(
+        &self,
+        ctx: &ActionContext,
+        action: &str,
+        target_kind: &str,
+        target_id: &str,
+        permission_decision: PermissionDecision,
+        result: ActionResult,
+        before_ref: Option<&str>,
+        after_ref: Option<&str>,
+    ) -> Result<AuditEvent, DomainError> {
+        let mut event = AuditEvent {
+            event_id: AuditEventId::new(),
+            occurred_at: Utc::now(),
+            actor_kind: ctx.actor_kind,
+            actor_id: ctx.actor_id,
+            client_profile_id: ctx.client_profile_id,
+            action: action.to_owned(),
+            target_kind: target_kind.to_owned(),
+            target_id: target_id.to_owned(),
+            correlation_id: ctx.correlation_id,
+            permission_decision,
+            result,
+            before_ref: before_ref.map(str::to_owned),
+            after_ref: after_ref.map(str::to_owned),
+            // Linked to the current head on every attempt below.
+            chain_hash: [0u8; 32],
+        };
+        let mut attempts = 0;
+        loop {
+            let prev = self
+                .log
+                .latest_chain_hash()
+                .await?
+                .unwrap_or(GENESIS_CHAIN_HASH);
+            event.chain_hash = compute_chain_hash(&prev, &event.canonical_bytes());
+            match self.log.append(event.clone()).await {
+                Ok(stored) => return Ok(stored),
+                Err(DomainError::ConcurrencyConflict) if attempts < AUDIT_APPEND_RETRIES => {
+                    attempts += 1;
+                }
+                Err(other) => return Err(other),
+            }
+        }
+    }
+}
+
+/// Persistent store for idempotent HTTP responses.
+///
+/// Maps an [`IdempotencyKey`] to the request fingerprint and response body
+/// recorded for it, so `Idempotency-Key` replays survive restarts (the
+/// 01-FND-02 vertical slice kept these in process memory). Backed by the
+/// `idempotency_keys` table from migration `0002`.
+#[derive(Debug, Clone)]
+pub struct PgIdempotencyStore {
+    pool: PgPool,
+}
+
+impl PgIdempotencyStore {
+    /// Creates the store backed by `pool`.
+    pub fn new(pool: PgPool) -> Self {
+        Self { pool }
+    }
+
+    /// Returns the stored `(fingerprint, response body)` for `key`, or
+    /// `None` for a fresh key.
+    pub async fn get(&self, key: &IdempotencyKey) -> Result<Option<(u64, JsonValue)>, DomainError> {
+        let row: Option<(i64, JsonValue)> = sqlx::query_as(
+            "SELECT fingerprint, response FROM idempotency_keys WHERE idempotency_key = $1",
+        )
+        .bind(key.as_uuid())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(map_storage_error)?;
+        // `as` casts between u64/i64 are bit-preserving round-trips.
+        Ok(row.map(|(fingerprint, body)| (fingerprint as u64, body)))
+    }
+
+    /// Stores `(fingerprint, response body)` for `key`, replacing any
+    /// previous entry for the key.
+    pub async fn put(
+        &self,
+        key: &IdempotencyKey,
+        fingerprint: u64,
+        body: &JsonValue,
+    ) -> Result<(), DomainError> {
+        sqlx::query(
+            "INSERT INTO idempotency_keys (idempotency_key, fingerprint, response)
+             VALUES ($1, $2, $3)
+             ON CONFLICT (idempotency_key) DO UPDATE
+             SET fingerprint = EXCLUDED.fingerprint, response = EXCLUDED.response",
+        )
+        .bind(key.as_uuid())
+        .bind(fingerprint as i64)
+        .bind(body)
+        .execute(&self.pool)
+        .await
+        .map_err(map_storage_error)?;
+        Ok(())
     }
 }
 
