@@ -19,11 +19,15 @@ use std::future::Future;
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
+use crate::asset::Asset;
 use crate::audit::{ActionResult, ActorKind, AuditEvent, PermissionDecision, SecurityEvent};
 use crate::contact::{Contact, Lifecycle};
 use crate::contract::{Contract, ContractState};
 use crate::error::DomainError;
-use crate::ids::{ActorId, AuditEventId, ClientProfileId, ContactId, ContractId};
+use crate::ids::{
+    ActorId, AgencyId, AssetId, AuditEventId, ClientProfileId, ContactId, ContractId,
+};
+use crate::profile::ClientProfile;
 use crate::security::{Action, IssuedSession, Scope, Session, SessionToken};
 
 /// Who is performing an operation and under what scope.
@@ -232,6 +236,118 @@ pub trait ContactService {
         reason: String,
         ctx: &'a ActionContext,
     ) -> impl Future<Output = Result<Uuid, DomainError>> + Send + 'a;
+}
+
+/// Input for creating a client profile.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewClientProfile {
+    /// Display name of the client's business.
+    pub name: String,
+    /// The agency operating the profile.
+    pub agency_id: AgencyId,
+}
+
+/// Agency-managed workspace lifecycle.
+///
+/// Profiles are the tenant boundary: every method takes an
+/// [`ActionContext`] and implementations must enforce that the caller
+/// holds the grant for the profile's agency. Clients never act on
+/// profiles directly — there is no client login.
+pub trait ClientProfileService {
+    /// Creates a new active profile for the agency.
+    fn create_profile<'a>(
+        &'a self,
+        input: NewClientProfile,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<ClientProfile, DomainError>> + Send + 'a;
+
+    /// Fetches a profile by id, enforcing agency scope.
+    fn get_profile<'a>(
+        &'a self,
+        profile_id: ClientProfileId,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<ClientProfile, DomainError>> + Send + 'a;
+
+    /// Suspends an active profile, pausing work under it.
+    fn suspend_profile<'a>(
+        &'a self,
+        profile_id: ClientProfileId,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<ClientProfile, DomainError>> + Send + 'a;
+
+    /// Reactivates a suspended profile.
+    fn reactivate_profile<'a>(
+        &'a self,
+        profile_id: ClientProfileId,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<ClientProfile, DomainError>> + Send + 'a;
+
+    /// Archives a profile, retiring it permanently.
+    fn archive_profile<'a>(
+        &'a self,
+        profile_id: ClientProfileId,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<ClientProfile, DomainError>> + Send + 'a;
+
+    /// Lists profiles for one agency, capped at `limit`.
+    fn list_profiles<'a>(
+        &'a self,
+        agency_id: AgencyId,
+        limit: u64,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<Vec<ClientProfile>, DomainError>> + Send + 'a;
+}
+
+/// Input for registering an uploaded asset.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewAsset {
+    /// Owning client profile (tenant boundary).
+    pub client_profile_id: ClientProfileId,
+    /// Original file name.
+    pub file_name: String,
+    /// MIME type supplied at upload.
+    pub mime_type: String,
+    /// Size in bytes; must be greater than zero.
+    pub size_bytes: u64,
+    /// SHA-256 of the file bytes, for upload dedupe and integrity.
+    pub sha256: [u8; 32],
+}
+
+/// File/media assets attached to a client profile.
+///
+/// The uploader is taken from the [`ActionContext`]'s actor — callers
+/// cannot forge another actor's attribution. Implementations should
+/// dedupe uploads by content hash within the profile
+/// ([`crate::repositories::AssetRepository::find_by_sha256`]).
+pub trait AssetService {
+    /// Registers an uploaded asset.
+    fn register_asset<'a>(
+        &'a self,
+        input: NewAsset,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<Asset, DomainError>> + Send + 'a;
+
+    /// Fetches an asset by id, enforcing client-profile scope.
+    fn get_asset<'a>(
+        &'a self,
+        asset_id: AssetId,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<Asset, DomainError>> + Send + 'a;
+
+    /// Archives an asset, retiring it from use.
+    fn archive_asset<'a>(
+        &'a self,
+        asset_id: AssetId,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<Asset, DomainError>> + Send + 'a;
+
+    /// Lists assets for one client profile, capped at `limit`.
+    fn list_assets<'a>(
+        &'a self,
+        client_profile_id: ClientProfileId,
+        limit: u64,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<Vec<Asset>, DomainError>> + Send + 'a;
 }
 
 /// Contract state transitions honoring the payment gate.

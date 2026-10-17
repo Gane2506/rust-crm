@@ -120,6 +120,10 @@ define_id!(
     /// Identifies an AI agent principal acting under delegation.
     AgentPrincipalId
 );
+define_id!(
+    /// Identifies a file/media asset attached to a client profile.
+    AssetId
+);
 
 impl From<StaffId> for ActorId {
     /// Renders a staff member as the actor of an audit event.
@@ -166,6 +170,7 @@ mod tests {
         assert_id_round_trip(RoleId::new());
         assert_id_round_trip(DelegationId::new());
         assert_id_round_trip(AgentPrincipalId::new());
+        assert_id_round_trip(AssetId::new());
     }
 
     #[test]

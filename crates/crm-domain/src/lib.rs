@@ -34,6 +34,8 @@
 
 /// Agent action records: delegated authority, authorization and outcome.
 pub mod agent;
+/// Asset aggregate: file/media attachments owned by a client profile.
+pub mod asset;
 /// Tamper-evident audit events and the hash-chain helpers.
 pub mod audit;
 /// Campaign aggregate: owner context, channel, schedule and delivery state.
@@ -48,6 +50,8 @@ pub mod error;
 pub mod ids;
 /// Domain-level observability hooks: tracing, health and anomaly signals.
 pub mod observability;
+/// Client profile aggregate: agency-managed workspace lifecycle.
+pub mod profile;
 /// Repository traits (persistence ports; SQLx implementations land in 02-DB).
 pub mod repositories;
 /// Staff identity, sessions, RBAC grants and bounded agent delegation.
@@ -56,11 +60,13 @@ pub mod security;
 pub mod services;
 
 pub use agent::AgentAction;
+pub use asset::{Asset, AssetKind, AssetStatus};
 pub use audit::{AuditEvent, SecurityEvent};
 pub use campaign::Campaign;
-pub use contact::Contact;
+pub use contact::{Contact, ContactSource, DedupeSignal, Lifecycle};
 pub use contract::Contract;
 pub use error::DomainError;
+pub use profile::{ClientProfile, ProfileStatus};
 pub use security::{
     Action, Delegation, Grant, Operation, Resource, Role, Scope, Session, SessionToken, StaffUser,
 };

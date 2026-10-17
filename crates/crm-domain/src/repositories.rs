@@ -21,15 +21,17 @@
 use std::future::Future;
 
 use crate::agent::AgentAction;
+use crate::asset::Asset;
 use crate::audit::AuditEvent;
 use crate::campaign::{Campaign, OwnerContext};
 use crate::contact::Contact;
 use crate::contract::Contract;
 use crate::error::DomainError;
 use crate::ids::{
-    AgentActionId, AuditEventId, CampaignId, ClientProfileId, ContactId, ContractId, GrantId,
-    StaffId,
+    AgencyId, AgentActionId, AssetId, AuditEventId, CampaignId, ClientProfileId, ContactId,
+    ContractId, GrantId, StaffId,
 };
+use crate::profile::ClientProfile;
 use crate::security::{Grant, Session, StaffUser};
 
 /// Append-only store for [`AuditEvent`]s.
@@ -185,6 +187,87 @@ pub trait AgentActionRepository {
         &'a self,
         idempotency_key: &'a str,
     ) -> impl Future<Output = Result<Option<AgentAction>, DomainError>> + Send + 'a;
+}
+
+/// Persistence port for [`ClientProfile`] records (agency-managed
+/// workspaces).
+///
+/// Intended storage shape (later task): `client_profiles` table keyed by
+/// `profile_id` with the agency owner, name, status and timestamps.
+/// Profiles are never deleted: archival is a status, because history
+/// stays queryable for audit.
+pub trait ClientProfileRepository {
+    /// Persists a new client profile.
+    fn create<'a>(
+        &'a self,
+        profile: ClientProfile,
+    ) -> impl Future<Output = Result<ClientProfile, DomainError>> + Send + 'a;
+
+    /// Fetches a client profile by id.
+    fn get<'a>(
+        &'a self,
+        profile_id: ClientProfileId,
+    ) -> impl Future<Output = Result<ClientProfile, DomainError>> + Send + 'a;
+
+    /// Persists profile changes (status transitions, renames). Status
+    /// transitions themselves are validated by
+    /// [`ClientProfile::suspend`](crate::profile::ClientProfile::suspend)
+    /// and friends before the update is stored.
+    fn update<'a>(
+        &'a self,
+        profile: ClientProfile,
+    ) -> impl Future<Output = Result<ClientProfile, DomainError>> + Send + 'a;
+
+    /// Lists profiles for one agency, capped at `limit`.
+    fn list_for_agency<'a>(
+        &'a self,
+        agency_id: AgencyId,
+        limit: u64,
+    ) -> impl Future<Output = Result<Vec<ClientProfile>, DomainError>> + Send + 'a;
+}
+
+/// Persistence port for [`Asset`] records (file/media attachments).
+///
+/// Intended storage shape (later task): `assets` table keyed by
+/// `asset_id` with the owning profile, uploader, file metadata, the
+/// SHA-256 content address and status. Assets are never deleted:
+/// archival is a status.
+pub trait AssetRepository {
+    /// Persists a new asset record.
+    fn create<'a>(
+        &'a self,
+        asset: Asset,
+    ) -> impl Future<Output = Result<Asset, DomainError>> + Send + 'a;
+
+    /// Fetches an asset by id.
+    fn get<'a>(
+        &'a self,
+        asset_id: AssetId,
+    ) -> impl Future<Output = Result<Asset, DomainError>> + Send + 'a;
+
+    /// Persists asset changes (archival). Status transitions themselves
+    /// are validated by [`Asset::archive`](crate::asset::Asset::archive)
+    /// before the update is stored.
+    fn update<'a>(
+        &'a self,
+        asset: Asset,
+    ) -> impl Future<Output = Result<Asset, DomainError>> + Send + 'a;
+
+    /// Lists assets for one client profile, capped at `limit`.
+    fn list_for_client<'a>(
+        &'a self,
+        client_profile_id: ClientProfileId,
+        limit: u64,
+    ) -> impl Future<Output = Result<Vec<Asset>, DomainError>> + Send + 'a;
+
+    /// Finds an asset in one client profile by content hash, for upload
+    /// dedupe. Returns `None` when these bytes were never uploaded under
+    /// this profile.
+    fn find_by_sha256<'a>(
+        &'a self,
+        client_profile_id: ClientProfileId,
+        sha256: &'a [u8; 32],
+    ) -> impl Future<Output = Result<Option<Asset>, DomainError>> + Send + 'a;
 }
 
 /// Persistence port for [`StaffUser`] records.
