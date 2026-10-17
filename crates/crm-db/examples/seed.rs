@@ -396,6 +396,69 @@ async fn seed_campaign(pool: &sqlx::PgPool) -> Result<bool, DomainError> {
     Ok(true)
 }
 
+/// Seeds one completed demo agent run on the demo profile, driven
+/// through the real agent service (start → complete). Idempotent:
+/// skipped when a `demo-triage` run already exists.
+async fn seed_agent_run(pool: &sqlx::PgPool) -> Result<bool, DomainError> {
+    use crm_core::jev::AgentServiceImpl;
+    use crm_db::jev::{
+        PgAgentRunRepository, PgHandoffRepository, PgRoleMembership, PgToolCallRepository,
+    };
+    use crm_domain::jev::FallbackChain;
+    use crm_domain::repositories::AgentRunRepository;
+    use crm_domain::services::{AgentService, NewAgentRun};
+
+    let profile =
+        ClientProfileId::from(Uuid::parse_str(DEMO_PROFILE_ID).expect("demo profile id parses"));
+    let runs = PgAgentRunRepository::new(pool.clone());
+    // Idempotency anchor: an existing demo-triage run.
+    if runs
+        .list_by_profile(profile, 100)
+        .await?
+        .iter()
+        .any(|r| r.agent_kind == "demo-triage")
+    {
+        return Ok(false);
+    }
+
+    let ctx = ActionContext {
+        actor_kind: ActorKind::System,
+        actor_id: ActorId::from(Uuid::nil()),
+        client_profile_id: Some(profile),
+        correlation_id: Uuid::new_v4(),
+    };
+
+    let service = AgentServiceImpl::new(
+        runs,
+        PgToolCallRepository::new(pool.clone()),
+        PgHandoffRepository::new(pool.clone()),
+        PgRoleMembership::new(pool.clone()),
+        PgAuditService::new(PgAuditRepository::new(pool.clone())),
+    );
+
+    let chain = FallbackChain::new(vec!["stub".to_string(), "local".to_string()])
+        .expect("demo fallback chain is valid");
+    let run = service
+        .start_run(
+            NewAgentRun {
+                client_profile_id: profile,
+                agent_kind: "demo-triage".to_string(),
+                fallback_chain: chain,
+                input: serde_json::json!({"task": "demo triage run"}),
+            },
+            &ctx,
+        )
+        .await?;
+    service
+        .complete_run(
+            run.run_id,
+            serde_json::json!({"done": true, "note": "seeded demo run"}),
+            &ctx,
+        )
+        .await?;
+    Ok(true)
+}
+
 /// Env var gating writes: `CRM_SEED_DEV=1` is the explicit opt-in that
 /// lets this example write to the database.
 const SEED_DEV_ENV: &str = "CRM_SEED_DEV";
@@ -520,6 +583,7 @@ async fn run() -> Result<(), String> {
         println!(
             "  7. seed demo campaign (draft, 1 email step) + prospect pool + opt-out (idempotent)"
         );
+        println!("  8. seed demo agent run (completed, chain [stub, local]) (idempotent)");
         return Ok(());
     }
 
@@ -561,6 +625,14 @@ async fn run() -> Result<(), String> {
         println!("seed complete: demo campaign + pool + opt-out created");
     } else {
         println!("seed complete: demo campaign already present");
+    }
+    if seed_agent_run(&pool)
+        .await
+        .map_err(|error| format!("seed agent run: {error}"))?
+    {
+        println!("seed complete: demo agent run (completed) created");
+    } else {
+        println!("seed complete: demo agent run already present");
     }
     println!("dev login: email {DEMO_STAFF_EMAIL}, password {DEMO_STAFF_PASSWORD} (local only)");
     Ok(())
