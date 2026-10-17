@@ -9,6 +9,15 @@ and the relevant feature spec before editing. The spec also travels in
 
 - **One task ID per PR/branch.** Branch from `main` as `task/<ID>`
   (e.g. `task/01-FND-01`). Never bundle unrelated tasks.
+- **GitHub workflow: issue → branch → PR → CI → merge.** For each task,
+  open one tracking issue per task/feature (title `<ID>: <task name>`,
+  body with scope and acceptance criteria from `docs/handoff/TASKS.md`
+  plus links to the relevant spec docs), branch from `main` as
+  `task/<ID>`, and open the PR with `Closes #<issue>` and the required
+  completion report. Merge only on green CI plus reviewer sign-off.
+  Club related work into the single issue for that task/feature — don't
+  scatter lots of tiny issues, and don't cram unrelated tasks into one
+  issue.
 - **Rust only** for first-party application code, UI, tests and utilities. Do
   not handwrite JavaScript/TypeScript/Python — the CI forbidden-source scan
   fails the build on any `.js`/`.ts`/`.py` under `crates/`.
