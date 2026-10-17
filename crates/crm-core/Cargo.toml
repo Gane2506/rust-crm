@@ -8,3 +8,8 @@ description = "Shared pure utilities for the Rust CRM (idempotency keys, paginat
 [dependencies]
 thiserror.workspace = true
 uuid.workspace = true
+chrono.workspace = true
+tokio.workspace = true
+# Vertical-slice implementations of the crm-domain repository/service
+# traits (in-memory; replaced by SQLx in 02-DB).
+crm-domain = { path = "../crm-domain", version = "0.1.0" }

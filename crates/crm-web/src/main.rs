@@ -6,10 +6,14 @@
 //! `style` attributes only — no handwritten JavaScript, per the handoff's
 //! Rust-only rule. Full design-system views land in task `06-UI-01`.
 
+use contacts::ContactsPage;
 use leptos::mount::mount_to_body;
 use leptos::prelude::*;
 use leptos_router::components::{Route, Router, Routes, A};
 use leptos_router::path;
+
+mod api;
+mod contacts;
 
 /// Root application shell: nav header plus routed content.
 #[component]
@@ -27,7 +31,7 @@ fn App() -> impl IntoView {
                 <main>
                     <Routes fallback=|| view! { <p>"Page not found."</p> }>
                         <Route path=path!("/") view=Dashboard />
-                        <Route path=path!("/contacts") view=Contacts />
+                        <Route path=path!("/contacts") view=ContactsPage />
                     </Routes>
                 </main>
             </div>
@@ -42,17 +46,6 @@ fn Dashboard() -> impl IntoView {
         <section>
             <h2>"Dashboard"</h2>
             <p>"Agency overview placeholder."</p>
-        </section>
-    }
-}
-
-/// Contact list placeholder (full CRM views land in task 05-CRM-01).
-#[component]
-fn Contacts() -> impl IntoView {
-    view! {
-        <section>
-            <h2>"Contacts"</h2>
-            <p>"Contact list placeholder."</p>
         </section>
     }
 }
