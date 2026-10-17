@@ -51,6 +51,7 @@ use crate::problem_response;
 use crate::rate_limit::{LoginRateLimitConfig, LoginRateLimiter};
 use crm_core::memory::{ContactReadModel, ContactServiceImpl};
 use crm_db::audit_log::PgAuditLogService;
+use crm_db::core_crm::{PgAssetRepository, PgClientProfileRepository};
 use crm_domain::services::AuditService;
 
 /// Production authentication + authorization services.
@@ -74,6 +75,10 @@ pub struct ApiAuth {
     pub anomaly_sink: LoggingAnomalySink,
     /// Per-actor authorization-denial counter for probing detection.
     pub denial_tracker: Arc<DenialTracker>,
+    /// Client-profile repository for the profile endpoints.
+    pub profiles: PgClientProfileRepository,
+    /// Asset repository for the asset endpoints.
+    pub assets: PgAssetRepository,
 }
 
 impl ApiAuth {
@@ -97,6 +102,8 @@ impl ApiAuth {
             tracer: TracingTracer,
             anomaly_sink: LoggingAnomalySink,
             denial_tracker: Arc::new(DenialTracker::with_config(DenialTrackerConfig::from_env())),
+            profiles: PgClientProfileRepository::new(pool.clone()),
+            assets: PgAssetRepository::new(pool.clone()),
         }
     }
 }

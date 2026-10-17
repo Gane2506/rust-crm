@@ -17,9 +17,13 @@
 //!
 //! [`audit_log`] implements the [`AuditLogService`] security audit log
 //! over the shared `audit_events` table.
+//!
+//! [`core_crm`] holds the SQLx repositories for the Core CRM vertical
+//! slice: client profiles and file/media assets.
 
 pub mod audit_log;
 pub mod auth;
+pub mod core_crm;
 pub mod postgres;
 
 use thiserror::Error;

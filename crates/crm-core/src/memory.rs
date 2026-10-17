@@ -569,7 +569,7 @@ where
                 "cannot merge a contact into itself".to_owned(),
             ));
         }
-        let survivor = self.contacts.get(survivor_id).await?;
+        let mut survivor = self.contacts.get(survivor_id).await?;
         let mut duplicate = self.contacts.get(duplicate_id).await?;
         Self::check_scope(ctx, survivor.client_profile_id)?;
         Self::check_scope(ctx, duplicate.client_profile_id)?;
@@ -578,10 +578,14 @@ where
                 "cannot merge contacts across client profiles".to_owned(),
             ));
         }
-        // Archiving is idempotent: re-merging an already-archived
-        // duplicate keeps it archived and re-points the merge target.
+        // Domain merge: unions identity, sources and consents into the
+        // survivor and tombstones the duplicate (never deletes). The
+        // duplicate is then archived per the established merge semantics;
+        // `transition_to` is idempotent so re-merging stays safe, while
+        // `merge_from` rejects an already-merged duplicate with Conflict.
+        survivor.merge_from(&mut duplicate)?;
         duplicate.transition_to(Lifecycle::Archived)?;
-        duplicate.merged_into = Some(survivor_id);
+        self.contacts.update(survivor).await?;
         let duplicate = self.contacts.update(duplicate).await?;
         self.audit
             .record_action(
