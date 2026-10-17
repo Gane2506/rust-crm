@@ -38,7 +38,8 @@ pub mod agent;
 pub mod asset;
 /// Tamper-evident audit events and the hash-chain helpers.
 pub mod audit;
-/// Campaign aggregate: owner context, channel, schedule and delivery state.
+/// Campaign aggregate: owner context, channel, schedule, delivery state,
+/// steps, prospect pools, opt-outs, attribution and conversions.
 pub mod campaign;
 /// Contact aggregate: normalized identity, lifecycle and consent records.
 pub mod contact;
@@ -64,7 +65,10 @@ pub mod services;
 pub use agent::AgentAction;
 pub use asset::{Asset, AssetKind, AssetStatus};
 pub use audit::{AuditEvent, SecurityEvent};
-pub use campaign::Campaign;
+pub use campaign::{
+    attribute_conversion, AttributionModel, Campaign, CampaignStep, Channel, Conversion,
+    DeliveryState, OptOut, OptOutChannel, OwnerContext, ProspectPool, StepKind, Touchpoint,
+};
 pub use contact::{Contact, ContactSource, DedupeSignal, Lifecycle};
 pub use contract::Contract;
 pub use email::{

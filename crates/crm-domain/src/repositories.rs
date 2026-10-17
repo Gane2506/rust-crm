@@ -23,14 +23,15 @@ use std::future::Future;
 use crate::agent::AgentAction;
 use crate::asset::Asset;
 use crate::audit::AuditEvent;
-use crate::campaign::{Campaign, OwnerContext};
+use crate::campaign::{Campaign, OptOut, OptOutChannel, OwnerContext, ProspectPool};
 use crate::contact::Contact;
 use crate::contract::Contract;
 use crate::email::{EmailAttachment, EmailMessage, EmailThread};
 use crate::error::DomainError;
 use crate::ids::{
     AgencyId, AgentActionId, AssetId, AuditEventId, CampaignId, ClientProfileId, ContactId,
-    ContractId, EmailAttachmentId, EmailMessageId, EmailThreadId, GrantId, StaffId,
+    ContractId, EmailAttachmentId, EmailMessageId, EmailThreadId, GrantId, OptOutId,
+    ProspectPoolId, StaffId,
 };
 use crate::profile::ClientProfile;
 use crate::security::{Grant, Session, StaffUser};
@@ -165,6 +166,87 @@ pub trait CampaignRepository {
         owner: &'a OwnerContext,
         limit: u64,
     ) -> impl Future<Output = Result<Vec<Campaign>, DomainError>> + Send + 'a;
+
+    /// Lists campaigns for one client profile, capped at `limit`.
+    fn list_by_profile<'a>(
+        &'a self,
+        client_profile_id: ClientProfileId,
+        limit: u64,
+    ) -> impl Future<Output = Result<Vec<Campaign>, DomainError>> + Send + 'a;
+}
+
+/// CRUD for [`ProspectPool`]s.
+pub trait ProspectPoolRepository {
+    /// Persists a new prospect pool.
+    fn create<'a>(
+        &'a self,
+        pool: ProspectPool,
+    ) -> impl Future<Output = Result<ProspectPool, DomainError>> + Send + 'a;
+
+    /// Fetches a pool by id.
+    fn get<'a>(
+        &'a self,
+        pool_id: ProspectPoolId,
+    ) -> impl Future<Output = Result<ProspectPool, DomainError>> + Send + 'a;
+
+    /// Persists changes to an existing pool.
+    fn update<'a>(
+        &'a self,
+        pool: ProspectPool,
+    ) -> impl Future<Output = Result<ProspectPool, DomainError>> + Send + 'a;
+
+    /// Lists pools for one client profile, capped at `limit`.
+    fn list_by_profile<'a>(
+        &'a self,
+        client_profile_id: ClientProfileId,
+        limit: u64,
+    ) -> impl Future<Output = Result<Vec<ProspectPool>, DomainError>> + Send + 'a;
+
+    /// Adds a contact to the pool (deduplicated).
+    fn add_member<'a>(
+        &'a self,
+        pool_id: ProspectPoolId,
+        contact_id: ContactId,
+    ) -> impl Future<Output = Result<ProspectPool, DomainError>> + Send + 'a;
+
+    /// Removes a contact from the pool.
+    fn remove_member<'a>(
+        &'a self,
+        pool_id: ProspectPoolId,
+        contact_id: ContactId,
+    ) -> impl Future<Output = Result<ProspectPool, DomainError>> + Send + 'a;
+}
+
+/// Append-only store for [`OptOut`] records.
+///
+/// Opt-outs are never updated or deleted (compliance); the repository
+/// exposes no mutating path beyond `create`.
+pub trait OptOutRepository {
+    /// Records a new opt-out.
+    fn create<'a>(
+        &'a self,
+        opt_out: OptOut,
+    ) -> impl Future<Output = Result<OptOut, DomainError>> + Send + 'a;
+
+    /// Fetches an opt-out by id.
+    fn get<'a>(
+        &'a self,
+        opt_out_id: OptOutId,
+    ) -> impl Future<Output = Result<Option<OptOut>, DomainError>> + Send + 'a;
+
+    /// Lists a contact's opt-outs, newest first.
+    fn list_by_contact<'a>(
+        &'a self,
+        contact_id: ContactId,
+    ) -> impl Future<Output = Result<Vec<OptOut>, DomainError>> + Send + 'a;
+
+    /// Whether the contact is opted out on `channel`. An
+    /// [`OptOutChannel::All`] record suppresses every channel.
+    fn is_opted_out<'a>(
+        &'a self,
+        contact_id: ContactId,
+        channel: OptOutChannel,
+    ) -> impl Future<Output = Result<bool, DomainError>> + Send + 'a;
 }
 
 /// Append-mostly store for [`AgentAction`] records.
