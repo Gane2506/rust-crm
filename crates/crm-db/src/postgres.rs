@@ -740,6 +740,7 @@ fn resource_as_str(resource: Resource) -> &'static str {
         Resource::Asset => "asset",
         Resource::Email => "email",
         Resource::EmailThread => "email_thread",
+        Resource::AgentRun => "agent_run",
     }
 }
 
@@ -757,6 +758,7 @@ fn resource_from_str(raw: &str) -> Result<Resource, DomainError> {
         "asset" => Ok(Resource::Asset),
         "email" => Ok(Resource::Email),
         "email_thread" => Ok(Resource::EmailThread),
+        "agent_run" => Ok(Resource::AgentRun),
         other => Err(DomainError::Validation(format!(
             "storage error: unknown resource '{other}'"
         ))),

@@ -33,6 +33,7 @@ mod auth;
 mod campaigns;
 mod contacts;
 mod emails;
+mod jev;
 mod observability;
 #[cfg(test)]
 mod pg_tests;
@@ -341,6 +342,41 @@ where
         )
         .route("/v1/audit/events", get(audit::audit_events::<R, A, I>))
         .route("/v1/audit/verify", get(audit::audit_verify::<R, A, I>))
+        .route(
+            "/v1/agent-runs",
+            post(jev::create_agent_run::<R, A, I>).get(jev::list_agent_runs::<R, A, I>),
+        )
+        .route("/v1/agent-runs/{id}", get(jev::get_agent_run::<R, A, I>))
+        .route(
+            "/v1/agent-runs/{id}/request-approval",
+            post(jev::request_approval::<R, A, I>),
+        )
+        .route(
+            "/v1/agent-runs/{id}/approve",
+            post(jev::approve_run::<R, A, I>),
+        )
+        .route("/v1/agent-runs/{id}/deny", post(jev::deny_run::<R, A, I>))
+        .route(
+            "/v1/agent-runs/{id}/complete",
+            post(jev::complete_run::<R, A, I>),
+        )
+        .route("/v1/agent-runs/{id}/fail", post(jev::fail_run::<R, A, I>))
+        .route(
+            "/v1/agent-runs/{id}/cancel",
+            post(jev::cancel_run::<R, A, I>),
+        )
+        .route(
+            "/v1/agent-runs/{id}/tool-calls",
+            post(jev::record_tool_call::<R, A, I>).get(jev::list_tool_calls::<R, A, I>),
+        )
+        .route(
+            "/v1/agent-runs/{id}/handoff",
+            post(jev::create_handoff::<R, A, I>),
+        )
+        .route(
+            "/v1/agent-runs/{id}/handoffs",
+            get(jev::list_handoffs::<R, A, I>),
+        )
         .fallback(not_found);
 
     // When authentication is configured (the Postgres-backed server), the

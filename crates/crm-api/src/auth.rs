@@ -58,6 +58,9 @@ use crm_db::core_crm::{PgAssetRepository, PgClientProfileRepository};
 use crm_db::email::{
     PgEmailAttachmentRepository, PgEmailMessageRepository, PgEmailThreadRepository,
 };
+use crm_db::jev::{
+    PgAgentRunRepository, PgHandoffRepository, PgRoleMembership, PgToolCallRepository,
+};
 use crm_db::postgres::{PgAuditService, PgContactRepository};
 use crm_domain::services::AuditService;
 
@@ -104,6 +107,14 @@ pub struct ApiAuth {
     pub conversions: PgConversionRepository,
     /// Contact repository for campaign bulk sends.
     pub contacts: PgContactRepository,
+    /// Agent-run repository for the Jev agent endpoints.
+    pub agent_runs: PgAgentRunRepository,
+    /// Tool-call repository for the Jev agent endpoints.
+    pub tool_calls: PgToolCallRepository,
+    /// Handoff repository for the Jev agent endpoints.
+    pub handoffs: PgHandoffRepository,
+    /// Role-membership checker for agent-run approvals.
+    pub roles: PgRoleMembership,
 }
 
 impl ApiAuth {
@@ -140,6 +151,10 @@ impl ApiAuth {
             opt_outs: PgOptOutRepository::new(pool.clone()),
             conversions: PgConversionRepository::new(pool.clone()),
             contacts: PgContactRepository::new(pool.clone()),
+            agent_runs: PgAgentRunRepository::new(pool.clone()),
+            tool_calls: PgToolCallRepository::new(pool.clone()),
+            handoffs: PgHandoffRepository::new(pool.clone()),
+            roles: PgRoleMembership::new(pool.clone()),
         }
     }
 }

@@ -692,3 +692,30 @@ pub trait ToolCallRepository {
         limit: u64,
     ) -> impl Future<Output = Result<Vec<crate::jev::ToolCall>, DomainError>> + Send + 'a;
 }
+
+/// Persistence port for [`Handoff`](crate::jev::Handoff) records.
+///
+/// Intended storage shape (task 09-JEV-02): `handoffs` table keyed by
+/// `handoff_id`, with `from_run_id` foreign key, `to_agent_kind`,
+/// `context` JSONB and `created_at`. Append-only: there is deliberately
+/// no update or delete method.
+pub trait HandoffRepository {
+    /// Persists a new handoff.
+    fn create<'a>(
+        &'a self,
+        handoff: crate::jev::Handoff,
+    ) -> impl Future<Output = Result<crate::jev::Handoff, DomainError>> + Send + 'a;
+
+    /// Fetches a handoff by id.
+    fn get<'a>(
+        &'a self,
+        handoff_id: crate::ids::HandoffId,
+    ) -> impl Future<Output = Result<crate::jev::Handoff, DomainError>> + Send + 'a;
+
+    /// Lists handoffs out of one run, newest first, capped at `limit`.
+    fn list_by_run<'a>(
+        &'a self,
+        from_run_id: crate::ids::AgentRunId,
+        limit: u64,
+    ) -> impl Future<Output = Result<Vec<crate::jev::Handoff>, DomainError>> + Send + 'a;
+}

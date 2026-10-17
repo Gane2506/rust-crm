@@ -774,9 +774,8 @@ pub struct NewAgentRun {
     pub client_profile_id: ClientProfileId,
     /// Which kind of agent executes the run.
     pub agent_kind: String,
-    /// Preferred model-adapter name (first in the fallback chain).
-    pub adapter_name: String,
-    /// Fallback chain used when the preferred adapter fails.
+    /// Fallback chain of model-adapter names; the initial adapter is the
+    /// chain's primary (task 09-JEV-02: the chain is stored on the run).
     pub fallback_chain: crate::jev::FallbackChain,
     /// Input payload for the run.
     pub input: serde_json::Value,
@@ -791,6 +790,10 @@ pub struct NewToolCall {
     pub tool_name: String,
     /// Arguments supplied by the model.
     pub input: serde_json::Value,
+    /// Whether the tool requires human approval. Declared by the caller
+    /// from the tool definition (a tool registry is a later task); the
+    /// service enforces the approval flow from this flag.
+    pub requires_approval: bool,
 }
 
 /// Input for [`AgentService::handoff`]: an agent-to-agent context transfer.
@@ -802,6 +805,28 @@ pub struct NewHandoff {
     pub to_agent_kind: String,
     /// Context for the receiving agent (opaque JSON, never null).
     pub context: serde_json::Value,
+}
+
+/// Checks whether an actor holds a named approval role (RPITIT).
+///
+/// Roles are not persisted as assignments in the identity schema —
+/// grants are the stored unit — so this port lets the deployment define
+/// the role source. The reference implementation resolves a role to the
+/// grant that materializes it (e.g. `"agent_approver"` ⇔
+/// `AgentRun`/`Approve` in the run's scope).
+///
+/// Fail closed: an unresolvable check is an error, never an implicit
+/// grant. The agent service refuses the approval when the check errors
+/// or reports no membership.
+pub trait RoleMembership {
+    /// Whether `actor` holds `role` for operations inside
+    /// `client_profile_id`.
+    fn has_role<'a>(
+        &'a self,
+        actor: ActorId,
+        role: &'a str,
+        client_profile_id: ClientProfileId,
+    ) -> impl Future<Output = Result<bool, DomainError>> + Send + 'a;
 }
 
 /// Agent operations: run lifecycle, tool-call approval and handoffs.

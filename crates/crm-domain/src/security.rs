@@ -413,6 +413,10 @@ pub enum Resource {
     Email,
     /// Email conversation threads inside a client profile (task 07-MAIL-02).
     EmailThread,
+    /// Jev agent runs inside a client profile (task 09-JEV-02). Covers
+    /// the run lifecycle (start, approve, cancel, handoff); tool-call
+    /// audit records stay under `AgentAction`.
+    AgentRun,
 }
 
 /// Operations on a resource.
