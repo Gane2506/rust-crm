@@ -28,9 +28,13 @@
 
 use uuid::Uuid;
 
+use crm_core::campaign::CampaignServiceImpl;
 use crm_core::email::{EmailServiceImpl, StubEmailProvider};
 use crm_core::memory::ContactServiceImpl;
 use crm_db::auth::hash_password;
+use crm_db::campaign::{
+    PgCampaignRepository, PgConversionRepository, PgOptOutRepository, PgProspectPoolRepository,
+};
 use crm_db::core_crm::{PgAssetRepository, PgClientProfileRepository};
 use crm_db::email::{
     PgEmailAttachmentRepository, PgEmailMessageRepository, PgEmailThreadRepository,
@@ -41,18 +45,20 @@ use crm_db::postgres::{
 use crm_db::{run_migrations, DATABASE_URL_ENV, DATABASE_URL_EXAMPLE};
 use crm_domain::asset::Asset;
 use crm_domain::audit::ActorKind;
+use crm_domain::campaign::{Channel as CampaignChannel, OptOutChannel, OwnerContext, StepKind};
 use crm_domain::email::InboundThreadHints;
 use crm_domain::error::DomainError;
-use crm_domain::ids::{ActorId, AgencyId, ClientProfileId, GrantId, StaffId};
+use crm_domain::ids::{ActorId, AgencyId, ClientProfileId, ContactId, GrantId, StaffId};
 use crm_domain::profile::{ClientProfile, ProfileStatus};
 use crm_domain::repositories::{
-    AssetRepository, ClientProfileRepository, EmailMessageRepository, EmailThreadRepository,
-    GrantRepository, StaffRepository,
+    AssetRepository, ClientProfileRepository, ContactRepository, EmailMessageRepository,
+    EmailThreadRepository, GrantRepository, ProspectPoolRepository, StaffRepository,
 };
 use crm_domain::security::{Action, Grant, Operation, PasswordCredential, Resource, Scope};
 use crm_domain::services::ActionContext;
 use crm_domain::services::{
-    ContactService, EmailService, InboundEmail, NewContact, NewEmailMessage,
+    CampaignService, ContactService, EmailService, InboundEmail, NewCampaign, NewCampaignStep,
+    NewContact, NewEmailMessage,
 };
 
 /// Demo tenant also used by the `crm-web` vertical slice until real
@@ -273,6 +279,123 @@ async fn seed_email(pool: &sqlx::PgPool) -> Result<bool, DomainError> {
     Ok(true)
 }
 
+/// Seeds one draft campaign with an email step, one prospect pool
+/// holding the demo contacts, and one opt-out.
+///
+/// Idempotent: if the demo pool already exists for the profile, the
+/// whole step is skipped. The campaign is left in `Draft` — launching
+/// it is the operator's explicit action (launch sends mail, even via
+/// the stub provider's in-memory log).
+async fn seed_campaign(pool: &sqlx::PgPool) -> Result<bool, DomainError> {
+    const DEMO_POOL_NAME: &str = "demo-seed-pool";
+    const DEMO_CAMPAIGN_NAME: &str = "demo-seed-campaign";
+
+    let profile =
+        ClientProfileId::from(Uuid::parse_str(DEMO_PROFILE_ID).expect("demo profile id parses"));
+    let pools = PgProspectPoolRepository::new(pool.clone());
+    // Idempotency anchor: the demo pool.
+    if pools
+        .list_by_profile(profile, 100)
+        .await?
+        .iter()
+        .any(|p| p.name == DEMO_POOL_NAME)
+    {
+        return Ok(false);
+    }
+
+    let ctx = ActionContext {
+        actor_kind: ActorKind::System,
+        actor_id: ActorId::from(Uuid::nil()),
+        client_profile_id: Some(profile),
+        correlation_id: Uuid::new_v4(),
+    };
+
+    // Pool members: the seeded demo contacts, looked up by email.
+    let contacts = PgContactRepository::new(pool.clone());
+    let mut member_ids: Vec<ContactId> = Vec::new();
+    let mut grace_id: Option<ContactId> = None;
+    for email in ["ada@example.com", "grace@example.com", "linus@example.com"] {
+        let mut found = contacts.find_by_normalized_email(profile, email).await?;
+        if let Some(contact) = found.pop() {
+            if email == "grace@example.com" {
+                grace_id = Some(contact.contact_id);
+            }
+            member_ids.push(contact.contact_id);
+        }
+    }
+
+    let email_service = EmailServiceImpl::new(
+        PgEmailMessageRepository::new(pool.clone()),
+        PgEmailThreadRepository::new(pool.clone()),
+        PgEmailAttachmentRepository::new(pool.clone()),
+        StubEmailProvider::new(),
+        PgAuditService::new(PgAuditRepository::new(pool.clone())),
+    );
+    let service = CampaignServiceImpl::new(
+        PgCampaignRepository::new(pool.clone()),
+        pools,
+        PgOptOutRepository::new(pool.clone()),
+        PgContactRepository::new(pool.clone()),
+        PgConversionRepository::new(pool.clone()),
+        email_service,
+        PgAuditService::new(PgAuditRepository::new(pool.clone())),
+    );
+
+    let created_pool = service
+        .create_pool(profile, DEMO_POOL_NAME.to_owned(), &ctx)
+        .await?;
+    let pool_id = created_pool.pool_id;
+    let pool_repos = PgProspectPoolRepository::new(pool.clone());
+    for contact_id in &member_ids {
+        // Dedupe is enforced by the composite PK; ignore conflicts.
+        let _ = pool_repos.add_member(pool_id, *contact_id).await;
+    }
+
+    let campaign = service
+        .create_campaign(
+            NewCampaign {
+                name: DEMO_CAMPAIGN_NAME.to_owned(),
+                owner_context: OwnerContext::ClientProfile(profile),
+                channel: CampaignChannel::Email,
+                prospect_pool_id: pool_id.to_string(),
+                schedule: "0 9 * * *".to_owned(),
+                suppression_policy: "opt-outs".to_owned(),
+                conversion_rules: "last-touch".to_owned(),
+                attribution_window_days: 30,
+                idempotency_key: Uuid::new_v4().to_string(),
+            },
+            &ctx,
+        )
+        .await?;
+    service
+        .add_step(
+            NewCampaignStep {
+                campaign_id: campaign.campaign_id,
+                kind: StepKind::Email,
+                position: 0,
+                template_id: Some("demo-welcome-template".to_owned()),
+                wait_duration_secs: None,
+            },
+            &ctx,
+        )
+        .await?;
+
+    // grace@example.com opts out of email: launching the demo campaign
+    // later must skip her.
+    if let Some(grace_id) = grace_id {
+        let _ = service
+            .record_opt_out(
+                profile,
+                grace_id,
+                OptOutChannel::Email,
+                Some("demo seed opt-out".to_owned()),
+                &ctx,
+            )
+            .await;
+    }
+    Ok(true)
+}
+
 /// Env var gating writes: `CRM_SEED_DEV=1` is the explicit opt-in that
 /// lets this example write to the database.
 const SEED_DEV_ENV: &str = "CRM_SEED_DEV";
@@ -371,6 +494,9 @@ async fn run() -> Result<(), String> {
         println!(
             "  6. seed demo email thread (1 thread, 3 messages) on the demo profile (idempotent)"
         );
+        println!(
+            "  7. seed demo campaign (draft, 1 email step) + prospect pool + opt-out (idempotent)"
+        );
         return Ok(());
     }
 
@@ -404,6 +530,14 @@ async fn run() -> Result<(), String> {
         println!("seed complete: demo email thread (3 messages) created");
     } else {
         println!("seed complete: demo email thread already present");
+    }
+    if seed_campaign(&pool)
+        .await
+        .map_err(|error| format!("seed campaign: {error}"))?
+    {
+        println!("seed complete: demo campaign + pool + opt-out created");
+    } else {
+        println!("seed complete: demo campaign already present");
     }
     println!("dev login: email {DEMO_STAFF_EMAIL}, password {DEMO_STAFF_PASSWORD} (local only)");
     Ok(())
