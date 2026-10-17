@@ -1,0 +1,7 @@
+# Pinned toolchain for rust-crm (task 01-FND-01).
+# Exact stable installed 2026-10-16: rustc 1.99.1 (58cf8f9c3 2026-10-13).
+
+[toolchain]
+channel = "1.99.1"
+components = ["rustfmt", "clippy"]
+targets = ["x86_64-unknown-linux-gnu", "wasm32-unknown-unknown"]

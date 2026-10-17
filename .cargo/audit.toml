@@ -1,0 +1,19 @@
+# cargo-audit configuration for rust-crm.
+#
+# Ignored advisories are documented here with rationale instead of being
+# silently dropped. Each entry must name the advisory, why it does not
+# apply to our artifacts, and what would make the ignore stale.
+
+[advisories]
+ignore = [
+    # RUSTSEC-2023-0071: `rsa` Marvin timing sidechannel (medium).
+    # Reachable only via sqlx-macros-core -> sqlx-mysql (non-optional dep
+    # of sqlx's `macros` feature, used for compile-time `query!` support).
+    # `rsa` therefore runs at compile time on the build host only; it is
+    # never linked into shipped binaries, and no RSA private-key operation
+    # ever executes in our artifacts, so the timing sidechannel is not
+    # exploitable here. Upstream has no fixed upgrade ("No fixed upgrade
+    # is available"). Revisit if we ever link `rsa` into a runtime artifact
+    # or upstream publishes a fixed release.
+    "RUSTSEC-2023-0071",
+]

@@ -1,0 +1,10 @@
+[package]
+name = "crm-db"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "SQLx persistence layer for the Rust CRM (repositories land in task 02-DB-01)"
+
+[dependencies]
+sqlx.workspace = true
+thiserror.workspace = true

@@ -1,0 +1,45 @@
+# cargo-deny configuration for rust-crm (task 01-FND-01).
+# Reference: https://embarkstudios.github.io/cargo-deny/
+
+[graph]
+all-features = true
+
+[advisories]
+# Ignored advisories are documented with rationale (see also
+# .cargo/audit.toml, which carries the same triage for cargo-audit).
+yanked = "deny"
+ignore = [
+    # RUSTSEC-2023-0071: `rsa` Marvin timing sidechannel (medium). Reachable
+    # only via sqlx-macros-core -> sqlx-mysql (compile-time `query!` macro
+    # support); never linked into shipped artifacts, so the timing
+    # sidechannel is not exploitable here. No fixed upgrade available.
+    { id = "RUSTSEC-2023-0071", reason = "build-time-only transitive dep via sqlx macros; not linked into artifacts" },
+    # RUSTSEC-2024-0436: `paste` unmaintained (informational). Transitive via
+    # leptos -> either_of; proc-macro helper with no fixed upgrade available.
+    # Revisit if a maintained fork appears or leptos drops the dependency.
+    { id = "RUSTSEC-2024-0436", reason = "unmaintained proc-macro helper transitive via leptos; no upgrade available" },
+]
+
+[licenses]
+# Our own license (GPL-3.0-only) plus GPL-compatible dependency licenses.
+# Every entry below was verified against SPDX + GNU's compatible-licenses
+# list; all are permissive and GPL-3.0-compatible.
+allow = [
+    "GPL-3.0-only",
+    "GPL-3.0-or-later",
+    "MIT",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "CC0-1.0",
+    "BSL-1.0",
+    "Zlib",
+    "Unicode-3.0",
+    "CDLA-Permissive-2.0",
+]
+confidence-threshold = 0.8
+
+[bans]
+# No wildcard version requirements anywhere in the workspace.
+wildcards = "deny"

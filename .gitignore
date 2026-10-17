@@ -1,0 +1,8 @@
+# Build output
+target/
+
+# Local environment / secrets
+.env*
+
+# Logs
+*.log

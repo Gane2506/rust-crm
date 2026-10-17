@@ -1,0 +1,10 @@
+[package]
+name = "crm-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Shared pure utilities for the Rust CRM (idempotency keys, pagination)"
+
+[dependencies]
+thiserror.workspace = true
+uuid.workspace = true
