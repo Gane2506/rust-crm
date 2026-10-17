@@ -1689,3 +1689,582 @@ async fn pg_audit_events_endpoint_rejects_profile_scoped_grant() {
 
     drop_db(&admin_url, &db_name, pool).await;
 }
+
+// ---------------------------------------------------------------------------
+// Core CRM vertical slice (05-CRM-02)
+// ---------------------------------------------------------------------------
+
+/// Assigns one grant to a staff user.
+async fn grant(
+    pool: &PgPool,
+    staff_id: StaffId,
+    resource: Resource,
+    operation: Operation,
+    scope: Scope,
+) {
+    PgGrantRepository::new(pool.clone())
+        .assign(
+            staff_id,
+            Grant {
+                grant_id: GrantId::new(),
+                action: Action {
+                    resource,
+                    operation,
+                },
+                scope,
+            },
+        )
+        .await
+        .expect("assign grant");
+}
+
+/// Builds an authenticated POST request with a JSON body.
+fn post_json(uri: &str, body: serde_json::Value, token: &str) -> Request<Body> {
+    Request::builder()
+        .method("POST")
+        .uri(uri)
+        .header(header::CONTENT_TYPE, "application/json")
+        .header("Authorization", format!("Bearer {token}"))
+        .body(Body::from(body.to_string()))
+        .expect("test request builds")
+}
+
+#[tokio::test]
+async fn pg_profile_lifecycle() {
+    let Some((pool, admin_url, db_name)) = fresh_db().await else {
+        eprintln!("skipping Postgres API test: DATABASE_URL is not set");
+        return;
+    };
+    let router = pg_router(&pool);
+    let profile_uuid = uuid::Uuid::new_v4();
+    let (token, staff_id, agency_id) =
+        seed_authed_user(&pool, &router, profile_uuid, "profiler@example.com").await;
+
+    // Grant profile management at agency scope.
+    let agency_scope = Scope::Agency { agency_id };
+    for operation in [Operation::Create, Operation::Read, Operation::Update] {
+        grant(
+            &pool,
+            staff_id,
+            Resource::ClientProfile,
+            operation,
+            agency_scope,
+        )
+        .await;
+    }
+
+    // Create.
+    let (status, body) = read_json(
+        router
+            .clone()
+            .oneshot(post_json(
+                "/api/v1/profiles",
+                serde_json::json!({ "name": "Acme Corp" }),
+                &token,
+            ))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let profile_id = body["profile_id"].as_str().expect("profile_id present");
+    assert_eq!(body["name"], "Acme Corp");
+    assert_eq!(body["status"], "Active");
+
+    // Get.
+    let (status, body) = read_json(
+        router
+            .clone()
+            .oneshot(get(format!("/api/v1/profiles/{profile_id}"), &token))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["name"], "Acme Corp");
+
+    // List.
+    let (status, body) = read_json(
+        router
+            .clone()
+            .oneshot(get("/api/v1/profiles".to_owned(), &token))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body["total"].as_u64().expect("total") >= 1);
+
+    // Suspend → reactivate → archive.
+    for (uri, expected) in [
+        (
+            format!("/api/v1/profiles/{profile_id}/suspend"),
+            "Suspended",
+        ),
+        (
+            format!("/api/v1/profiles/{profile_id}/reactivate"),
+            "Active",
+        ),
+        (format!("/api/v1/profiles/{profile_id}/archive"), "Archived"),
+    ] {
+        let (status, body) = read_json(
+            router
+                .clone()
+                .oneshot(post_json(&uri, serde_json::json!({}), &token))
+                .await
+                .expect("oneshot"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["status"], expected);
+    }
+
+    // Archived is terminal: suspend fails.
+    let (status, _) = read_json(
+        router
+            .clone()
+            .oneshot(post_json(
+                &format!("/api/v1/profiles/{profile_id}/suspend"),
+                serde_json::json!({}),
+                &token,
+            ))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+
+    drop_db(&admin_url, &db_name, pool).await;
+}
+
+#[tokio::test]
+async fn pg_profile_agency_isolation() {
+    let Some((pool, admin_url, db_name)) = fresh_db().await else {
+        eprintln!("skipping Postgres API test: DATABASE_URL is not set");
+        return;
+    };
+    let router = pg_router(&pool);
+    let (token_a, staff_a, agency_a) =
+        seed_authed_user(&pool, &router, uuid::Uuid::new_v4(), "a@example.com").await;
+    let (token_b, staff_b, agency_b) =
+        seed_authed_user(&pool, &router, uuid::Uuid::new_v4(), "b@example.com").await;
+
+    // Both users get profile-read at their own agency scope.
+    grant(
+        &pool,
+        staff_a,
+        Resource::ClientProfile,
+        Operation::Create,
+        Scope::Agency {
+            agency_id: agency_a,
+        },
+    )
+    .await;
+    grant(
+        &pool,
+        staff_a,
+        Resource::ClientProfile,
+        Operation::Read,
+        Scope::Agency {
+            agency_id: agency_a,
+        },
+    )
+    .await;
+    grant(
+        &pool,
+        staff_b,
+        Resource::ClientProfile,
+        Operation::Read,
+        Scope::Agency {
+            agency_id: agency_b,
+        },
+    )
+    .await;
+
+    // A creates a profile.
+    let (status, body) = read_json(
+        router
+            .clone()
+            .oneshot(post_json(
+                "/api/v1/profiles",
+                serde_json::json!({ "name": "A Corp" }),
+                &token_a,
+            ))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let profile_id = body["profile_id"].as_str().expect("profile_id");
+
+    // B cannot see A's profile: 404, not an existence leak.
+    let (status, _) = read_json(
+        router
+            .clone()
+            .oneshot(get(format!("/api/v1/profiles/{profile_id}"), &token_b))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // B's list does not include A's profile.
+    let (status, body) = read_json(
+        router
+            .clone()
+            .oneshot(get("/api/v1/profiles".to_owned(), &token_b))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["total"], 0);
+
+    drop_db(&admin_url, &db_name, pool).await;
+}
+
+#[tokio::test]
+async fn pg_contact_dedupe_blocks_duplicate() {
+    let Some((pool, admin_url, db_name)) = fresh_db().await else {
+        eprintln!("skipping Postgres API test: DATABASE_URL is not set");
+        return;
+    };
+    let router = pg_router(&pool);
+    let profile = uuid::Uuid::new_v4();
+    let (token, _, _) = seed_authed_user(&pool, &router, profile, "dedupe@example.com").await;
+
+    // First contact.
+    let (status, _) = read_json(
+        router
+            .clone()
+            .oneshot(post_contacts(contact_body(profile), None, &token))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    // Same email, different casing/whitespace → 409 (dedupe on write path).
+    let mut dup_body = contact_body(profile);
+    dup_body["emails"] = serde_json::json!([" test@example.com "]);
+    let (status, problem) = read_json(
+        router
+            .clone()
+            .oneshot(post_contacts(dup_body, None, &token))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(problem["title"], "Conflict");
+    // No PII in the error.
+    assert!(!problem["detail"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("test@example.com"));
+
+    drop_db(&admin_url, &db_name, pool).await;
+}
+
+#[tokio::test]
+async fn pg_contact_merge_endpoint() {
+    let Some((pool, admin_url, db_name)) = fresh_db().await else {
+        eprintln!("skipping Postgres API test: DATABASE_URL is not set");
+        return;
+    };
+    let router = pg_router(&pool);
+    let profile = uuid::Uuid::new_v4();
+    let (token, staff_id, agency_id) =
+        seed_authed_user(&pool, &router, profile, "merger@example.com").await;
+    // Merge needs contact/update.
+    grant(
+        &pool,
+        staff_id,
+        Resource::Contact,
+        Operation::Update,
+        Scope::ClientProfile {
+            agency_id,
+            client_profile_id: ClientProfileId::from(profile),
+        },
+    )
+    .await;
+
+    // Survivor with one email.
+    let (status, survivor) = read_json(
+        router
+            .clone()
+            .oneshot(post_contacts(
+                serde_json::json!({
+                    "client_profile_id": profile,
+                    "emails": ["survivor@example.com"],
+                    "phones": [],
+                    "source": "web-form",
+                }),
+                None,
+                &token,
+            ))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    // Duplicate with a different email + a phone.
+    let (status, duplicate) = read_json(
+        router
+            .clone()
+            .oneshot(post_contacts(
+                serde_json::json!({
+                    "client_profile_id": profile,
+                    "emails": ["duplicate@example.com"],
+                    "phones": ["+1-555-0199"],
+                    "source": "csv-import",
+                }),
+                None,
+                &token,
+            ))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let survivor_id = survivor["contact_id"].as_str().expect("survivor id");
+    let duplicate_id = duplicate["contact_id"].as_str().expect("duplicate id");
+
+    // Merge.
+    let (status, merged) = read_json(
+        router
+            .clone()
+            .oneshot(post_json(
+                "/api/v1/contacts/merge",
+                serde_json::json!({
+                    "survivor_id": survivor_id,
+                    "duplicate_id": duplicate_id,
+                }),
+                &token,
+            ))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(merged["lifecycle"], "Archived");
+    assert_eq!(merged["merged_into"], survivor_id);
+
+    // The survivor absorbed the duplicate's identity (union).
+    let (status, survivor_after) = read_json(
+        router
+            .clone()
+            .oneshot(get(format!("/api/v1/contacts/{survivor_id}"), &token))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let emails: Vec<&str> = survivor_after["normalized_emails"]
+        .as_array()
+        .expect("emails")
+        .iter()
+        .map(|v| v.as_str().expect("email str"))
+        .collect();
+    assert!(emails.contains(&"survivor@example.com"));
+    assert!(emails.contains(&"duplicate@example.com"));
+    let phones: Vec<&str> = survivor_after["normalized_phones"]
+        .as_array()
+        .expect("phones")
+        .iter()
+        .map(|v| v.as_str().expect("phone str"))
+        .collect();
+    assert!(phones.iter().any(|p| p.contains("555-0199")));
+
+    drop_db(&admin_url, &db_name, pool).await;
+}
+
+#[tokio::test]
+async fn pg_asset_upload_dedupe() {
+    let Some((pool, admin_url, db_name)) = fresh_db().await else {
+        eprintln!("skipping Postgres API test: DATABASE_URL is not set");
+        return;
+    };
+    let router = pg_router(&pool);
+    let profile = uuid::Uuid::new_v4();
+    let (token, staff_id, agency_id) =
+        seed_authed_user(&pool, &router, profile, "assets@example.com").await;
+    let scope = Scope::ClientProfile {
+        agency_id,
+        client_profile_id: ClientProfileId::from(profile),
+    };
+    for operation in [Operation::Create, Operation::Read, Operation::Update] {
+        grant(&pool, staff_id, Resource::Asset, operation, scope).await;
+    }
+
+    let sha_hex = "aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899";
+    let body = serde_json::json!({
+        "client_profile_id": profile,
+        "file_name": "contract.pdf",
+        "mime_type": "application/pdf",
+        "size_bytes": 1024,
+        "sha256_hex": sha_hex,
+    });
+    // First upload → 201.
+    let (status, asset) = read_json(
+        router
+            .clone()
+            .oneshot(post_json("/api/v1/assets", body.clone(), &token))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let asset_id = asset["asset_id"].as_str().expect("asset id");
+    assert_eq!(asset["kind"], "Document");
+
+    // Same bytes, different name → 200 with the SAME asset (dedupe).
+    let mut body2 = body.clone();
+    body2["file_name"] = serde_json::json!("renamed.pdf");
+    let (status, asset2) = read_json(
+        router
+            .clone()
+            .oneshot(post_json("/api/v1/assets", body2, &token))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(asset2["asset_id"], asset_id);
+
+    // Get + list.
+    let (status, _) = read_json(
+        router
+            .clone()
+            .oneshot(get(format!("/api/v1/assets/{asset_id}"), &token))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, body) = read_json(
+        router
+            .clone()
+            .oneshot(get(
+                format!("/api/v1/assets?client_profile_id={profile}"),
+                &token,
+            ))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["total"], 1);
+
+    // Archive.
+    let (status, archived) = read_json(
+        router
+            .clone()
+            .oneshot(post_json(
+                &format!("/api/v1/assets/{asset_id}/archive"),
+                serde_json::json!({}),
+                &token,
+            ))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(archived["status"], "Archived");
+
+    drop_db(&admin_url, &db_name, pool).await;
+}
+
+#[tokio::test]
+async fn pg_asset_scope_isolation() {
+    let Some((pool, admin_url, db_name)) = fresh_db().await else {
+        eprintln!("skipping Postgres API test: DATABASE_URL is not set");
+        return;
+    };
+    let router = pg_router(&pool);
+    let profile_a = uuid::Uuid::new_v4();
+    let profile_b = uuid::Uuid::new_v4();
+    let (token_a, staff_a, agency_a) =
+        seed_authed_user(&pool, &router, profile_a, "aiso-a@example.com").await;
+    // User B gets asset grants on profile B only.
+    let (token_b, staff_b, agency_b) =
+        seed_authed_user(&pool, &router, profile_b, "aiso-b@example.com").await;
+
+    for operation in [Operation::Create, Operation::Read] {
+        grant(
+            &pool,
+            staff_a,
+            Resource::Asset,
+            operation,
+            Scope::ClientProfile {
+                agency_id: agency_a,
+                client_profile_id: ClientProfileId::from(profile_a),
+            },
+        )
+        .await;
+        grant(
+            &pool,
+            staff_b,
+            Resource::Asset,
+            operation,
+            Scope::ClientProfile {
+                agency_id: agency_b,
+                client_profile_id: ClientProfileId::from(profile_b),
+            },
+        )
+        .await;
+    }
+
+    // A uploads under profile A.
+    let sha_hex = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
+    let (status, asset) = read_json(
+        router
+            .clone()
+            .oneshot(post_json(
+                "/api/v1/assets",
+                serde_json::json!({
+                    "client_profile_id": profile_a,
+                    "file_name": "a.pdf",
+                    "mime_type": "application/pdf",
+                    "size_bytes": 512,
+                    "sha256_hex": sha_hex,
+                }),
+                &token_a,
+            ))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let asset_id = asset["asset_id"].as_str().expect("asset id");
+
+    // B cannot fetch A's asset: 403 (has asset/read, but only on profile B).
+    // The handler fetches first, then authorizes against the asset's own
+    // profile — B's grant does not cover profile A.
+    let (status, _) = read_json(
+        router
+            .clone()
+            .oneshot(get(format!("/api/v1/assets/{asset_id}"), &token_b))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    // B's list under profile A is also forbidden.
+    let (status, _) = read_json(
+        router
+            .clone()
+            .oneshot(get(
+                format!("/api/v1/assets?client_profile_id={profile_a}"),
+                &token_b,
+            ))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    drop_db(&admin_url, &db_name, pool).await;
+}

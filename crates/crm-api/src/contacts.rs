@@ -88,6 +88,12 @@ impl<S, I> AppState<S, I> {
     pub fn contact_service(&self) -> &S {
         &self.contacts
     }
+
+    /// Borrows the idempotency store.
+    #[must_use]
+    pub(crate) fn idempotency_store(&self) -> &I {
+        &self.idempotency
+    }
 }
 
 impl AppState<MemoryContactService, MemoryIdempotencyStore> {
@@ -268,7 +274,7 @@ pub(crate) fn request_id(headers: &HeaderMap) -> (String, Uuid) {
 ///
 /// The error side is boxed: `axum::http::Response` is a large type and
 /// returning it by value trips `clippy::result_large_err`.
-fn idempotency_key(
+pub(crate) fn idempotency_key(
     headers: &HeaderMap,
     instance: &str,
 ) -> Result<Option<IdempotencyKey>, Box<Response>> {
@@ -576,6 +582,88 @@ where
         .take(limit as usize)
         .collect();
     Json(ContactListResponse { contacts, total }).into_response()
+}
+
+/// Body of `POST /api/v1/contacts/merge`.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct MergeContactsBody {
+    /// The contact that survives, absorbing the other's identity.
+    pub survivor_id: Uuid,
+    /// The duplicate folded into the survivor (tombstoned, never deleted).
+    pub duplicate_id: Uuid,
+}
+
+/// `POST /api/v1/contacts/merge` — merges a duplicate into its survivor.
+///
+/// The survivor absorbs the duplicate's emails, phones, sources and
+/// consents (union); the duplicate is archived with `merged_into`
+/// pointing at the survivor. Returns `200` with the archived duplicate.
+///
+/// Requires the `contact/update` grant within the contacts' client
+/// profile scope (`403` without it); both contacts must live under the
+/// same profile (`403` on cross-profile pairs).
+pub async fn merge_contacts<R, A, I>(
+    State(state): State<AppState<ContactServiceImpl<R, A>, I>>,
+    auth: Option<Extension<RequestAuth>>,
+    headers: HeaderMap,
+    body: Result<Json<MergeContactsBody>, JsonRejection>,
+) -> Response
+where
+    R: ContactReadModel + Clone + Send + Sync + 'static,
+    A: AuditService + Clone + Send + Sync + 'static,
+    I: IdempotencyStore,
+{
+    let (instance, _) = request_id(&headers);
+    let body = match body {
+        Ok(Json(body)) => body,
+        Err(rejection) => {
+            return problem_response(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "Invalid request body",
+                rejection.body_text(),
+                instance,
+            );
+        }
+    };
+    // Fetch the survivor first to anchor the tenant scope, mirroring
+    // `get_contact`: the request carries no profile parameter.
+    let survivor = match state
+        .contact_service()
+        .repository()
+        .get(ContactId::from(body.survivor_id))
+        .await
+    {
+        Ok(contact) => contact,
+        Err(error) => return domain_error_response(error, instance),
+    };
+    let action = Action {
+        resource: Resource::Contact,
+        operation: Operation::Update,
+    };
+    let ctx = match resolve_context(
+        &state,
+        auth,
+        &headers,
+        &action,
+        Some(survivor.client_profile_id),
+    )
+    .await
+    {
+        Ok(ctx) => ctx,
+        Err(response) => return *response,
+    };
+    match state
+        .contact_service()
+        .merge_contacts(
+            ContactId::from(body.survivor_id),
+            ContactId::from(body.duplicate_id),
+            &ctx,
+        )
+        .await
+    {
+        Ok(merged) => Json(merged).into_response(),
+        Err(error) => domain_error_response(error, instance),
+    }
 }
 
 #[cfg(test)]

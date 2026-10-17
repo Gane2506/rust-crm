@@ -27,12 +27,14 @@ use tower_http::{
 };
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
+mod assets;
 mod audit;
 mod auth;
 mod contacts;
 mod observability;
 #[cfg(test)]
 mod pg_tests;
+mod profiles;
 mod rate_limit;
 mod security_headers;
 
@@ -249,6 +251,36 @@ where
             post(contacts::create_contact::<R, A, I>).get(contacts::list_contacts::<R, A, I>),
         )
         .route("/v1/contacts/{id}", get(contacts::get_contact::<R, A, I>))
+        .route(
+            "/v1/contacts/merge",
+            post(contacts::merge_contacts::<R, A, I>),
+        )
+        .route(
+            "/v1/profiles",
+            post(profiles::create_profile::<R, A, I>).get(profiles::list_profiles::<R, A, I>),
+        )
+        .route("/v1/profiles/{id}", get(profiles::get_profile::<R, A, I>))
+        .route(
+            "/v1/profiles/{id}/suspend",
+            post(profiles::suspend_profile::<R, A, I>),
+        )
+        .route(
+            "/v1/profiles/{id}/reactivate",
+            post(profiles::reactivate_profile::<R, A, I>),
+        )
+        .route(
+            "/v1/profiles/{id}/archive",
+            post(profiles::archive_profile::<R, A, I>),
+        )
+        .route(
+            "/v1/assets",
+            post(assets::register_asset::<R, A, I>).get(assets::list_assets::<R, A, I>),
+        )
+        .route("/v1/assets/{id}", get(assets::get_asset::<R, A, I>))
+        .route(
+            "/v1/assets/{id}/archive",
+            post(assets::archive_asset::<R, A, I>),
+        )
         .route("/v1/audit/events", get(audit::audit_events::<R, A, I>))
         .route("/v1/audit/verify", get(audit::audit_verify::<R, A, I>))
         .fallback(not_found);

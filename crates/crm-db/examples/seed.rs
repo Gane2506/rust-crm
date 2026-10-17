@@ -30,14 +30,19 @@ use uuid::Uuid;
 
 use crm_core::memory::ContactServiceImpl;
 use crm_db::auth::hash_password;
+use crm_db::core_crm::{PgAssetRepository, PgClientProfileRepository};
 use crm_db::postgres::{
     PgAuditRepository, PgAuditService, PgContactRepository, PgGrantRepository, PgStaffRepository,
 };
 use crm_db::{run_migrations, DATABASE_URL_ENV, DATABASE_URL_EXAMPLE};
+use crm_domain::asset::Asset;
 use crm_domain::audit::ActorKind;
 use crm_domain::error::DomainError;
 use crm_domain::ids::{ActorId, AgencyId, ClientProfileId, GrantId, StaffId};
-use crm_domain::repositories::{GrantRepository, StaffRepository};
+use crm_domain::profile::{ClientProfile, ProfileStatus};
+use crm_domain::repositories::{
+    AssetRepository, ClientProfileRepository, GrantRepository, StaffRepository,
+};
 use crm_domain::security::{Action, Grant, Operation, PasswordCredential, Resource, Scope};
 use crm_domain::services::ActionContext;
 use crm_domain::services::{ContactService, NewContact};
@@ -106,6 +111,43 @@ async fn seed(pool: &sqlx::PgPool) -> Result<(usize, usize), DomainError> {
         }
     }
     Ok((created, skipped))
+}
+
+/// Claims the demo client profile with its real agency and name.
+///
+/// The contact seed's `ensure_client_profile` upsert may have created a
+/// placeholder row (id only); the repository's `create` claims it via
+/// `ON CONFLICT DO UPDATE`, so this is idempotent. Also registers a
+/// demo asset (idempotent via the content-hash unique index).
+async fn seed_profile(pool: &sqlx::PgPool, agency_id: AgencyId) -> Result<(), DomainError> {
+    let profile_id =
+        ClientProfileId::from(Uuid::parse_str(DEMO_PROFILE_ID).expect("demo profile id parses"));
+    let now = chrono::Utc::now();
+    let profile_repo = PgClientProfileRepository::new(pool.clone());
+    profile_repo
+        .create(ClientProfile {
+            profile_id,
+            agency_id,
+            name: "Demo Client".to_owned(),
+            status: ProfileStatus::Active,
+            created_at: now,
+            updated_at: now,
+        })
+        .await?;
+
+    // Demo asset: a fixed content hash keeps re-runs idempotent — the
+    // repository returns the existing row on hash conflict.
+    let asset_repo = PgAssetRepository::new(pool.clone());
+    let asset = Asset::new(
+        profile_id,
+        ActorId::from(Uuid::nil()),
+        "demo-welcome.pdf".to_owned(),
+        "application/pdf".to_owned(),
+        1024,
+        [42u8; 32],
+    )?;
+    asset_repo.create(asset).await?;
+    Ok(())
 }
 
 /// Env var gating writes: `CRM_SEED_DEV=1` is the explicit opt-in that
@@ -180,7 +222,8 @@ async fn run() -> Result<(), String> {
             "  3. create {} sample contacts (idempotent)",
             SEED_CONTACTS.len()
         );
-        println!("  4. create demo staff user {DEMO_STAFF_EMAIL} (idempotent)");
+        println!("  4. claim demo profile with agency + name, register demo asset (idempotent)");
+        println!("  5. create demo staff user {DEMO_STAFF_EMAIL} (idempotent)");
         return Ok(());
     }
 
@@ -195,6 +238,10 @@ async fn run() -> Result<(), String> {
         .map_err(|error| format!("seed contacts: {error}"))?;
     println!("seed complete: {created} contacts created, {skipped} already present");
     let agency_id = AgencyId::from(Uuid::parse_str(DEMO_AGENCY_ID).expect("demo agency id parses"));
+    seed_profile(&pool, agency_id)
+        .await
+        .map_err(|error| format!("seed profile: {error}"))?;
+    println!("seed complete: demo client profile {DEMO_PROFILE_ID} claimed");
     if seed_staff(&pool, agency_id)
         .await
         .map_err(|error| format!("seed staff user: {error}"))?
