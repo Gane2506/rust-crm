@@ -422,8 +422,13 @@ dependencies = [
 name = "crm-db"
 version = "0.1.0"
 dependencies = [
+ "chrono",
+ "crm-domain",
+ "serde_json",
  "sqlx",
  "thiserror 2.0.21",
+ "tokio",
+ "uuid",
 ]
 
 [[package]]

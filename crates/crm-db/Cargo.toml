@@ -8,3 +8,10 @@ description = "SQLx persistence layer for the Rust CRM (repositories land in tas
 [dependencies]
 sqlx.workspace = true
 thiserror.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+serde_json.workspace = true
+crm-domain = { path = "../crm-domain", version = "0.1.0" }
+
+[dev-dependencies]
+tokio.workspace = true
