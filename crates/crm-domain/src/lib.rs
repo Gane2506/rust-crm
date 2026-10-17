@@ -49,6 +49,9 @@ pub mod contract;
 pub mod email;
 /// Domain error type with explicit, secret-free error semantics.
 pub mod error;
+/// Form builder domain: typed intake/lead forms, field validation and
+/// submissions (task 11-FORM-01).
+pub mod form;
 /// Typed UUID newtypes used as stable entity identifiers.
 pub mod ids;
 /// Jev agent domain: runs, model adapters, tools, approval gates and
@@ -82,6 +85,9 @@ pub use email::{
     ThreadStatus,
 };
 pub use error::DomainError;
+pub use form::{
+    Form, FormAnswer, FormField, FormFieldType, FormStatus, FormSubmission, SubmissionStatus,
+};
 pub use jev::{
     AgentRun, AgentRunStatus, AgentTool, ApprovalDecision, ApprovalGate, FallbackChain, Handoff,
     ModelAdapter, ModelCompletion, ToolCall, ToolCallRequest, ToolCallStatus,
