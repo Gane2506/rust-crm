@@ -51,9 +51,8 @@ use crm_domain::error::DomainError;
 use crm_domain::ids::{ActorId, AgencyId, ClientProfileId, ContactId, GrantId, StaffId};
 use crm_domain::profile::{ClientProfile, ProfileStatus};
 use crm_domain::repositories::{
-    AssetRepository, ClientProfileRepository, ContactRepository,
-    EmailMessageRepository, EmailThreadRepository, GrantRepository,
-    ProspectPoolRepository, StaffRepository,
+    AssetRepository, ClientProfileRepository, ContactRepository, EmailMessageRepository,
+    EmailThreadRepository, GrantRepository, ProspectPoolRepository, StaffRepository,
 };
 use crm_domain::security::{Action, Grant, Operation, PasswordCredential, Resource, Scope};
 use crm_domain::services::ActionContext;
