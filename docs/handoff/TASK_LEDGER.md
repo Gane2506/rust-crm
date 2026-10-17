@@ -8,7 +8,8 @@ Statuses: TODO / IN_PROGRESS / BLOCKED / DONE. Never mark DONE without linked co
 | 01-FND-02 | DONE | PR #2 (merged into `task/01-FND-01`) + PR #3 (merged to `main` as `db70a1e`) | CI run 39005491439: all 9 jobs green (fmt, clippy -D warnings, test, release build, wasm32 build, audit, deny, forbidden-source scan, unsafe report); local: 60 tests + live API smoke test (201/409/422) | Vertical slice shipped: in-memory repos/services + contacts API (idempotency keys, RFC 7807) + WASM contacts page. Default branch fixed to `main`. |
 | 01-FND-03 | DONE | PR #4 (merged to `main` as `d8ef0d7`) | CI run 39031019323: all 9 jobs green (fmt, clippy -D warnings, test, release build, wasm32 build, audit, deny, forbidden-source scan, unsafe report); local: 65 tests + live serving verified via curl | Verify and operationalize: static frontend serving + SPA fallback, dev guide, .env.example |
 | 02-DB-01 | DONE | issue #5 / PR #6 (merge `ad3d244`) | | Persistence foundation: schema, migrations, transactional outbox, SQLx repository interfaces |
-| 02-DB-02 | IN_PROGRESS | issue #7 / branch `task/02-DB-02` | | Persistence foundation: schema, migrations, transactional outbox, SQLx (vertical slice) |
+| 02-DB-02 | DONE | issue #7 / PR #8 (merge `1593a42`) | | Persistence foundation: Postgres vertical slice — API runs on SQLx repositories |
+| 02-DB-03 | IN_PROGRESS | issue #9 / branch `task/02-DB-03` | | Persistence foundation: verify + operationalize |
 | 02-DB-02 | TODO | | | |
 | 02-DB-03 | TODO | | | |
 | 03-SEC-01 | TODO | | | |
