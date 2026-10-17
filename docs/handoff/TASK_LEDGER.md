@@ -9,7 +9,8 @@ Statuses: TODO / IN_PROGRESS / BLOCKED / DONE. Never mark DONE without linked co
 | 01-FND-03 | DONE | PR #4 (merged to `main` as `d8ef0d7`) | CI run 39031019323: all 9 jobs green (fmt, clippy -D warnings, test, release build, wasm32 build, audit, deny, forbidden-source scan, unsafe report); local: 65 tests + live serving verified via curl | Verify and operationalize: static frontend serving + SPA fallback, dev guide, .env.example |
 | 02-DB-01 | DONE | issue #5 / PR #6 (merge `ad3d244`) | | Persistence foundation: schema, migrations, transactional outbox, SQLx repository interfaces |
 | 02-DB-02 | DONE | issue #7 / PR #8 (merge `1593a42`) | | Persistence foundation: Postgres vertical slice — API runs on SQLx repositories |
-| 02-DB-03 | IN_PROGRESS | issue #9 / branch `task/02-DB-03` | | Persistence foundation: verify + operationalize |
+| 02-DB-03 | DONE | issue #9 / PR #10 (merge `00458f8`) | | Persistence foundation: verify + operationalize (migration tests, seed/migrate CLI, /readyz, ops docs) |
+| 03-SEC-01 | IN_PROGRESS | issue #11 / branch `task/03-SEC-01` | | Identity and RBAC: staff sessions, agency/client scoping, grants, agent delegation (domain + interfaces) |
 | 02-DB-02 | TODO | | | |
 | 02-DB-03 | TODO | | | |
 | 03-SEC-01 | TODO | | | |
