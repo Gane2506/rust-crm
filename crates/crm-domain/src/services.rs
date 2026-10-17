@@ -767,6 +767,134 @@ pub trait CampaignService {
     ) -> impl Future<Output = Result<OptOut, DomainError>> + Send + 'a;
 }
 
+/// Input for [`AgentService::start_run`]: a new delegated agent run.
+#[derive(Debug, Clone)]
+pub struct NewAgentRun {
+    /// Owning client profile (tenant boundary).
+    pub client_profile_id: ClientProfileId,
+    /// Which kind of agent executes the run.
+    pub agent_kind: String,
+    /// Preferred model-adapter name (first in the fallback chain).
+    pub adapter_name: String,
+    /// Fallback chain used when the preferred adapter fails.
+    pub fallback_chain: crate::jev::FallbackChain,
+    /// Input payload for the run.
+    pub input: serde_json::Value,
+}
+
+/// Input for [`AgentService::record_tool_call`]: a model-requested tool call.
+#[derive(Debug, Clone)]
+pub struct NewToolCall {
+    /// The run this call belongs to.
+    pub run_id: crate::ids::AgentRunId,
+    /// Tool name (matches [`AgentTool::name`](crate::jev::AgentTool::name)).
+    pub tool_name: String,
+    /// Arguments supplied by the model.
+    pub input: serde_json::Value,
+}
+
+/// Input for [`AgentService::handoff`]: an agent-to-agent context transfer.
+#[derive(Debug, Clone)]
+pub struct NewHandoff {
+    /// The run handing work off.
+    pub from_run_id: crate::ids::AgentRunId,
+    /// Which agent kind receives the work.
+    pub to_agent_kind: String,
+    /// Context for the receiving agent (opaque JSON, never null).
+    pub context: serde_json::Value,
+}
+
+/// Agent operations: run lifecycle, tool-call approval and handoffs.
+///
+/// All methods take an [`ActionContext`] and enforce scoped
+/// authorization against `Resource::AgentRun` (task 09-JEV-02 adds the
+/// variant): profile-scoped contexts may only touch their own profile's
+/// runs; agency-scoped contexts require an agency grant. Every mutation
+/// records an audit event (`"agent.run_started"`, `"agent.approved"`,
+/// `"agent.tool_executed"`, `"agent.handed_off"`, …).
+pub trait AgentService {
+    /// Starts a run via [`AgentRun::new`](crate::jev::AgentRun::new),
+    /// immediately transitioning it to `Running`. Records an
+    /// `"agent.run_started"` audit event.
+    fn start_run<'a>(
+        &'a self,
+        input: NewAgentRun,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<crate::jev::AgentRun, DomainError>> + Send + 'a;
+
+    /// Pauses a running run to await human approval via
+    /// [`AgentRun::request_approval`](crate::jev::AgentRun::request_approval).
+    /// Records an `"agent.approval_requested"` audit event.
+    fn request_approval<'a>(
+        &'a self,
+        run_id: crate::ids::AgentRunId,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<crate::jev::AgentRun, DomainError>> + Send + 'a;
+
+    /// Approves an approval-awaiting run (human decision), resuming it
+    /// via [`AgentRun::approve`](crate::jev::AgentRun::approve).
+    /// Records an `"agent.approved"` audit event.
+    fn approve_step<'a>(
+        &'a self,
+        run_id: crate::ids::AgentRunId,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<crate::jev::AgentRun, DomainError>> + Send + 'a;
+
+    /// Denies an approval-awaiting run (human decision), failing it via
+    /// [`AgentRun::reject`](crate::jev::AgentRun::reject). Records an
+    /// `"agent.denied"` audit event.
+    fn deny_step<'a>(
+        &'a self,
+        run_id: crate::ids::AgentRunId,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<crate::jev::AgentRun, DomainError>> + Send + 'a;
+
+    /// Completes a running run with its output. Records an
+    /// `"agent.run_completed"` audit event.
+    fn complete_run<'a>(
+        &'a self,
+        run_id: crate::ids::AgentRunId,
+        output: serde_json::Value,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<crate::jev::AgentRun, DomainError>> + Send + 'a;
+
+    /// Fails a run (error path). Records an `"agent.run_failed"` audit
+    /// event.
+    fn fail_run<'a>(
+        &'a self,
+        run_id: crate::ids::AgentRunId,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<crate::jev::AgentRun, DomainError>> + Send + 'a;
+
+    /// Cancels a run from any non-terminal status. Idempotent.
+    /// Records an `"agent.run_cancelled"` audit event.
+    fn cancel_run<'a>(
+        &'a self,
+        run_id: crate::ids::AgentRunId,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<crate::jev::AgentRun, DomainError>> + Send + 'a;
+
+    /// Records a model-requested tool call via
+    /// [`ToolCall::new`](crate::jev::ToolCall::new). When the tool
+    /// requires approval, the call stays `Pending` until a human
+    /// approves; otherwise the service may execute it immediately.
+    /// Records an `"agent.tool_recorded"` audit event.
+    fn record_tool_call<'a>(
+        &'a self,
+        input: NewToolCall,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<crate::jev::ToolCall, DomainError>> + Send + 'a;
+
+    /// Hands work from one run to another agent kind via
+    /// [`Handoff::new`](crate::jev::Handoff::new). Records an
+    /// `"agent.handed_off"` audit event.
+    fn handoff<'a>(
+        &'a self,
+        input: NewHandoff,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<crate::jev::Handoff, DomainError>> + Send + 'a;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

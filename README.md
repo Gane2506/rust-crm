@@ -234,10 +234,8 @@ and merge happens on green CI plus review. Follow along via
 | Core CRM | 05-CRM-01…03 | ✅ done ([#27](https://github.com/Gane2506/rust-crm/issues/27), [#28](https://github.com/Gane2506/rust-crm/pull/28)) |
 | Frontend | 06-UI-01…03 | ✅ done ([#33](https://github.com/Gane2506/rust-crm/issues/33), [#34](https://github.com/Gane2506/rust-crm/pull/34)) |
 | Email and threaded chat | 07-MAIL-01… | ✅ workstream complete ([#39](https://github.com/Gane2506/rust-crm/issues/39), [#40](https://github.com/Gane2506/rust-crm/pull/40)) |
-| Campaigns and bulk outreach | 08-CAMP-01… | ✅ 08-CAMP-02 done ([#43](https://github.com/Gane2506/rust-crm/issues/43), [#44](https://github.com/Gane2506/rust-crm/pull/44)); 🔨 08-CAMP-03 in progress |
-| Email and threaded chat | 07-MAIL-01…03 | ⬜ Not started |
-| Campaigns | 08-CAMP-01…03 | ⬜ Not started |
-| Jev agents | 09-JEV-01…03 | ⬜ Not started |
+| Campaigns and bulk outreach | 08-CAMP-01… | ✅ workstream complete ([#45](https://github.com/Gane2506/rust-crm/issues/45), [#46](https://github.com/Gane2506/rust-crm/pull/46)) |
+| Jev agents | 09-JEV-01… | 🔨 09-JEV-01 in progress |
 | Workflow builder | 10-WORK-01…03 | ⬜ Not started |
 | Form builder | 11-FORM-01…03 | ⬜ Not started |
 | Billing | 12-BILL-01…03 | ⬜ Not started |

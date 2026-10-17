@@ -27,7 +27,8 @@ Statuses: TODO / IN_PROGRESS / BLOCKED / DONE. Never mark DONE without linked co
 | 07-MAIL-03 | DONE | issue #39 / PR #40 (merge `111811c`) | | Email: runbook, threat model, seed — **workstream COMPLETE** |
 | 08-CAMP-01 | DONE | issue #41 / PR #42 (merge `c33f74f`) | | Campaigns: domain, traits, lifecycle (231 tests) |
 | 08-CAMP-02 | DONE | issue #43 / PR #44 (merge `af1dfa8`) | | Campaigns: vertical slice (14 endpoints, 4 integration tests) |
-| 08-CAMP-03 | IN_PROGRESS | issue #45 / branch `task/08-CAMP-03` | | Campaigns: verify + operationalize |
+| 08-CAMP-03 | DONE | issue #45 / PR #46 (merge `eaa504d`) | | Campaigns: runbook, threat model, seed — **workstream COMPLETE** |
+| 09-JEV-01 | IN_PROGRESS | issue #47 / branch `task/09-JEV-01` | | Jev agents: define domain and interfaces |
 | 02-DB-02 | TODO | | | |
 | 02-DB-03 | TODO | | | |
 | 03-SEC-01 | TODO | | | |
@@ -45,8 +46,6 @@ Statuses: TODO / IN_PROGRESS / BLOCKED / DONE. Never mark DONE without linked co
 | 07-MAIL-03 | TODO | | | |
 | 08-CAMP-01 | TODO | | | |
 | 08-CAMP-02 | TODO | | | |
-| 08-CAMP-03 | TODO | | | |
-| 09-JEV-01 | TODO | | | |
 | 09-JEV-02 | TODO | | | |
 | 09-JEV-03 | TODO | | | |
 | 10-WORK-01 | TODO | | | |
