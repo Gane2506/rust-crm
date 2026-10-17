@@ -17,7 +17,8 @@ Statuses: TODO / IN_PROGRESS / BLOCKED / DONE. Never mark DONE without linked co
 | 04-AUD-02 | DONE | issue #19 / PR #20 (merge `15028ab`) | | Audit and observability: PgAuditLogService, event recording, query/verify endpoints, observability wiring |
 | 04-AUD-03 | DONE | issue #21 / PR #22 (merge `ec6b2e5`) | | Audit and observability: runbook, tunable thresholds, E2E verification, retention policy |
 | 05-CRM-01 | DONE | issue #23 / PR #24 (merge `3d2d95f`) | | Core CRM: ClientProfile, Contact sources/dedupe/merge, Asset domain, repository/service traits |
-| 05-CRM-02 | IN_PROGRESS | issue #25 / branch `task/05-CRM-02` | | Core CRM: implement vertical slice |
+| 05-CRM-02 | DONE | issue #25 / PR #26 (merge `1c7cadc`) | | Core CRM: migration 0005, profile/asset repositories, profile/asset/merge API, dedupe 409 |
+| 05-CRM-03 | IN_PROGRESS | issue #27 / branch `task/05-CRM-03` | | Core CRM: verify + operationalize |
 | 02-DB-02 | TODO | | | |
 | 02-DB-03 | TODO | | | |
 | 03-SEC-01 | TODO | | | |
