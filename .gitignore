@@ -6,3 +6,6 @@ target/
 
 # Logs
 *.log
+
+# Spec extraction working copy; the committed copy lives at docs/handoff/.
+rust_crm_handoff/

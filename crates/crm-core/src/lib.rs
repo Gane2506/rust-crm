@@ -10,6 +10,8 @@
 //!   require idempotency).
 //! - [`Pagination`]: validated 1-based pagination parameters shared by list
 //!   endpoints.
+//! - [`memory`]: in-memory implementations of the `crm-domain` traits —
+//!   vertical-slice stand-ins replaced by SQLx in task 02-DB.
 //!
 //! # Example
 //!
@@ -28,6 +30,14 @@ use std::{fmt, str::FromStr};
 
 use thiserror::Error;
 use uuid::Uuid;
+
+/// In-memory vertical-slice implementations of the `crm-domain`
+/// repository and service traits.
+///
+/// **Stand-ins for the 01-FND-02 vertical slice** — replaced by
+/// SQLx/PostgreSQL in task 02-DB. See the module docs for the exact
+/// limitations.
+pub mod memory;
 
 /// Errors raised by [`crm-core`](crate) utilities.
 #[derive(Debug, Error, PartialEq, Eq)]

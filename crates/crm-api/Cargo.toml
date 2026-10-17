@@ -15,6 +15,7 @@ tower.workspace = true
 tower-http.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+uuid.workspace = true
 # Domain types and shared utilities for the vertical slice.
-crm-domain = { path = "../crm-domain" }
-crm-core = { path = "../crm-core" }
+crm-domain = { path = "../crm-domain", version = "0.1.0" }
+crm-core = { path = "../crm-core", version = "0.1.0" }
