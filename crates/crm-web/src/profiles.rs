@@ -194,6 +194,12 @@ pub fn ProfileDetail(token: String, profile_id: String) -> impl IntoView {
         let token = token.clone();
         let profile_id = profile_id.clone();
         move |name: &'static str| {
+            // Guard against double-clicks racing the async work: the buttons
+            // are disabled via `working`, but check synchronously here too so
+            // a second invocation can never start a duplicate transition.
+            if working.get() {
+                return;
+            }
             let token = token.clone();
             let profile_id = profile_id.clone();
             working.set(true);
@@ -237,6 +243,7 @@ pub fn ProfileDetail(token: String, profile_id: String) -> impl IntoView {
                             </dl>
                             <div style="display: flex; gap: 0.5rem; margin-top: 1rem;">
                                 <button
+                                    type="button"
                                     on:click=move |_| suspend("suspend")
                                     disabled=move || !can_act || !is_active
                                     style=styles::BTN
@@ -244,6 +251,7 @@ pub fn ProfileDetail(token: String, profile_id: String) -> impl IntoView {
                                     "Suspend"
                                 </button>
                                 <button
+                                    type="button"
                                     on:click=move |_| reactivate("reactivate")
                                     disabled=move || !can_act || !is_suspended
                                     style=styles::BTN
@@ -251,6 +259,7 @@ pub fn ProfileDetail(token: String, profile_id: String) -> impl IntoView {
                                     "Reactivate"
                                 </button>
                                 <button
+                                    type="button"
                                     on:click=move |_| archive("archive")
                                     disabled=move || !can_act
                                     style=styles::BTN_DANGER

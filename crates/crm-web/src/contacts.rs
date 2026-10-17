@@ -85,6 +85,9 @@ pub fn ContactsPage(token: String) -> impl IntoView {
 enum FormStatus {
     /// A contact was created; carries the new contact id.
     Created(String),
+    /// The server rejected the create as a duplicate (`409`); carries a
+    /// user-facing message (no PII) plus a link to the merge workflow.
+    Duplicate,
     /// Validation or API failure; carries the message to display.
     Error(String),
 }
@@ -173,6 +176,12 @@ fn ContactForm(token: String, on_created: impl Fn() + Clone + 'static) -> impl I
                     status.set(Some(FormStatus::Created(contact.contact_id.to_string())));
                     on_created();
                 }
+                // Dedupe: the server found an existing contact with the same
+                // email/phone. The 409 body never echoes the address; neither
+                // do we — point at the merge workflow instead.
+                Err(ApiError::Api { status: 409, .. }) => {
+                    status.set(Some(FormStatus::Duplicate));
+                }
                 Err(error) => status.set(Some(FormStatus::Error(error.to_string()))),
             }
             submitting.set(false);
@@ -222,6 +231,15 @@ fn ContactForm(token: String, on_created: impl Fn() + Clone + 'static) -> impl I
                             view! {
                                 <p role="status" style="margin: 0; color: #166534;">
                                     {format!("Contact created: {id}")}
+                                </p>
+                            }
+                                .into_any()
+                        }
+                        FormStatus::Duplicate => {
+                            view! {
+                                <p role="alert" style="margin: 0; color: #92400e;">
+                                    "A contact with these details already exists. "
+                                    <A href="/contacts/merge">"Merge duplicates →"</A>
                                 </p>
                             }
                                 .into_any()

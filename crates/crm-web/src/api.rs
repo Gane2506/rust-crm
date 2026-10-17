@@ -392,13 +392,27 @@ pub async fn fetch_assets(profile_id: &str, token: &str) -> Result<AssetListResp
     }
 }
 
+/// Outcome of [`register_asset`]: the stored asset plus whether the
+/// server deduplicated the upload.
+#[derive(Debug, Clone)]
+pub struct RegisterAssetResult {
+    /// The registered (or already-existing) asset.
+    pub asset: Asset,
+    /// True when the server returned `200 OK` (the same bytes were already
+    /// registered under the profile); false on `201 Created`.
+    pub deduplicated: bool,
+}
+
 /// Registers an asset's metadata. Returns `201` with the new asset, or
 /// `200` with the existing asset when the same bytes were already
 /// registered under the profile (upload dedupe).
+///
+/// The [`RegisterAssetResult::deduplicated`] flag tells the caller which
+/// case occurred so the UI can report "already registered" distinctly.
 pub async fn register_asset(
     request: &RegisterAssetRequest,
     token: &str,
-) -> Result<Asset, ApiError> {
+) -> Result<RegisterAssetResult, ApiError> {
     let url = format!("{API_BASE}/api/v1/assets");
     let body = serde_json::to_string(request)
         .map_err(|error| ApiError::Transport(format!("invalid register-asset request: {error}")))?;
@@ -414,10 +428,15 @@ pub async fn register_asset(
     .await
     .map_err(|error| ApiError::Transport(error.to_string()))?;
     if response.ok() {
-        response
+        let deduplicated = response.status() == 200;
+        let asset = response
             .json::<Asset>()
             .await
-            .map_err(|error| ApiError::Transport(format!("invalid asset response: {error}")))
+            .map_err(|error| ApiError::Transport(format!("invalid asset response: {error}")))?;
+        Ok(RegisterAssetResult {
+            asset,
+            deduplicated,
+        })
     } else {
         Err(api_error_from_response(&response).await)
     }
@@ -536,17 +555,24 @@ pub struct AuditQuery {
 }
 
 /// Queries the audit log (agency scope required).
+///
+/// Query parameters are encoded via gloo-net's query builder
+/// (`gloo_net::http::RequestBuilder::query`) so action names with special
+/// characters cannot alter the query structure.
 pub async fn fetch_audit_events(
     query: &AuditQuery,
     token: &str,
 ) -> Result<AuditEventsResponse, ApiError> {
-    let mut url = format!("{API_BASE}/api/v1/audit/events?");
+    let limit = query.limit.unwrap_or(50).min(100).to_string();
+    let mut builder = bearer(
+        Request::get(&format!("{API_BASE}/api/v1/audit/events")),
+        token,
+    );
     if let Some(action) = &query.action {
-        url.push_str(&format!("action={action}&"));
+        builder = builder.query([("action", action.as_str())]);
     }
-    let limit = query.limit.unwrap_or(50).min(100);
-    url.push_str(&format!("limit={limit}"));
-    let response = bearer(Request::get(&url), token)
+    builder = builder.query([("limit", limit.as_str())]);
+    let response = builder
         .send()
         .await
         .map_err(|error| ApiError::Transport(error.to_string()))?;
