@@ -168,6 +168,26 @@ define_id!(
     /// Identifies one agent-to-agent context transfer (task 09-JEV-01).
     HandoffId
 );
+define_id!(
+    /// Identifies one automation workflow (task 10-WORK-01).
+    WorkflowId
+);
+define_id!(
+    /// Identifies one typed node on a workflow canvas (task 10-WORK-01).
+    WorkflowNodeId
+);
+define_id!(
+    /// Identifies one typed edge between workflow nodes (task 10-WORK-01).
+    WorkflowEdgeId
+);
+define_id!(
+    /// Identifies one workflow trigger (task 10-WORK-01).
+    TriggerId
+);
+define_id!(
+    /// Identifies one immutable workflow version snapshot (task 10-WORK-01).
+    WorkflowVersionId
+);
 
 impl From<StaffId> for ActorId {
     /// Renders a staff member as the actor of an audit event.
@@ -226,6 +246,11 @@ mod tests {
         assert_id_round_trip(AgentToolId::new());
         assert_id_round_trip(ToolCallId::new());
         assert_id_round_trip(HandoffId::new());
+        assert_id_round_trip(WorkflowId::new());
+        assert_id_round_trip(WorkflowNodeId::new());
+        assert_id_round_trip(WorkflowEdgeId::new());
+        assert_id_round_trip(TriggerId::new());
+        assert_id_round_trip(WorkflowVersionId::new());
     }
 
     #[test]
