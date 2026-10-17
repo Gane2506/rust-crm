@@ -3,7 +3,7 @@ name = "crm-db"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "SQLx persistence layer for the Rust CRM (repositories land in task 02-DB-01)"
+description = "SQLx/PostgreSQL persistence layer for the Rust CRM"
 
 [dependencies]
 sqlx.workspace = true
@@ -12,6 +12,8 @@ uuid.workspace = true
 chrono.workspace = true
 serde_json.workspace = true
 crm-domain = { path = "../crm-domain", version = "0.1.0" }
+# IdempotencyKey for the persistent idempotency-key store (02-DB-02).
+crm-core = { path = "../crm-core", version = "0.1.0" }
 
 [dev-dependencies]
 tokio.workspace = true

@@ -395,9 +395,11 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "crm-core",
+ "crm-db",
  "crm-domain",
  "serde",
  "serde_json",
+ "sqlx",
  "thiserror 2.0.21",
  "tokio",
  "tower",
@@ -423,6 +425,7 @@ name = "crm-db"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "crm-core",
  "crm-domain",
  "serde_json",
  "sqlx",

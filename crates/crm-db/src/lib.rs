@@ -39,10 +39,9 @@ pub enum DbError {
 
 /// Embedded SQLx migrations from `crates/crm-db/migrations/`.
 ///
-/// Both up (`0001_foundation.sql`) and down
-/// (`0001_foundation.down.sql`) scripts are embedded; [`run_migrations`]
-/// applies the ups, while downs run only via explicit
-/// [`sqlx::migrate::Migrator::undo`] calls.
+/// Each version ships an up script (`NNNN_name.sql`) and a down script
+/// (`NNNN_name.down.sql`); [`run_migrations`] applies the ups, while
+/// downs run only via explicit [`sqlx::migrate::Migrator::undo`] calls.
 pub static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
 
 /// Builds a PostgreSQL connection pool from `DATABASE_URL`.

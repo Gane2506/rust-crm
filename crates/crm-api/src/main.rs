@@ -27,8 +27,12 @@ use tower_http::{
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 mod contacts;
+#[cfg(test)]
+mod pg_tests;
 
-use contacts::AppState;
+use contacts::{AppState, IdempotencyStore};
+use crm_core::memory::{ContactReadModel, ContactServiceImpl};
+use crm_domain::services::AuditService;
 
 /// Header carrying the request/correlation id.
 pub(crate) const REQUEST_ID_HEADER: &str = "x-request-id";
@@ -64,6 +68,11 @@ pub enum ApiError {
     /// The TCP listener or the server task failed.
     #[error("server I/O error: {0}")]
     Io(#[from] std::io::Error),
+    /// Database setup failed: `DATABASE_URL` missing or invalid, the
+    /// database unreachable, or migrations failed. The server cannot
+    /// start without PostgreSQL.
+    #[error("database setup failed: {0}")]
+    Database(#[from] crm_db::DbError),
 }
 
 /// RFC 7807 `application/problem+json` error body.
@@ -147,6 +156,10 @@ pub(crate) fn problem_response(
 
 /// Build the Axum router with request-id and tracing middleware.
 ///
+/// The router is generic over the contact-service backend `R`/`A` and the
+/// idempotency store `I` so the same routes serve the in-memory vertical
+/// slice (tests) and the Postgres-backed production server.
+///
 /// `web_dir` is the directory holding the built WASM frontend; when `Some`,
 /// static files are served from it with an SPA fallback to `index.html`
 /// (so deep links like `/contacts` work on refresh and direct navigation).
@@ -157,16 +170,24 @@ pub(crate) fn problem_response(
 /// fallback, so unknown `/api/*` paths never get swallowed by the SPA
 /// fallback. Layer order (outermost first): generate the request id, trace
 /// the request, then propagate the id onto the response.
-pub(crate) fn app(state: AppState, web_dir: Option<PathBuf>) -> Router {
+pub(crate) fn app<R, A, I>(
+    state: AppState<ContactServiceImpl<R, A>, I>,
+    web_dir: Option<PathBuf>,
+) -> Router
+where
+    R: ContactReadModel + Clone + Send + Sync + 'static,
+    A: AuditService + Clone + Send + Sync + 'static,
+    I: IdempotencyStore,
+{
     let header_name = HeaderName::from_static(REQUEST_ID_HEADER);
 
     let api = Router::new()
         .route("/v1/version", get(version))
         .route(
             "/v1/contacts",
-            post(contacts::create_contact).get(contacts::list_contacts),
+            post(contacts::create_contact::<R, A, I>).get(contacts::list_contacts::<R, A, I>),
         )
-        .route("/v1/contacts/{id}", get(contacts::get_contact))
+        .route("/v1/contacts/{id}", get(contacts::get_contact::<R, A, I>))
         .fallback(not_found);
 
     let router = Router::new()
@@ -204,6 +225,26 @@ fn bind_addr() -> Result<SocketAddr, ApiError> {
 /// server is started.
 fn web_dir() -> PathBuf {
     PathBuf::from(std::env::var(WEB_DIR_ENV).unwrap_or_else(|_| DEFAULT_WEB_DIR.to_owned()))
+}
+
+/// Builds the database pool from `DATABASE_URL` and applies any pending
+/// embedded migrations.
+///
+/// A missing or invalid `DATABASE_URL`, an unreachable database, or a
+/// failed migration is a startup error: the server cannot serve without
+/// PostgreSQL, so it logs the cause and exits non-zero instead of
+/// falling back to non-durable state.
+async fn database_pool() -> Result<sqlx::PgPool, ApiError> {
+    let pool = crm_db::create_pool().await.map_err(|error| {
+        tracing::error!(%error, "database setup failed");
+        ApiError::from(error)
+    })?;
+    crm_db::run_migrations(&pool).await.map_err(|error| {
+        tracing::error!(%error, "database migration failed");
+        ApiError::from(error)
+    })?;
+    tracing::info!("database pool ready; migrations applied");
+    Ok(pool)
 }
 
 /// Install the JSON `tracing` subscriber, honoring `RUST_LOG`.
@@ -247,6 +288,9 @@ async fn shutdown_signal() {
 async fn main() -> Result<(), ApiError> {
     init_tracing();
 
+    let pool = database_pool().await?;
+    let state = AppState::from_pool(&pool);
+
     let addr = bind_addr()?;
     let listener = tokio::net::TcpListener::bind(addr).await?;
     tracing::info!(%addr, "crm-api listening");
@@ -263,7 +307,7 @@ async fn main() -> Result<(), ApiError> {
         None
     };
 
-    axum::serve(listener, app(AppState::new(), web_dir))
+    axum::serve(listener, app(state, web_dir))
         .with_graceful_shutdown(shutdown_signal())
         .await?;
     tracing::info!("crm-api shut down cleanly");

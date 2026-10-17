@@ -72,7 +72,10 @@ integration tests use an ephemeral instance via `DATABASE_URL`.
 ### Build
 
 ```sh
-# Fast checks (run these before every commit)
+# Fast checks (run these before every commit).
+# Tests need PostgreSQL: `docker compose up -d` first, with DATABASE_URL set
+# (see .env.example). The crm-db integration tests fail loudly without it;
+# the crm-api Postgres tests skip.
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace --all-features
@@ -88,10 +91,19 @@ cp crates/crm-web/index.html web/
 
 ### Run
 
+The API server needs PostgreSQL 16. Start the ephemeral database (same
+digest-pinned image CI uses), then run:
+
 ```sh
-# Copy .env.example to .env to customize (optional; defaults work out of the box)
+docker compose up -d
+# Copy .env.example to .env to customize (optional; the DATABASE_URL default
+# points at the compose database)
 cargo run -p crm-api
 ```
+
+`crm-api` reads `DATABASE_URL` at startup, applies pending migrations, and
+exits non-zero with a logged error when the database is missing or
+unreachable — there is no non-durable fallback.
 
 The app is then available at:
 

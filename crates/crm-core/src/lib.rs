@@ -32,11 +32,12 @@ use thiserror::Error;
 use uuid::Uuid;
 
 /// In-memory vertical-slice implementations of the `crm-domain`
-/// repository and service traits.
+/// repository and service traits, plus the backend-agnostic
+/// [`memory::ContactServiceImpl`].
 ///
-/// **Stand-ins for the 01-FND-02 vertical slice** — replaced by
-/// SQLx/PostgreSQL in task 02-DB. See the module docs for the exact
-/// limitations.
+/// **Stand-ins for the 01-FND-02 vertical slice** — the *stores* are
+/// replaced by SQLx/PostgreSQL in task 02-DB; the *service* composes over
+/// any backend. See the module docs for the exact limitations.
 pub mod memory;
 
 /// Errors raised by [`crm-core`](crate) utilities.

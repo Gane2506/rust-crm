@@ -1,6 +1,5 @@
 // Copyright (C) 2026 Gane — SPDX-License-Identifier: GPL-3.0-only
-//! Contacts endpoints: the 01-FND-02 vertical slice over
-//! [`crm_core::memory`]'s in-memory services.
+//! Contacts endpoints: the vertical slice over the domain contact service.
 //!
 //! * `POST /api/v1/contacts` — create a contact; honors the
 //!   `Idempotency-Key` request header.
@@ -8,12 +7,18 @@
 //!   paginated.
 //! * `GET /api/v1/contacts/{id}` — fetch one contact.
 //!
+//! The handlers are generic over the contact service `R`/`A` backend and
+//! the idempotency store `I`, so the same routes serve the in-memory
+//! vertical slice (unit tests) and the Postgres-backed production server
+//! (task 02-DB-02).
+//!
 //! Errors keep the crate's RFC 7807 `application/problem+json` shape:
 //! validation failures → `422`, unknown resources → `404`, duplicate
 //! state → `409`.
 
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
+use std::future::Future;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
@@ -27,67 +32,134 @@ use axum::{
     Json,
 };
 use serde::{Deserialize, Serialize};
+use sqlx::PgPool;
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
 use crm_core::memory::{
-    api_action_context, InMemoryAuditRepository, InMemoryContactRepository, MemoryAuditService,
-    MemoryContactService,
+    api_action_context, ContactReadModel, ContactServiceImpl, InMemoryAuditRepository,
+    InMemoryContactRepository, MemoryAuditService, MemoryContactService,
 };
 use crm_core::{IdempotencyKey, Pagination};
+use crm_db::postgres::{
+    PgAuditRepository, PgAuditService, PgContactRepository, PgIdempotencyStore,
+};
 use crm_domain::contact::Contact;
 use crm_domain::error::DomainError;
 use crm_domain::ids::{ClientProfileId, ContactId};
-use crm_domain::repositories::ContactRepository;
-use crm_domain::services::{ContactService, NewContact};
+use crm_domain::services::{AuditService, ContactService, NewContact};
 
 use crate::{problem_response, REQUEST_ID_HEADER};
 
 /// Header carrying the client-generated idempotency key for mutating calls.
-const IDEMPOTENCY_KEY_HEADER: &str = "idempotency-key";
+pub(crate) const IDEMPOTENCY_KEY_HEADER: &str = "idempotency-key";
 /// Default page size for the list endpoint.
 const DEFAULT_LIMIT: u32 = 20;
-/// Stand-in bound on `offset`; the SQL implementation in 02-DB pages in
-/// the database instead of slicing in memory.
+/// Stand-in bound on `offset`; the domain repository port is limit-only,
+/// so the handler over-fetches `offset + limit` rows and slices.
 const MAX_OFFSET: u32 = 10_000;
 
-/// Shared application state: the vertical-slice services plus the
-/// idempotency-key store.
+/// Postgres-backed contact service composition for the production server.
+pub type PgContactService = ContactServiceImpl<PgContactRepository, PgAuditService>;
+
+/// Shared application state, generic over the contact service `S` and the
+/// idempotency store `I`.
+///
+/// The in-memory instantiation ([`AppState::new`]) backs the unit tests;
+/// the Postgres instantiation ([`AppState::from_pool`]) serves production
+/// traffic.
 #[derive(Debug, Clone)]
-pub struct AppState {
-    contacts: MemoryContactService,
-    /// `Idempotency-Key` → (request fingerprint, response body).
-    idempotency: Arc<RwLock<HashMap<IdempotencyKey, (u64, serde_json::Value)>>>,
+pub struct AppState<S, I> {
+    contacts: S,
+    idempotency: I,
 }
 
-impl AppState {
-    /// Builds fresh in-memory state. The server builds one; tests build
-    /// one per test for isolation.
+impl<S, I> AppState<S, I> {
+    /// Borrows the contact service.
+    #[must_use]
+    pub fn contact_service(&self) -> &S {
+        &self.contacts
+    }
+}
+
+impl AppState<MemoryContactService, MemoryIdempotencyStore> {
+    /// Builds fresh in-memory state. Tests build one per test for isolation.
     #[must_use]
     pub fn new() -> Self {
         let audit = MemoryAuditService::new(InMemoryAuditRepository::new());
         let contacts = MemoryContactService::new(InMemoryContactRepository::new(), audit);
         Self {
             contacts,
-            idempotency: Arc::new(RwLock::new(HashMap::new())),
+            idempotency: MemoryIdempotencyStore::default(),
         }
     }
+}
 
-    /// Borrows the contact service.
-    #[must_use]
-    pub fn contact_service(&self) -> &MemoryContactService {
-        &self.contacts
+impl Default for AppState<MemoryContactService, MemoryIdempotencyStore> {
+    fn default() -> Self {
+        Self::new()
     }
+}
 
-    /// Returns the stored response for a seen idempotency key, or `None`
-    /// for a fresh key. A reused key with a *different* request body is a
-    /// [`DomainError::Conflict`], never a silent replay.
-    async fn idempotent_replay(
+impl AppState<PgContactService, PgIdempotencyStore> {
+    /// Builds Postgres-backed state over `pool`.
+    ///
+    /// Callers run [`crm_db::run_migrations`] first; the server does this
+    /// at startup before serving traffic.
+    #[must_use]
+    pub fn from_pool(pool: &PgPool) -> Self {
+        Self {
+            contacts: PgContactService::new(
+                PgContactRepository::new(pool.clone()),
+                PgAuditService::new(PgAuditRepository::new(pool.clone())),
+            ),
+            idempotency: PgIdempotencyStore::new(pool.clone()),
+        }
+    }
+}
+
+/// Persistent store for idempotent HTTP responses.
+///
+/// Maps an [`IdempotencyKey`] to the request fingerprint and response body
+/// recorded for it, so `Idempotency-Key` replays survive restarts. A
+/// present key with a *different* fingerprint is a
+/// [`DomainError::Conflict`], never a silent replay.
+pub trait IdempotencyStore: Clone + Send + Sync + 'static {
+    /// Returns the stored response body for a seen key whose fingerprint
+    /// matches, `Ok(None)` for a fresh key, or [`DomainError::Conflict`]
+    /// when the key was already used with a different request body.
+    fn lookup(
+        &self,
+        key: &IdempotencyKey,
+        fingerprint: u64,
+    ) -> impl Future<Output = Result<Option<serde_json::Value>, DomainError>> + Send;
+
+    /// Stores a response body for later replay, replacing any previous
+    /// entry for the key.
+    fn record(
+        &self,
+        key: IdempotencyKey,
+        fingerprint: u64,
+        body: serde_json::Value,
+    ) -> impl Future<Output = Result<(), DomainError>> + Send;
+}
+
+/// In-memory idempotency store for the vertical-slice unit tests.
+///
+/// Entries do not survive restarts; the production server persists them
+/// with [`PgIdempotencyStore`].
+#[derive(Debug, Clone, Default)]
+pub struct MemoryIdempotencyStore {
+    inner: Arc<RwLock<HashMap<IdempotencyKey, (u64, serde_json::Value)>>>,
+}
+
+impl IdempotencyStore for MemoryIdempotencyStore {
+    async fn lookup(
         &self,
         key: &IdempotencyKey,
         fingerprint: u64,
     ) -> Result<Option<serde_json::Value>, DomainError> {
-        match self.idempotency.read().await.get(key) {
+        match self.inner.read().await.get(key) {
             None => Ok(None),
             Some((stored_fingerprint, body)) if *stored_fingerprint == fingerprint => {
                 Ok(Some(body.clone()))
@@ -98,23 +170,39 @@ impl AppState {
         }
     }
 
-    /// Stores a response for later idempotent replay.
-    async fn store_idempotent_response(
+    async fn record(
         &self,
         key: IdempotencyKey,
         fingerprint: u64,
         body: serde_json::Value,
-    ) {
-        self.idempotency
-            .write()
-            .await
-            .insert(key, (fingerprint, body));
+    ) -> Result<(), DomainError> {
+        self.inner.write().await.insert(key, (fingerprint, body));
+        Ok(())
     }
 }
 
-impl Default for AppState {
-    fn default() -> Self {
-        Self::new()
+impl IdempotencyStore for PgIdempotencyStore {
+    async fn lookup(
+        &self,
+        key: &IdempotencyKey,
+        fingerprint: u64,
+    ) -> Result<Option<serde_json::Value>, DomainError> {
+        match self.get(key).await? {
+            None => Ok(None),
+            Some((stored_fingerprint, body)) if stored_fingerprint == fingerprint => Ok(Some(body)),
+            Some(_) => Err(DomainError::Conflict(
+                "idempotency key was already used with a different request body".to_owned(),
+            )),
+        }
+    }
+
+    async fn record(
+        &self,
+        key: IdempotencyKey,
+        fingerprint: u64,
+        body: serde_json::Value,
+    ) -> Result<(), DomainError> {
+        self.put(&key, fingerprint, &body).await
     }
 }
 
@@ -247,11 +335,16 @@ fn domain_error_response(error: DomainError, instance: String) -> Response {
 /// supplied, a repeated request with the same key and body replays the
 /// original `201` without re-executing; the same key with a different
 /// body is a `409`.
-pub async fn create_contact(
-    State(state): State<AppState>,
+pub async fn create_contact<R, A, I>(
+    State(state): State<AppState<ContactServiceImpl<R, A>, I>>,
     headers: HeaderMap,
     body: Result<Json<CreateContactBody>, JsonRejection>,
-) -> Response {
+) -> Response
+where
+    R: ContactReadModel + Clone + Send + Sync + 'static,
+    A: AuditService + Clone + Send + Sync + 'static,
+    I: IdempotencyStore,
+{
     let (instance, correlation_id) = request_id(&headers);
     let body = match body {
         Ok(Json(body)) => body,
@@ -273,7 +366,7 @@ pub async fn create_contact(
     };
     let fp = fingerprint(&body);
     if let Some(key) = key {
-        match state.idempotent_replay(&key, fp).await {
+        match state.idempotency.lookup(&key, fp).await {
             Ok(Some(stored)) => return (StatusCode::CREATED, Json(stored)).into_response(),
             Ok(None) => {}
             Err(error) => return domain_error_response(error, instance.clone()),
@@ -310,9 +403,13 @@ pub async fn create_contact(
         }
     };
     if let Some(key) = key {
-        state
-            .store_idempotent_response(key, fp, response_value)
-            .await;
+        // The contact is already created: failing the request now would
+        // lose the 201 the client needs, so a persistence failure is
+        // logged loudly instead. Making the contact write and the
+        // idempotency record atomic is a later hardening task.
+        if let Err(error) = state.idempotency.record(key, fp, response_value).await {
+            tracing::warn!(%error, "idempotency response could not be persisted");
+        }
     }
     (StatusCode::CREATED, Json(contact)).into_response()
 }
@@ -320,11 +417,16 @@ pub async fn create_contact(
 /// `GET /api/v1/contacts/{id}` — fetches one contact.
 ///
 /// `200` with the contact, or `404` `problem+json` for an unknown id.
-pub async fn get_contact(
-    State(state): State<AppState>,
+pub async fn get_contact<R, A, I>(
+    State(state): State<AppState<ContactServiceImpl<R, A>, I>>,
     headers: HeaderMap,
     path: Result<Path<Uuid>, PathRejection>,
-) -> Response {
+) -> Response
+where
+    R: ContactReadModel + Clone + Send + Sync + 'static,
+    A: AuditService + Clone + Send + Sync + 'static,
+    I: IdempotencyStore,
+{
     let (instance, _correlation_id) = request_id(&headers);
     let id = match path {
         Ok(Path(id)) => id,
@@ -353,11 +455,16 @@ pub async fn get_contact(
 /// Returns `200 {"contacts": [...], "total": n}`. `limit` is validated
 /// through [`Pagination`] (default 20, max 100); `offset` skips into the
 /// client's contacts.
-pub async fn list_contacts(
-    State(state): State<AppState>,
+pub async fn list_contacts<R, A, I>(
+    State(state): State<AppState<ContactServiceImpl<R, A>, I>>,
     headers: HeaderMap,
     query: Result<Query<ListContactsQuery>, QueryRejection>,
-) -> Response {
+) -> Response
+where
+    R: ContactReadModel + Clone + Send + Sync + 'static,
+    A: AuditService + Clone + Send + Sync + 'static,
+    I: IdempotencyStore,
+{
     let (instance, _correlation_id) = request_id(&headers);
     let query = match query {
         Ok(Query(query)) => query,
@@ -390,14 +497,19 @@ pub async fn list_contacts(
 
     let profile_id = ClientProfileId::from(query.client_profile_id);
     let repository = state.contact_service().repository();
-    // The stand-in repository has no server-side offset; fetch enough rows
-    // to cover it and slice. 02-DB pages in the database.
+    // The domain repository port is limit-only, so the handler
+    // over-fetches `offset + limit` rows and slices in memory; `MAX_OFFSET`
+    // caps the over-fetch. Keyset pagination in the database is a later
+    // task.
     let fetch = u64::from(offset.saturating_add(limit));
     let contacts = match repository.list_for_client(profile_id, fetch).await {
         Ok(contacts) => contacts,
         Err(error) => return domain_error_response(error, instance),
     };
-    let total = repository.count_for_client(profile_id).await;
+    let total = match repository.count_for_client(profile_id).await {
+        Ok(total) => total,
+        Err(error) => return domain_error_response(error, instance),
+    };
     let contacts: Vec<Contact> = contacts
         .into_iter()
         .skip(offset as usize)
