@@ -96,6 +96,67 @@ untrusted network ──▶ reverse proxy (TLS) ──▶ crm-api (127.0.0.1:300
 - Denial of service beyond login rate limiting.
 - Insider threat from the trusted operator or database superuser.
 
+## Email surface
+
+The email vertical slice (tasks 07-MAIL-01 through 07-MAIL-03)
+adds an inbound webhook and PII-bearing storage to the boundary:
+
+- **Webhook secret is the only gate on ingest.** `POST
+  /api/v1/emails/ingest` is not bearer-authenticated (providers
+  cannot hold staff sessions); possession of
+  `CRM_EMAIL_WEBHOOK_SECRET` (presented in the `x-webhook-secret`
+  header) is the entire authentication. Anyone holding the secret
+  can inject inbound mail into any client profile named in the
+  request body — the profile id is caller-supplied, so the secret's
+  confidentiality *is* the tenant boundary for ingestion. Rotation:
+  generate a new high-entropy value, update the provider's webhook
+  configuration, then restart `crm-api` (the secret is read from
+  the process environment per request; there is no reload
+  endpoint). A leaked secret is an incident: rotate immediately and
+  review `email.received` audit events for forged ingestion.
+- **Fail-closed when unconfigured.** With no secret set, ingest
+  returns `503` on every request — ingestion stops rather than
+  running open. Do not "fix" a 503 ingest by bypassing the check.
+- **Spoofing / inbound forgery.** The server does not verify SPF,
+  DKIM, or DMARC — it trusts whatever the provider's webhook
+  delivers. Forgery *before* the provider (spoofed mail accepted
+  by Gmail/Zoho) is the provider's problem; forgery *of* the
+  webhook (direct POSTs) is stopped only by the secret. There is no
+  second factor on this path by design (providers can't do
+  better); the mitigation is secret hygiene plus audit review.
+- **PII in subjects and bodies.** Email content is PII by nature
+  and is stored plaintext in `email_messages` (subject,
+  `body_text`, `body_html`). Access is gated by profile-scoped
+  `Email` / `EmailThread` grants and every send/receive/failure is
+  audited (`email.sent`, `email.received`, `email.failed`) — but
+  anyone with database read access sees everything, same as
+  contacts. No field-level encryption is planned.
+- **No HTML sanitization.** `body_html` is stored exactly as
+  received and served back verbatim. Any future renderer (the
+  Leptos frontend has no email UI yet) must treat it as untrusted
+  and escape or sandbox it — rendering stored HTML unsanitized
+  would be stored XSS.
+- **Provider trust boundary.** Today the provider is
+  `StubEmailProvider` (in-memory, no network) — outbound mail goes
+  nowhere, which is the safe default. Real Gmail/Zoho adapters
+  (later task) move the trust boundary outward: provider
+  credentials become high-value secrets, a compromised provider
+  account can send mail as the agency, and provider-returned
+  content (subjects, bodies, thread ids) becomes untrusted input
+  to the thread-matching cascade. The cascade's exact-match steps
+  trust provider-supplied ids; a malicious provider could thread
+  mail arbitrarily — contained per profile by the tenant scope.
+- **Timing side-channel on the secret check.** The comparison is a
+  length check plus short-circuiting byte equality, not
+  constant-time. Accepted: the secret is high-entropy, so the
+  leak is negligible compared to the operational risk of secret
+  mishandling. Do not weaken this further (e.g. prefix compares).
+- **Denial of service.** Ingest is unauthenticated-by-bearer and
+  does one DB round-trip per request plus audit; there is no rate
+  limiter on it (the login limiter does not apply). A flood of
+  webhook calls with a valid secret is bounded only by the
+  database. Rate limiting the webhook is future work.
+
 ## Frontend (SPA) security posture
 
 The Leptos frontend (`crates/crm-web`, task 06-UI) is a thin client:

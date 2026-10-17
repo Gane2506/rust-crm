@@ -28,24 +28,32 @@
 
 use uuid::Uuid;
 
+use crm_core::email::{EmailServiceImpl, StubEmailProvider};
 use crm_core::memory::ContactServiceImpl;
 use crm_db::auth::hash_password;
 use crm_db::core_crm::{PgAssetRepository, PgClientProfileRepository};
+use crm_db::email::{
+    PgEmailAttachmentRepository, PgEmailMessageRepository, PgEmailThreadRepository,
+};
 use crm_db::postgres::{
     PgAuditRepository, PgAuditService, PgContactRepository, PgGrantRepository, PgStaffRepository,
 };
 use crm_db::{run_migrations, DATABASE_URL_ENV, DATABASE_URL_EXAMPLE};
 use crm_domain::asset::Asset;
 use crm_domain::audit::ActorKind;
+use crm_domain::email::InboundThreadHints;
 use crm_domain::error::DomainError;
 use crm_domain::ids::{ActorId, AgencyId, ClientProfileId, GrantId, StaffId};
 use crm_domain::profile::{ClientProfile, ProfileStatus};
 use crm_domain::repositories::{
-    AssetRepository, ClientProfileRepository, GrantRepository, StaffRepository,
+    AssetRepository, ClientProfileRepository, EmailMessageRepository, EmailThreadRepository,
+    GrantRepository, StaffRepository,
 };
 use crm_domain::security::{Action, Grant, Operation, PasswordCredential, Resource, Scope};
 use crm_domain::services::ActionContext;
-use crm_domain::services::{ContactService, NewContact};
+use crm_domain::services::{
+    ContactService, EmailService, InboundEmail, NewContact, NewEmailMessage,
+};
 
 /// Demo tenant also used by the `crm-web` vertical slice until real
 /// auth/tenancy lands (task 03-SEC-01).
@@ -150,6 +158,121 @@ async fn seed_profile(pool: &sqlx::PgPool, agency_id: AgencyId) -> Result<(), Do
     Ok(())
 }
 
+/// Seeds one demo email thread on the demo profile: an inbound opener
+/// (creates the thread via the ingest cascade), an outbound reply sent
+/// through the stub provider, and a second inbound reply joined via the
+/// `in_reply_to` parent lookup. Idempotent: skipped when the seed's
+/// provider message id already exists.
+async fn seed_email(pool: &sqlx::PgPool) -> Result<bool, DomainError> {
+    use chrono::Utc;
+
+    let profile =
+        ClientProfileId::from(Uuid::parse_str(DEMO_PROFILE_ID).expect("demo profile id parses"));
+    let messages = PgEmailMessageRepository::new(pool.clone());
+    // Idempotency anchor: the first seeded inbound message.
+    if messages
+        .find_by_provider_message_id(profile, "demo-seed-inbound-1")
+        .await?
+        .is_some()
+    {
+        return Ok(false);
+    }
+
+    let service = EmailServiceImpl::new(
+        messages,
+        PgEmailThreadRepository::new(pool.clone()),
+        PgEmailAttachmentRepository::new(pool.clone()),
+        StubEmailProvider::new(),
+        PgAuditService::new(PgAuditRepository::new(pool.clone())),
+    );
+    let ctx = ActionContext {
+        actor_kind: ActorKind::System,
+        actor_id: ActorId::from(Uuid::nil()),
+        client_profile_id: Some(profile),
+        correlation_id: Uuid::new_v4(),
+    };
+
+    // 1. Inbound opener: no thread hints match, so the ingest cascade
+    //    opens a new thread.
+    let opener = service
+        .ingest_reply(
+            InboundEmail {
+                client_profile_id: profile,
+                hints: InboundThreadHints {
+                    provider_thread_id: None,
+                    in_reply_to: None,
+                    references: Vec::new(),
+                    subject: "Welcome to Demo Client".to_owned(),
+                },
+                from: "client@example.com".to_owned(),
+                to: vec!["agency@example.com".to_owned()],
+                body_text: "Hi — looking forward to working with you.".to_owned(),
+                body_html: None,
+                provider_message_id: "demo-seed-inbound-1".to_owned(),
+                received_at: Utc::now(),
+            },
+            &ctx,
+        )
+        .await?;
+    let thread_id = opener.thread_id.expect("ingest always threads the message");
+
+    // 2. Outbound reply in the same thread, via the stub provider.
+    let sent = service
+        .send(
+            NewEmailMessage {
+                client_profile_id: profile,
+                thread_id: Some(thread_id),
+                from: "agency@example.com".to_owned(),
+                to: vec!["client@example.com".to_owned()],
+                cc: Vec::new(),
+                bcc: Vec::new(),
+                subject: "Re: Welcome to Demo Client".to_owned(),
+                body_text: "Likewise! Here's what happens next.".to_owned(),
+                body_html: None,
+                idempotency_key: Uuid::new_v4().to_string(),
+            },
+            &ctx,
+        )
+        .await?;
+
+    // 3. Second inbound reply, joined via the `in_reply_to` parent
+    //    lookup against the sent message's provider id.
+    service
+        .ingest_reply(
+            InboundEmail {
+                client_profile_id: profile,
+                hints: InboundThreadHints {
+                    provider_thread_id: None,
+                    in_reply_to: sent.provider_message_id.clone(),
+                    references: Vec::new(),
+                    subject: "Re: Welcome to Demo Client".to_owned(),
+                },
+                from: "client@example.com".to_owned(),
+                to: vec!["agency@example.com".to_owned()],
+                body_text: "Sounds good — talk next week.".to_owned(),
+                body_html: None,
+                provider_message_id: "demo-seed-inbound-2".to_owned(),
+                received_at: Utc::now(),
+            },
+            &ctx,
+        )
+        .await?;
+
+    // `send` links the message to the thread but does not bump the
+    // thread counters (only ingest does) — fix up the demo row so the
+    // seeded thread reads consistently.
+    let threads = PgEmailThreadRepository::new(pool.clone());
+    let mut thread = threads.get(thread_id).await?;
+    thread.message_count = 3;
+    for participant in ["agency@example.com", "client@example.com"] {
+        if !thread.participants.contains(&participant.to_owned()) {
+            thread.participants.push(participant.to_owned());
+        }
+    }
+    threads.update(thread).await?;
+    Ok(true)
+}
+
 /// Env var gating writes: `CRM_SEED_DEV=1` is the explicit opt-in that
 /// lets this example write to the database.
 const SEED_DEV_ENV: &str = "CRM_SEED_DEV";
@@ -198,6 +321,27 @@ async fn seed_staff(pool: &sqlx::PgPool, agency_id: AgencyId) -> Result<bool, Do
             )
             .await?;
     }
+    // Grants for the email slice (task 07-MAIL-02): send mail and read
+    // threads on the demo profile, so the demo user can try the email
+    // endpoints after logging in.
+    for (resource, operation) in [
+        (Resource::Email, Operation::Create),
+        (Resource::EmailThread, Operation::Read),
+    ] {
+        grant_repo
+            .assign(
+                user.staff_id,
+                Grant {
+                    grant_id: GrantId::new(),
+                    action: Action {
+                        resource,
+                        operation,
+                    },
+                    scope,
+                },
+            )
+            .await?;
+    }
     Ok(true)
 }
 
@@ -224,6 +368,9 @@ async fn run() -> Result<(), String> {
         );
         println!("  4. claim demo profile with agency + name, register demo asset (idempotent)");
         println!("  5. create demo staff user {DEMO_STAFF_EMAIL} (idempotent)");
+        println!(
+            "  6. seed demo email thread (1 thread, 3 messages) on the demo profile (idempotent)"
+        );
         return Ok(());
     }
 
@@ -249,6 +396,14 @@ async fn run() -> Result<(), String> {
         println!("seed complete: demo staff user {DEMO_STAFF_EMAIL} created");
     } else {
         println!("seed complete: demo staff user {DEMO_STAFF_EMAIL} already present");
+    }
+    if seed_email(&pool)
+        .await
+        .map_err(|error| format!("seed email: {error}"))?
+    {
+        println!("seed complete: demo email thread (3 messages) created");
+    } else {
+        println!("seed complete: demo email thread already present");
     }
     println!("dev login: email {DEMO_STAFF_EMAIL}, password {DEMO_STAFF_PASSWORD} (local only)");
     Ok(())
