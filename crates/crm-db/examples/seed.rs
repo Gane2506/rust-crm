@@ -3,7 +3,11 @@
 //!
 //! Inserts the demo client profile plus a handful of sample contacts through
 //! the real service layer (so normalization, dedupe and audit events behave
-//! exactly as in production).
+//! exactly as in production). It also creates the demo staff user
+//! (`demo@example.com`) with a documented dev-only password and grants for
+//! the demo profile, so the auth vertical slice (task 03-SEC-02) is tryable
+//! locally: log in at `POST /api/v1/auth/login` and call the contacts
+//! endpoints with `Authorization: Bearer <token>`.
 //!
 //! Run:
 //!
@@ -14,24 +18,42 @@
 //! ```
 //!
 //! The seed is **idempotent**: re-running it skips contacts whose normalized
-//! email already exists. Without `CRM_SEED_DEV=1` it prints the plan and
-//! exits without writing anything, so it can never seed a production
-//! database by accident. Migrations run first, so a fresh database works.
+//! email already exists and staff whose email already exists. Without
+//! `CRM_SEED_DEV=1` it prints the plan and exits without writing anything,
+//! so it can never seed a production database by accident. Migrations run
+//! first, so a fresh database works.
+//!
+//! The demo password below is **dev-only** and printed on every run; never
+//! use it outside local development.
 
 use uuid::Uuid;
 
 use crm_core::memory::ContactServiceImpl;
-use crm_db::postgres::{PgAuditRepository, PgAuditService, PgContactRepository};
+use crm_db::auth::hash_password;
+use crm_db::postgres::{
+    PgAuditRepository, PgAuditService, PgContactRepository, PgGrantRepository, PgStaffRepository,
+};
 use crm_db::{run_migrations, DATABASE_URL_ENV, DATABASE_URL_EXAMPLE};
 use crm_domain::audit::ActorKind;
 use crm_domain::error::DomainError;
-use crm_domain::ids::{ActorId, ClientProfileId};
+use crm_domain::ids::{ActorId, AgencyId, ClientProfileId, GrantId, StaffId};
+use crm_domain::repositories::{GrantRepository, StaffRepository};
+use crm_domain::security::{Action, Grant, Operation, PasswordCredential, Resource, Scope};
 use crm_domain::services::ActionContext;
 use crm_domain::services::{ContactService, NewContact};
 
 /// Demo tenant also used by the `crm-web` vertical slice until real
 /// auth/tenancy lands (task 03-SEC-01).
 const DEMO_PROFILE_ID: &str = "123e4567-e89b-42d3-a456-426614174000";
+
+/// Demo agency the seeded staff user operates under.
+const DEMO_AGENCY_ID: &str = "aaaaaaaa-0000-4000-8000-000000000001";
+
+/// Demo staff login (dev-only).
+const DEMO_STAFF_EMAIL: &str = "demo@example.com";
+/// Dev-only password for the demo staff user. Printed on every seed run;
+/// never use outside local development.
+const DEMO_STAFF_PASSWORD: &str = "crm-demo-password";
 
 /// Sample contacts: (emails, phones, source).
 const SEED_CONTACTS: &[(&[&str], &[&str], &str)] = &[
@@ -90,6 +112,53 @@ async fn seed(pool: &sqlx::PgPool) -> Result<(usize, usize), DomainError> {
 /// lets this example write to the database.
 const SEED_DEV_ENV: &str = "CRM_SEED_DEV";
 
+/// Seeds the demo staff user with a dev-only password credential and
+/// grants for the demo profile. Idempotent: an existing email is skipped.
+async fn seed_staff(pool: &sqlx::PgPool, agency_id: AgencyId) -> Result<bool, DomainError> {
+    let staff_repo = PgStaffRepository::new(pool.clone());
+    if staff_repo.find_by_email(DEMO_STAFF_EMAIL).await?.is_some() {
+        return Ok(false);
+    }
+    let now = chrono::Utc::now();
+    let phc_hash = hash_password(DEMO_STAFF_PASSWORD.as_bytes()).await?;
+    let user = crm_domain::security::StaffUser {
+        staff_id: StaffId::new(),
+        agency_id,
+        email: DEMO_STAFF_EMAIL.to_owned(),
+        display_name: "Demo User".to_owned(),
+        status: crm_domain::security::StaffStatus::Active,
+        credential: Some(PasswordCredential::new(phc_hash, now)?),
+        created_at: now,
+        updated_at: now,
+    };
+    let user = staff_repo.create(user).await?;
+
+    // Grants for the demo profile: full contact lifecycle for the demo.
+    let grant_repo = PgGrantRepository::new(pool.clone());
+    let profile =
+        ClientProfileId::from(Uuid::parse_str(DEMO_PROFILE_ID).expect("demo profile id parses"));
+    let scope = Scope::ClientProfile {
+        agency_id,
+        client_profile_id: profile,
+    };
+    for operation in [Operation::Read, Operation::Create, Operation::Update] {
+        grant_repo
+            .assign(
+                user.staff_id,
+                Grant {
+                    grant_id: GrantId::new(),
+                    action: Action {
+                        resource: Resource::Contact,
+                        operation,
+                    },
+                    scope,
+                },
+            )
+            .await?;
+    }
+    Ok(true)
+}
+
 #[tokio::main]
 async fn main() {
     if let Err(error) = run().await {
@@ -111,6 +180,7 @@ async fn run() -> Result<(), String> {
             "  3. create {} sample contacts (idempotent)",
             SEED_CONTACTS.len()
         );
+        println!("  4. create demo staff user {DEMO_STAFF_EMAIL} (idempotent)");
         return Ok(());
     }
 
@@ -124,5 +194,15 @@ async fn run() -> Result<(), String> {
         .await
         .map_err(|error| format!("seed contacts: {error}"))?;
     println!("seed complete: {created} contacts created, {skipped} already present");
+    let agency_id = AgencyId::from(Uuid::parse_str(DEMO_AGENCY_ID).expect("demo agency id parses"));
+    if seed_staff(&pool, agency_id)
+        .await
+        .map_err(|error| format!("seed staff user: {error}"))?
+    {
+        println!("seed complete: demo staff user {DEMO_STAFF_EMAIL} created");
+    } else {
+        println!("seed complete: demo staff user {DEMO_STAFF_EMAIL} already present");
+    }
+    println!("dev login: email {DEMO_STAFF_EMAIL}, password {DEMO_STAFF_PASSWORD} (local only)");
     Ok(())
 }

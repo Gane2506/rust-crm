@@ -18,8 +18,11 @@ use crate::api::{
 };
 
 /// Contacts list page: fetch-on-mount list plus the create form.
+///
+/// `token` is the in-memory bearer token from the login form; every API
+/// call sends it as `Authorization: Bearer`.
 #[component]
-pub fn ContactsPage() -> impl IntoView {
+pub fn ContactsPage(token: String) -> impl IntoView {
     // Bumped to refetch the list (after a create, or on manual retry).
     let reload = RwSignal::new(0u32);
     // `None` = loading, `Some(Ok(_))` = loaded, `Some(Err(_))` = failed.
@@ -27,11 +30,13 @@ pub fn ContactsPage() -> impl IntoView {
     // Driven by an `Effect` + `spawn_local` instead of `Resource`: gloo-net
     // futures are `!Send`, and Leptos `Resource` requires `Send` futures.
     let contacts = RwSignal::new(None::<Result<ContactListResponse, ApiError>>);
+    let token_for_fetch = token.clone();
     Effect::new(move |_| {
         reload.get();
         contacts.set(None);
+        let token = token_for_fetch.clone();
         spawn_local(async move {
-            contacts.set(Some(fetch_contacts().await));
+            contacts.set(Some(fetch_contacts(&token).await));
         });
     });
     let retry = move |_| reload.update(|n| *n = n.wrapping_add(1));
@@ -39,7 +44,7 @@ pub fn ContactsPage() -> impl IntoView {
     view! {
         <section aria-label="Contacts">
             <h2>"Contacts"</h2>
-            <ContactForm on_created=move || reload.update(|n| *n = n.wrapping_add(1)) />
+            <ContactForm token=token.clone() on_created=move || reload.update(|n| *n = n.wrapping_add(1)) />
             <h3>"Contact list"</h3>
             {move || match contacts.get() {
                 None => {
@@ -106,7 +111,7 @@ fn clear_field(input: &NodeRef<Input>) {
 /// a fresh `Idempotency-Key`, then clears itself, shows a confirmation and
 /// asks the parent list to refresh through `on_created`.
 #[component]
-fn ContactForm(on_created: impl Fn() + Clone + 'static) -> impl IntoView {
+fn ContactForm(token: String, on_created: impl Fn() + Clone + 'static) -> impl IntoView {
     let emails_ref = NodeRef::<Input>::new();
     let phones_ref = NodeRef::<Input>::new();
     let source_ref = NodeRef::<Input>::new();
@@ -158,8 +163,9 @@ fn ContactForm(on_created: impl Fn() + Clone + 'static) -> impl IntoView {
             source,
         };
         let on_created = on_created.clone();
+        let token = token.clone();
         spawn_local(async move {
-            match create_contact(&request).await {
+            match create_contact(&request, &token).await {
                 Ok(contact) => {
                     clear_field(&emails_ref);
                     clear_field(&phones_ref);

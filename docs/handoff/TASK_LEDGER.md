@@ -10,7 +10,8 @@ Statuses: TODO / IN_PROGRESS / BLOCKED / DONE. Never mark DONE without linked co
 | 02-DB-01 | DONE | issue #5 / PR #6 (merge `ad3d244`) | | Persistence foundation: schema, migrations, transactional outbox, SQLx repository interfaces |
 | 02-DB-02 | DONE | issue #7 / PR #8 (merge `1593a42`) | | Persistence foundation: Postgres vertical slice — API runs on SQLx repositories |
 | 02-DB-03 | DONE | issue #9 / PR #10 (merge `00458f8`) | | Persistence foundation: verify + operationalize (migration tests, seed/migrate CLI, /readyz, ops docs) |
-| 03-SEC-01 | IN_PROGRESS | issue #11 / branch `task/03-SEC-01` | | Identity and RBAC: staff sessions, agency/client scoping, grants, agent delegation (domain + interfaces) |
+| 03-SEC-01 | DONE | issue #11 / PR #12 (merge `f808e48`) | | Identity and RBAC: staff/sessions/grants/delegation domain + traits (security-reviewed) |
+| 03-SEC-02 | IN_PROGRESS | issue #13 / branch `task/03-SEC-02` | | Identity and RBAC: vertical slice — auth wiring, sessions, password hashing |
 | 02-DB-02 | TODO | | | |
 | 02-DB-03 | TODO | | | |
 | 03-SEC-01 | TODO | | | |

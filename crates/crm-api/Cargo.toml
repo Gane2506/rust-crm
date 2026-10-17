@@ -16,6 +16,9 @@ tower-http.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 uuid.workspace = true
+# chrono for test staff fixtures (pg_tests); the API itself does not
+# handle datetimes directly.
+chrono.workspace = true
 # Domain types and shared utilities for the vertical slice.
 crm-domain = { path = "../crm-domain", version = "0.1.0" }
 crm-core = { path = "../crm-core", version = "0.1.0" }

@@ -37,8 +37,16 @@ use crm_domain::audit::{
 };
 use crm_domain::contact::{ConsentRecord, Contact, Lifecycle};
 use crm_domain::error::DomainError;
-use crm_domain::ids::{ActorId, AuditEventId, ClientProfileId, ContactId};
-use crm_domain::repositories::{AuditRepository, ContactRepository};
+use crm_domain::ids::{
+    ActorId, AgencyId, AuditEventId, ClientProfileId, ContactId, DelegationId, GrantId, SessionId,
+    StaffId,
+};
+use crm_domain::repositories::{
+    AuditRepository, ContactRepository, GrantRepository, SessionRepository, StaffRepository,
+};
+use crm_domain::security::{
+    Action, Grant, Operation, PasswordCredential, Resource, Scope, Session, StaffStatus, StaffUser,
+};
 use crm_domain::services::{ActionContext, AuditService};
 
 use crm_core::memory::{BackendHealth, ContactReadModel};
@@ -713,4 +721,495 @@ where
     .await
     .map_err(map_storage_error)?;
     Ok(())
+}
+// ---------------------------------------------------------------------------
+// Identity and RBAC repositories (task 03-SEC-02)
+// ---------------------------------------------------------------------------
+
+/// Renders a [`Resource`] as its stable database string.
+fn resource_as_str(resource: Resource) -> &'static str {
+    match resource {
+        Resource::Contact => "contact",
+        Resource::Contract => "contract",
+        Resource::Campaign => "campaign",
+        Resource::AgentAction => "agent_action",
+        Resource::AuditLog => "audit_log",
+        Resource::ClientProfile => "client_profile",
+        Resource::StaffUser => "staff_user",
+        Resource::Session => "session",
+    }
+}
+
+/// Parses a [`Resource`] from its database string.
+fn resource_from_str(raw: &str) -> Result<Resource, DomainError> {
+    match raw {
+        "contact" => Ok(Resource::Contact),
+        "contract" => Ok(Resource::Contract),
+        "campaign" => Ok(Resource::Campaign),
+        "agent_action" => Ok(Resource::AgentAction),
+        "audit_log" => Ok(Resource::AuditLog),
+        "client_profile" => Ok(Resource::ClientProfile),
+        "staff_user" => Ok(Resource::StaffUser),
+        "session" => Ok(Resource::Session),
+        other => Err(DomainError::Validation(format!(
+            "storage error: unknown resource '{other}'"
+        ))),
+    }
+}
+
+/// Renders an [`Operation`] as its stable database string.
+fn operation_as_str(operation: Operation) -> &'static str {
+    match operation {
+        Operation::Read => "read",
+        Operation::Create => "create",
+        Operation::Update => "update",
+        Operation::Delete => "delete",
+        Operation::Approve => "approve",
+        Operation::Manage => "manage",
+    }
+}
+
+/// Parses an [`Operation`] from its database string.
+fn operation_from_str(raw: &str) -> Result<Operation, DomainError> {
+    match raw {
+        "read" => Ok(Operation::Read),
+        "create" => Ok(Operation::Create),
+        "update" => Ok(Operation::Update),
+        "delete" => Ok(Operation::Delete),
+        "approve" => Ok(Operation::Approve),
+        "manage" => Ok(Operation::Manage),
+        other => Err(DomainError::Validation(format!(
+            "storage error: unknown operation '{other}'"
+        ))),
+    }
+}
+
+/// Renders a [`StaffStatus`] as its stable database string.
+fn staff_status_as_str(status: StaffStatus) -> &'static str {
+    match status {
+        StaffStatus::Active => "active",
+        StaffStatus::Suspended => "suspended",
+    }
+}
+
+/// Parses a [`StaffStatus`] from its database string.
+fn staff_status_from_str(raw: &str) -> Result<StaffStatus, DomainError> {
+    match raw {
+        "active" => Ok(StaffStatus::Active),
+        "suspended" => Ok(StaffStatus::Suspended),
+        other => Err(DomainError::Validation(format!(
+            "storage error: unknown staff status '{other}'"
+        ))),
+    }
+}
+
+/// Row shape of the `staff_users` table.
+#[derive(Debug, sqlx::FromRow)]
+struct StaffRow {
+    staff_id: Uuid,
+    agency_id: Uuid,
+    email: String,
+    display_name: String,
+    status: String,
+    phc_hash: Option<String>,
+    credential_updated_at: Option<DateTime<Utc>>,
+    created_at: DateTime<Utc>,
+    updated_at: DateTime<Utc>,
+}
+
+impl StaffRow {
+    /// Converts the row into a domain [`StaffUser`].
+    fn into_staff_user(self) -> Result<StaffUser, DomainError> {
+        let credential = match (self.phc_hash, self.credential_updated_at) {
+            (Some(phc_hash), Some(updated_at)) => {
+                Some(PasswordCredential::new(phc_hash, updated_at)?)
+            }
+            // No credential enrolled, or a partially-written row: treat as
+            // unenrolled rather than failing the read. Writes always set
+            // both columns together.
+            _ => None,
+        };
+        Ok(StaffUser {
+            staff_id: StaffId::from(self.staff_id),
+            agency_id: AgencyId::from(self.agency_id),
+            email: self.email,
+            display_name: self.display_name,
+            status: staff_status_from_str(&self.status)?,
+            credential,
+            created_at: self.created_at,
+            updated_at: self.updated_at,
+        })
+    }
+}
+
+/// Columns read for every staff query; kept in one place so `SELECT`
+/// lists cannot drift between methods.
+const STAFF_COLUMNS: &str = "staff_id, agency_id, email, display_name, status, phc_hash, credential_updated_at, created_at, updated_at";
+
+/// SQLx implementation of [`StaffRepository`].
+///
+/// Emails are stored exactly as passed; the service layer normalizes to
+/// lowercase before write and lookup, and the `UNIQUE` constraint on
+/// `email` enforces one account per address.
+#[derive(Debug, Clone)]
+pub struct PgStaffRepository {
+    pool: PgPool,
+}
+
+impl PgStaffRepository {
+    /// Creates the repository backed by `pool`.
+    pub fn new(pool: PgPool) -> Self {
+        Self { pool }
+    }
+}
+
+impl StaffRepository for PgStaffRepository {
+    async fn get(&self, staff_id: StaffId) -> Result<StaffUser, DomainError> {
+        let row: Option<StaffRow> = sqlx::query_as(&format!(
+            "SELECT {STAFF_COLUMNS} FROM staff_users WHERE staff_id = $1"
+        ))
+        .bind(staff_id.as_uuid())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(map_storage_error)?;
+        match row {
+            Some(row) => row.into_staff_user(),
+            None => Err(DomainError::NotFound {
+                kind: "staff_user".to_owned(),
+                id: staff_id.as_uuid().to_string(),
+            }),
+        }
+    }
+
+    async fn find_by_email(&self, email: &str) -> Result<Option<StaffUser>, DomainError> {
+        let row: Option<StaffRow> = sqlx::query_as(&format!(
+            "SELECT {STAFF_COLUMNS} FROM staff_users WHERE email = $1"
+        ))
+        .bind(email)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(map_storage_error)?;
+        row.map(StaffRow::into_staff_user).transpose()
+    }
+
+    async fn create(&self, user: StaffUser) -> Result<StaffUser, DomainError> {
+        let (phc_hash, credential_updated_at) = match &user.credential {
+            Some(credential) => (
+                Some(credential.phc_hash().to_owned()),
+                Some(credential.updated_at()),
+            ),
+            None => (None, None),
+        };
+        sqlx::query(
+            "INSERT INTO staff_users
+             (staff_id, agency_id, email, display_name, status, phc_hash,
+              credential_updated_at, created_at, updated_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+        )
+        .bind(user.staff_id.as_uuid())
+        .bind(user.agency_id.as_uuid())
+        .bind(&user.email)
+        .bind(&user.display_name)
+        .bind(staff_status_as_str(user.status))
+        .bind(phc_hash)
+        .bind(credential_updated_at)
+        .bind(user.created_at)
+        .bind(user.updated_at)
+        .execute(&self.pool)
+        .await
+        .map_err(map_storage_error)?;
+        Ok(user)
+    }
+
+    async fn update(&self, user: StaffUser) -> Result<StaffUser, DomainError> {
+        let (phc_hash, credential_updated_at) = match &user.credential {
+            Some(credential) => (
+                Some(credential.phc_hash().to_owned()),
+                Some(credential.updated_at()),
+            ),
+            None => (None, None),
+        };
+        let updated = sqlx::query(
+            "UPDATE staff_users
+             SET agency_id = $2, email = $3, display_name = $4, status = $5,
+                 phc_hash = $6, credential_updated_at = $7, updated_at = $8
+             WHERE staff_id = $1",
+        )
+        .bind(user.staff_id.as_uuid())
+        .bind(user.agency_id.as_uuid())
+        .bind(&user.email)
+        .bind(&user.display_name)
+        .bind(staff_status_as_str(user.status))
+        .bind(phc_hash)
+        .bind(credential_updated_at)
+        .bind(user.updated_at)
+        .execute(&self.pool)
+        .await
+        .map_err(map_storage_error)?;
+        if updated.rows_affected() == 0 {
+            return Err(DomainError::NotFound {
+                kind: "staff_user".to_owned(),
+                id: user.staff_id.as_uuid().to_string(),
+            });
+        }
+        Ok(user)
+    }
+}
+
+/// Row shape of the `sessions` table.
+#[derive(Debug, sqlx::FromRow)]
+struct SessionRow {
+    session_id: Uuid,
+    staff_id: Uuid,
+    token_hash: Vec<u8>,
+    delegation_id: Option<Uuid>,
+    issued_at: DateTime<Utc>,
+    expires_at: DateTime<Utc>,
+    last_activity_at: DateTime<Utc>,
+    revoked_at: Option<DateTime<Utc>>,
+}
+
+impl SessionRow {
+    /// Converts the row into a domain [`Session`].
+    fn into_session(self) -> Result<Session, DomainError> {
+        let token_hash: [u8; 32] = self.token_hash.try_into().map_err(|_| {
+            DomainError::Validation("storage error: corrupt session token_hash".to_owned())
+        })?;
+        Ok(Session {
+            session_id: SessionId::from(self.session_id),
+            staff_id: StaffId::from(self.staff_id),
+            token_hash,
+            delegation_id: self.delegation_id.map(DelegationId::from),
+            issued_at: self.issued_at,
+            expires_at: self.expires_at,
+            last_activity_at: self.last_activity_at,
+            revoked_at: self.revoked_at,
+        })
+    }
+}
+
+/// Columns read for every session query; kept in one place so `SELECT`
+/// lists cannot drift between methods.
+const SESSION_COLUMNS: &str = "session_id, staff_id, token_hash, delegation_id, issued_at, expires_at, last_activity_at, revoked_at";
+
+/// SQLx implementation of [`SessionRepository`].
+///
+/// Session rows are never deleted: revocation is a `revoked_at` timestamp,
+/// because session history is security-relevant.
+#[derive(Debug, Clone)]
+pub struct PgSessionRepository {
+    pool: PgPool,
+}
+
+impl PgSessionRepository {
+    /// Creates the repository backed by `pool`.
+    pub fn new(pool: PgPool) -> Self {
+        Self { pool }
+    }
+}
+
+impl SessionRepository for PgSessionRepository {
+    async fn create(&self, session: Session) -> Result<Session, DomainError> {
+        sqlx::query(
+            "INSERT INTO sessions
+             (session_id, staff_id, token_hash, delegation_id, issued_at,
+              expires_at, last_activity_at, revoked_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+        )
+        .bind(session.session_id.as_uuid())
+        .bind(session.staff_id.as_uuid())
+        .bind(session.token_hash.to_vec())
+        .bind(session.delegation_id.map(DelegationId::as_uuid))
+        .bind(session.issued_at)
+        .bind(session.expires_at)
+        .bind(session.last_activity_at)
+        .bind(session.revoked_at)
+        .execute(&self.pool)
+        .await
+        .map_err(map_storage_error)?;
+        Ok(session)
+    }
+
+    async fn get_by_token_hash(
+        &self,
+        token_hash: &[u8; 32],
+    ) -> Result<Option<Session>, DomainError> {
+        let row: Option<SessionRow> = sqlx::query_as(&format!(
+            "SELECT {SESSION_COLUMNS} FROM sessions WHERE token_hash = $1"
+        ))
+        .bind(token_hash.to_vec())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(map_storage_error)?;
+        row.map(SessionRow::into_session).transpose()
+    }
+
+    async fn update(&self, session: Session) -> Result<Session, DomainError> {
+        let updated = sqlx::query(
+            "UPDATE sessions
+             SET staff_id = $2, token_hash = $3, delegation_id = $4,
+                 issued_at = $5, expires_at = $6, last_activity_at = $7,
+                 revoked_at = $8
+             WHERE session_id = $1",
+        )
+        .bind(session.session_id.as_uuid())
+        .bind(session.staff_id.as_uuid())
+        .bind(session.token_hash.to_vec())
+        .bind(session.delegation_id.map(DelegationId::as_uuid))
+        .bind(session.issued_at)
+        .bind(session.expires_at)
+        .bind(session.last_activity_at)
+        .bind(session.revoked_at)
+        .execute(&self.pool)
+        .await
+        .map_err(map_storage_error)?;
+        if updated.rows_affected() == 0 {
+            return Err(DomainError::NotFound {
+                kind: "session".to_owned(),
+                id: session.session_id.as_uuid().to_string(),
+            });
+        }
+        Ok(session)
+    }
+
+    async fn list_for_staff(
+        &self,
+        staff_id: StaffId,
+        limit: u64,
+    ) -> Result<Vec<Session>, DomainError> {
+        let rows: Vec<SessionRow> = sqlx::query_as(&format!(
+            "SELECT {SESSION_COLUMNS} FROM sessions
+             WHERE staff_id = $1
+             ORDER BY issued_at DESC
+             LIMIT $2"
+        ))
+        .bind(staff_id.as_uuid())
+        // `limit` is caller-bounded; the cast is safe for realistic values.
+        .bind(limit as i64)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(map_storage_error)?;
+        rows.into_iter().map(SessionRow::into_session).collect()
+    }
+}
+
+/// Row shape of the `grants` table.
+#[derive(Debug, sqlx::FromRow)]
+struct GrantRow {
+    grant_id: Uuid,
+    resource: String,
+    operation: String,
+    scope_kind: String,
+    agency_id: Uuid,
+    client_profile_id: Option<Uuid>,
+}
+
+impl GrantRow {
+    /// Converts the row into a domain [`Grant`].
+    fn into_grant(self) -> Result<Grant, DomainError> {
+        let scope = match self.scope_kind.as_str() {
+            "agency" => Scope::Agency {
+                agency_id: AgencyId::from(self.agency_id),
+            },
+            "client_profile" => {
+                let client_profile_id = self.client_profile_id.ok_or_else(|| {
+                    DomainError::Validation(
+                        "storage error: client_profile scope without client_profile_id".to_owned(),
+                    )
+                })?;
+                Scope::ClientProfile {
+                    agency_id: AgencyId::from(self.agency_id),
+                    client_profile_id: ClientProfileId::from(client_profile_id),
+                }
+            }
+            other => {
+                return Err(DomainError::Validation(format!(
+                    "storage error: unknown scope kind '{other}'"
+                )))
+            }
+        };
+        Ok(Grant {
+            grant_id: GrantId::from(self.grant_id),
+            action: Action {
+                resource: resource_from_str(&self.resource)?,
+                operation: operation_from_str(&self.operation)?,
+            },
+            scope,
+        })
+    }
+}
+
+/// SQLx implementation of [`GrantRepository`].
+///
+/// Grants are additive and revocation is a `revoked_at` tombstone:
+/// [`GrantRepository::list_for_staff`] returns only live (non-revoked)
+/// rows, so revoking a grant immediately stops authorizing it — including
+/// for delegated agents via
+/// [`Delegation::effective_grants`](crm_domain::security::Delegation::effective_grants).
+#[derive(Debug, Clone)]
+pub struct PgGrantRepository {
+    pool: PgPool,
+}
+
+impl PgGrantRepository {
+    /// Creates the repository backed by `pool`.
+    pub fn new(pool: PgPool) -> Self {
+        Self { pool }
+    }
+}
+
+impl GrantRepository for PgGrantRepository {
+    async fn list_for_staff(&self, staff_id: StaffId) -> Result<Vec<Grant>, DomainError> {
+        let rows: Vec<GrantRow> = sqlx::query_as(
+            "SELECT grant_id, resource, operation, scope_kind, agency_id, client_profile_id
+             FROM grants
+             WHERE staff_id = $1 AND revoked_at IS NULL",
+        )
+        .bind(staff_id.as_uuid())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(map_storage_error)?;
+        rows.into_iter().map(GrantRow::into_grant).collect()
+    }
+
+    async fn assign(&self, staff_id: StaffId, grant: Grant) -> Result<Grant, DomainError> {
+        let (scope_kind, client_profile_id) = match grant.scope {
+            Scope::Agency { .. } => ("agency", None),
+            Scope::ClientProfile {
+                client_profile_id, ..
+            } => ("client_profile", Some(client_profile_id.as_uuid())),
+        };
+        sqlx::query(
+            "INSERT INTO grants
+             (grant_id, staff_id, resource, operation, scope_kind, agency_id, client_profile_id)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)",
+        )
+        .bind(grant.grant_id.as_uuid())
+        .bind(staff_id.as_uuid())
+        .bind(resource_as_str(grant.action.resource))
+        .bind(operation_as_str(grant.action.operation))
+        .bind(scope_kind)
+        .bind(grant.scope.agency_id().as_uuid())
+        .bind(client_profile_id)
+        .execute(&self.pool)
+        .await
+        .map_err(map_storage_error)?;
+        Ok(grant)
+    }
+
+    async fn revoke(&self, staff_id: StaffId, grant_id: GrantId) -> Result<(), DomainError> {
+        // Tombstone, not delete: grant history is audit-relevant. Idempotent:
+        // revoking an already-revoked or unknown grant is a no-op so retried
+        // revocations stay safe.
+        sqlx::query(
+            "UPDATE grants SET revoked_at = now()
+             WHERE grant_id = $1 AND staff_id = $2 AND revoked_at IS NULL",
+        )
+        .bind(grant_id.as_uuid())
+        .bind(staff_id.as_uuid())
+        .execute(&self.pool)
+        .await
+        .map_err(map_storage_error)?;
+        Ok(())
+    }
 }

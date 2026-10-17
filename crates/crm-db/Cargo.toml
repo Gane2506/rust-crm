@@ -11,6 +11,10 @@ thiserror.workspace = true
 uuid.workspace = true
 chrono.workspace = true
 serde_json.workspace = true
+# Argon2id password hashing for the auth services (03-SEC-02).
+argon2.workspace = true
+# spawn_blocking for the CPU-intensive Argon2 hashing/verification.
+tokio.workspace = true
 crm-domain = { path = "../crm-domain", version = "0.1.0" }
 # IdempotencyKey for the persistent idempotency-key store (02-DB-02).
 crm-core = { path = "../crm-core", version = "0.1.0" }
