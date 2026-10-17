@@ -230,7 +230,7 @@ and merge happens on green CI plus review. Follow along via
 | Workspace and toolchain | 01-FND-01…03 | ✅ Done ([#1](https://github.com/Gane2506/rust-crm/pull/1), [#2](https://github.com/Gane2506/rust-crm/pull/2), [#3](https://github.com/Gane2506/rust-crm/pull/3), [#4](https://github.com/Gane2506/rust-crm/pull/4)) |
 | Persistence foundation | 02-DB-01…03 | ✅ Done ([#5](https://github.com/Gane2506/rust-crm/issues/5)/[#6](https://github.com/Gane2506/rust-crm/pull/6), [#7](https://github.com/Gane2506/rust-crm/issues/7)/[#8](https://github.com/Gane2506/rust-crm/pull/8), [#9](https://github.com/Gane2506/rust-crm/issues/9)/[#10](https://github.com/Gane2506/rust-crm/pull/10)) |
 | Identity and RBAC | 03-SEC-01…03 | ✅ done ([#11](https://github.com/Gane2506/rust-crm/issues/11), [#12](https://github.com/Gane2506/rust-crm/pull/12); [#13](https://github.com/Gane2506/rust-crm/issues/13), [#14](https://github.com/Gane2506/rust-crm/pull/14); [#15](https://github.com/Gane2506/rust-crm/issues/15), [#16](https://github.com/Gane2506/rust-crm/pull/16)) |
-| Audit and observability | 04-AUD-01…03 | 🔨 04-AUD-01 in progress |
+| Audit and observability | 04-AUD-01…03 | ✅ 04-AUD-01 done ([#17](https://github.com/Gane2506/rust-crm/issues/17), [#18](https://github.com/Gane2506/rust-crm/pull/18)); 🔨 04-AUD-02 in progress |
 | Identity and RBAC | 03-SEC-01…03 | ⬜ Not started |
 | Audit and observability | 04-AUD-01…03 | ⬜ Not started |
 | Core CRM | 05-CRM-01…03 | ⬜ Not started |
