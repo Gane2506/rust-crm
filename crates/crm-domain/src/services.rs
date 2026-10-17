@@ -25,7 +25,7 @@ use crate::contact::{Contact, Lifecycle};
 use crate::contract::{Contract, ContractState};
 use crate::error::DomainError;
 use crate::ids::{
-    ActorId, AgencyId, AssetId, AuditEventId, ClientProfileId, ContactId, ContractId,
+    ActorId, AgencyId, AssetId, AuditEventId, ClientProfileId, ContactId, ContractId, EmailThreadId,
 };
 use crate::profile::ClientProfile;
 use crate::security::{Action, IssuedSession, Scope, Session, SessionToken};
@@ -434,6 +434,159 @@ pub trait AuthorizationService {
         scope: &'a Scope,
         correlation_id: Uuid,
     ) -> impl Future<Output = Result<ActionContext, DomainError>> + Send + 'a;
+}
+
+/// Input for [`EmailService::send`]: an outbound message to compose.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewEmailMessage {
+    /// Owning client profile (tenant boundary).
+    pub client_profile_id: ClientProfileId,
+    /// Thread to append to, if replying in-thread.
+    pub thread_id: Option<EmailThreadId>,
+    /// Sender address; blank means the agency's configured from-address.
+    pub from: String,
+    /// Recipient addresses.
+    pub to: Vec<String>,
+    /// CC addresses.
+    pub cc: Vec<String>,
+    /// BCC addresses.
+    pub bcc: Vec<String>,
+    /// Subject line.
+    pub subject: String,
+    /// Plain-text body.
+    pub body_text: String,
+    /// HTML body, if supplied.
+    pub body_html: Option<String>,
+    /// Idempotency key for the send: retries with the same key return
+    /// the original message instead of sending twice.
+    pub idempotency_key: String,
+}
+
+/// An inbound message handed to [`EmailService::ingest_reply`] by the
+/// provider adapter after fetching it from Gmail/Zoho.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InboundEmail {
+    /// Owning client profile (tenant boundary).
+    pub client_profile_id: ClientProfileId,
+    /// Thread hints for reply correlation (see
+    /// [`crate::email::InboundThreadHints`]).
+    pub hints: crate::email::InboundThreadHints,
+    /// Sender address.
+    pub from: String,
+    /// Recipient addresses.
+    pub to: Vec<String>,
+    /// Plain-text body.
+    pub body_text: String,
+    /// HTML body, if supplied.
+    pub body_html: Option<String>,
+    /// Provider's message id.
+    pub provider_message_id: String,
+    /// When the provider received it.
+    pub received_at: DateTime<Utc>,
+}
+
+/// Outcome of a provider send, returned by
+/// [`EmailProvider::send_message`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderSendOutcome {
+    /// Provider's message id for correlation and idempotent retries.
+    pub provider_message_id: String,
+    /// Provider's thread id, when the provider threads messages.
+    pub provider_thread_id: Option<String>,
+}
+
+/// Domain operations for email: authorized entry points.
+///
+/// Every method takes an [`ActionContext`] (actor, scope, correlation
+/// id), enforces deny-by-default authorization, validates
+/// client-profile scope, and records an [`AuditEvent`] for every
+/// mutation — including denied ones. Email mutations will authorize
+/// against `Resource::Email` / `Resource::EmailThread` once those
+/// variants land with 07-MAIL-02 (see [`crate::email`]).
+pub trait EmailService {
+    /// Composes and queues an outbound message.
+    ///
+    /// Validates via [`EmailMessage::new_outbound`](crate::email::EmailMessage::new_outbound),
+    /// creating the message in `Draft` and immediately advancing it to
+    /// `Queued`. The idempotency key makes retries safe: a second
+    /// `send` with the same key returns the original message.
+    /// Records an `"email.sent"` audit event on success.
+    fn send<'a>(
+        &'a self,
+        input: NewEmailMessage,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<crate::email::EmailMessage, DomainError>> + Send + 'a;
+
+    /// Ingests one inbound reply fetched by the provider adapter.
+    ///
+    /// Correlates the reply with a thread via the
+    /// [`match_thread_by_subject`](crate::email::match_thread_by_subject)
+    /// cascade (provider thread id → parent message → subject
+    /// heuristic), creating a new thread when nothing matches. Creates
+    /// the message via
+    /// [`EmailMessage::new_inbound`](crate::email::EmailMessage::new_inbound)
+    /// and records an `"email.received"` audit event. Duplicate
+    /// `provider_message_id`s are ignored (at-most-once ingestion).
+    fn ingest_reply<'a>(
+        &'a self,
+        inbound: InboundEmail,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<crate::email::EmailMessage, DomainError>> + Send + 'a;
+
+    /// Fetches a thread by id, enforcing client-profile scope.
+    fn get_thread<'a>(
+        &'a self,
+        thread_id: EmailThreadId,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<crate::email::EmailThread, DomainError>> + Send + 'a;
+
+    /// Lists threads for one client profile, most-recently-active
+    /// first, capped at `limit`.
+    fn list_threads<'a>(
+        &'a self,
+        client_profile_id: ClientProfileId,
+        limit: u64,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<Vec<crate::email::EmailThread>, DomainError>> + Send + 'a;
+}
+
+/// Provider adapter port: Gmail and Zoho implementations land in
+/// 07-MAIL-02. This trait is the seam between the domain and the
+/// provider APIs.
+///
+/// # Contract for implementors
+///
+/// * **Idempotency.** `send_message` must be safe to retry: the domain
+///   passes the provider message id back via
+///   [`EmailMessage::set_provider_message_id`](crate::email::EmailMessage::set_provider_message_id),
+///   and adapters must not send a duplicate when the same logical
+///   message is submitted twice (key retries on the idempotency key
+///   the service supplies out-of-band).
+/// * **Error mapping.** Provider failures (auth, rate limit, rejected
+///   recipient, network) map to [`DomainError`] without leaking
+///   provider credentials or raw API bodies. Permanent rejections
+///   (bad address, policy refusal) become
+///   [`DomainError::Validation`]; transient failures should be
+///   retried by the caller and surfaced distinctly from validation
+///   failures.
+/// * **No scope escape.** Adapters operate on one agency's credentials
+///   and must never mix messages across client profiles; the
+///   `client_profile_id` on every message is the tenant boundary.
+/// * **`fetch_message`** returns the full inbound payload the service
+///   needs for [`EmailService::ingest_reply`], including thread hints.
+pub trait EmailProvider {
+    /// Sends one queued message via the provider. Returns the
+    /// provider's ids for correlation.
+    fn send_message<'a>(
+        &'a self,
+        message: &'a crate::email::EmailMessage,
+    ) -> impl Future<Output = Result<ProviderSendOutcome, DomainError>> + Send + 'a;
+
+    /// Fetches one inbound message by provider message id.
+    fn fetch_message<'a>(
+        &'a self,
+        provider_message_id: &'a str,
+    ) -> impl Future<Output = Result<InboundEmail, DomainError>> + Send + 'a;
 }
 
 #[cfg(test)]

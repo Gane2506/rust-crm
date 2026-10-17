@@ -26,10 +26,11 @@ use crate::audit::AuditEvent;
 use crate::campaign::{Campaign, OwnerContext};
 use crate::contact::Contact;
 use crate::contract::Contract;
+use crate::email::{EmailAttachment, EmailMessage, EmailThread};
 use crate::error::DomainError;
 use crate::ids::{
     AgencyId, AgentActionId, AssetId, AuditEventId, CampaignId, ClientProfileId, ContactId,
-    ContractId, GrantId, StaffId,
+    ContractId, EmailAttachmentId, EmailMessageId, EmailThreadId, GrantId, StaffId,
 };
 use crate::profile::ClientProfile;
 use crate::security::{Grant, Session, StaffUser};
@@ -365,4 +366,127 @@ pub trait GrantRepository {
         staff_id: StaffId,
         grant_id: GrantId,
     ) -> impl Future<Output = Result<(), DomainError>> + Send + 'a;
+}
+
+/// Persistence port for [`EmailMessage`] records.
+///
+/// Intended storage shape (later task): `email_messages` table keyed by
+/// `message_id`, with `client_profile_id`, nullable `thread_id`,
+/// normalized address columns, `direction`, `status`, nullable
+/// `provider_message_id` (unique per profile, for idempotent retries
+/// and reply correlation), and timestamps. Implementations must
+/// validate client-profile scope on every read and write.
+pub trait EmailMessageRepository {
+    /// Persists a new message (outbound draft or ingested inbound).
+    fn create<'a>(
+        &'a self,
+        message: EmailMessage,
+    ) -> impl Future<Output = Result<EmailMessage, DomainError>> + Send + 'a;
+
+    /// Fetches a message by id.
+    fn get<'a>(
+        &'a self,
+        message_id: EmailMessageId,
+    ) -> impl Future<Output = Result<EmailMessage, DomainError>> + Send + 'a;
+
+    /// Persists message changes (status transitions, provider id).
+    /// Status transitions themselves are validated by
+    /// [`EmailMessage::advance_to`](crate::email::EmailMessage::advance_to)
+    /// (and friends) before the update is stored.
+    fn update<'a>(
+        &'a self,
+        message: EmailMessage,
+    ) -> impl Future<Output = Result<EmailMessage, DomainError>> + Send + 'a;
+
+    /// Lists messages in one thread, oldest first, capped at `limit`.
+    fn list_for_thread<'a>(
+        &'a self,
+        thread_id: EmailThreadId,
+        limit: u64,
+    ) -> impl Future<Output = Result<Vec<EmailMessage>, DomainError>> + Send + 'a;
+
+    /// Lists messages for one client profile, newest first, capped at
+    /// `limit`.
+    fn list_for_client<'a>(
+        &'a self,
+        client_profile_id: ClientProfileId,
+        limit: u64,
+    ) -> impl Future<Output = Result<Vec<EmailMessage>, DomainError>> + Send + 'a;
+
+    /// Finds a message in one client profile by its provider message id,
+    /// for idempotent retries and reply correlation. Returns `None`
+    /// when unknown.
+    fn find_by_provider_message_id<'a>(
+        &'a self,
+        client_profile_id: ClientProfileId,
+        provider_message_id: &'a str,
+    ) -> impl Future<Output = Result<Option<EmailMessage>, DomainError>> + Send + 'a;
+}
+
+/// Persistence port for [`EmailThread`] records.
+///
+/// Intended storage shape (later task): `email_threads` table keyed by
+/// `thread_id`, with `client_profile_id`, nullable `provider_thread_id`
+/// (unique per profile, for exact-match reply correlation),
+/// `message_count`, `last_message_at` and `status`.
+pub trait EmailThreadRepository {
+    /// Persists a new thread.
+    fn create<'a>(
+        &'a self,
+        thread: EmailThread,
+    ) -> impl Future<Output = Result<EmailThread, DomainError>> + Send + 'a;
+
+    /// Fetches a thread by id.
+    fn get<'a>(
+        &'a self,
+        thread_id: EmailThreadId,
+    ) -> impl Future<Output = Result<EmailThread, DomainError>> + Send + 'a;
+
+    /// Persists thread changes (message count, participants, status).
+    fn update<'a>(
+        &'a self,
+        thread: EmailThread,
+    ) -> impl Future<Output = Result<EmailThread, DomainError>> + Send + 'a;
+
+    /// Lists threads for one client profile, most-recently-active
+    /// first, capped at `limit`.
+    fn list_for_client<'a>(
+        &'a self,
+        client_profile_id: ClientProfileId,
+        limit: u64,
+    ) -> impl Future<Output = Result<Vec<EmailThread>, DomainError>> + Send + 'a;
+
+    /// Finds a thread in one client profile by its provider thread id,
+    /// for exact-match reply correlation. Returns `None` when unknown.
+    fn find_by_provider_thread_id<'a>(
+        &'a self,
+        client_profile_id: ClientProfileId,
+        provider_thread_id: &'a str,
+    ) -> impl Future<Output = Result<Option<EmailThread>, DomainError>> + Send + 'a;
+}
+
+/// Persistence port for [`EmailAttachment`] links.
+///
+/// Attachments are links: the bytes live in the asset store (see
+/// [`AssetRepository::find_by_sha256`]). Intended storage shape (later
+/// task): `email_attachments` table keyed by `attachment_id`, with
+/// `email_message_id` and `asset_id` foreign keys.
+pub trait EmailAttachmentRepository {
+    /// Persists a new attachment link.
+    fn create<'a>(
+        &'a self,
+        attachment: EmailAttachment,
+    ) -> impl Future<Output = Result<EmailAttachment, DomainError>> + Send + 'a;
+
+    /// Fetches an attachment link by id.
+    fn get<'a>(
+        &'a self,
+        attachment_id: EmailAttachmentId,
+    ) -> impl Future<Output = Result<EmailAttachment, DomainError>> + Send + 'a;
+
+    /// Lists attachment links for one message.
+    fn list_for_message<'a>(
+        &'a self,
+        message_id: EmailMessageId,
+    ) -> impl Future<Output = Result<Vec<EmailAttachment>, DomainError>> + Send + 'a;
 }

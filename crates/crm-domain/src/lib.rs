@@ -44,6 +44,8 @@ pub mod campaign;
 pub mod contact;
 /// Contract aggregate: signing state machine and the payment gate.
 pub mod contract;
+/// Email aggregate: messages, threads and attachments per client profile.
+pub mod email;
 /// Domain error type with explicit, secret-free error semantics.
 pub mod error;
 /// Typed UUID newtypes used as stable entity identifiers.
@@ -65,6 +67,10 @@ pub use audit::{AuditEvent, SecurityEvent};
 pub use campaign::Campaign;
 pub use contact::{Contact, ContactSource, DedupeSignal, Lifecycle};
 pub use contract::Contract;
+pub use email::{
+    EmailAttachment, EmailDirection, EmailMessage, EmailStatus, EmailThread, InboundThreadHints,
+    ThreadStatus,
+};
 pub use error::DomainError;
 pub use profile::{ClientProfile, ProfileStatus};
 pub use security::{

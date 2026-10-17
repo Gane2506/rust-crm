@@ -124,6 +124,18 @@ define_id!(
     /// Identifies a file/media asset attached to a client profile.
     AssetId
 );
+define_id!(
+    /// Identifies an email message inside a client profile.
+    EmailMessageId
+);
+define_id!(
+    /// Identifies an email thread (conversation) inside a client profile.
+    EmailThreadId
+);
+define_id!(
+    /// Identifies the link between an email message and its asset bytes.
+    EmailAttachmentId
+);
 
 impl From<StaffId> for ActorId {
     /// Renders a staff member as the actor of an audit event.
