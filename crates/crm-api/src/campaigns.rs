@@ -44,8 +44,8 @@ use crm_domain::campaign::{
     AttributionModel, Campaign, CampaignStep, Channel, OptOutChannel, OwnerContext, StepKind,
 };
 use crm_domain::ids::{CampaignId, ClientProfileId, ContactId, ProspectPoolId};
-use crm_domain::security::{Action, Operation, Resource};
 use crm_domain::repositories::{CampaignRepository, OptOutRepository, ProspectPoolRepository};
+use crm_domain::security::{Action, Operation, Resource};
 use crm_domain::services::{
     AuditService, CampaignService, NewCampaign, NewCampaignStep, NewConversion,
 };

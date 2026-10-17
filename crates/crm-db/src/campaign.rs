@@ -16,8 +16,8 @@ use sqlx::{PgPool, Row};
 use uuid::Uuid;
 
 use crm_domain::campaign::{
-    Campaign, CampaignStep, Channel, Conversion, DeliveryState, OptOut,
-    OptOutChannel, OwnerContext, ProspectPool, StepKind,
+    Campaign, CampaignStep, Channel, Conversion, DeliveryState, OptOut, OptOutChannel,
+    OwnerContext, ProspectPool, StepKind,
 };
 use crm_domain::error::DomainError;
 use crm_domain::ids::{

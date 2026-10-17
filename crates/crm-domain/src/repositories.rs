@@ -31,9 +31,9 @@ use crate::contract::Contract;
 use crate::email::{EmailAttachment, EmailMessage, EmailThread};
 use crate::error::DomainError;
 use crate::ids::{
-    AgencyId, AgentActionId, AssetId, AuditEventId, CampaignId, ClientProfileId,
-    ContactId, ContractId, ConversionId, EmailAttachmentId, EmailMessageId, EmailThreadId, GrantId,
-    OptOutId, ProspectPoolId, StaffId,
+    AgencyId, AgentActionId, AssetId, AuditEventId, CampaignId, ClientProfileId, ContactId,
+    ContractId, ConversionId, EmailAttachmentId, EmailMessageId, EmailThreadId, GrantId, OptOutId,
+    ProspectPoolId, StaffId,
 };
 use crate::profile::ClientProfile;
 use crate::security::{Grant, Session, StaffUser};
