@@ -419,6 +419,10 @@ pub enum Resource {
     AgentRun,
     /// Automation workflows inside a client profile (task 10-WORK-02).
     Workflow,
+    /// Intake/lead forms inside a client profile (task 11-FORM-02).
+    /// Covers the form lifecycle (publish, archive), field management
+    /// and submission intake (submit, review).
+    Form,
 }
 
 /// Operations on a resource.

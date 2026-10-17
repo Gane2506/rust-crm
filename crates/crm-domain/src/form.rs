@@ -6,14 +6,12 @@
 //! typed fields; end-clients submit answers through published forms.
 //! Every form belongs to one client profile — the tenant boundary.
 //!
-//! ## Authorization (deferred)
+//! ## Authorization
 //!
-//! Form operations will authorize against `Resource::Form`,
-//! profile-scoped. That variant is **not** added here: the `Resource`
-//! → database-string mapping lives in `crates/crm-db` (exhaustive
-//! match), and this task is domain-only. 11-FORM-02 (the vertical
-//! slice) adds the variant together with its `"form"` mapping arms
-//! atomically, so the workspace keeps compiling.
+//! Form operations authorize against
+//! [`Resource::Form`](crate::security::Resource::Form),
+//! profile-scoped (the variant landed in task 11-FORM-02 together
+//! with its `"form"` database-string mapping in `crates/crm-db`).
 //!
 //! ## Audit
 //!
