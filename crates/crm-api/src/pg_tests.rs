@@ -2706,16 +2706,14 @@ fn post_ingest(body: serde_json::Value, secret: &str) -> Request<Body> {
         .expect("build ingest request")
 }
 
-/// Shared webhook secret for the ingest tests. The same value is used
-/// by every ingest test, and the lock serializes them: `set_var` /
-/// `remove_var` on a process-global env var is not safe under parallel
-/// test threads.
+/// Shared webhook secret for the ingest tests. The same value is set
+/// by every ingest test, so parallel `set_var` calls are idempotent
+/// and cannot race. The var is deliberately never removed: cleanup
+/// `remove_var` calls would race with parallel tests still running.
 const TEST_WEBHOOK_SECRET: &str = "test-webhook-secret-07-mail-02";
-static WEBHOOK_SECRET_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[tokio::test]
 async fn pg_email_ingest_matches_thread_and_creates_message() {
-    let _lock = WEBHOOK_SECRET_LOCK.lock().expect("webhook lock");
     let Some((pool, admin_url, db_name)) = fresh_db().await else {
         eprintln!("pg_email_ingest: DATABASE_URL not set, skipping");
         return;
@@ -2791,13 +2789,11 @@ async fn pg_email_ingest_matches_thread_and_creates_message() {
     assert_eq!(threads.len(), 1);
     assert_eq!(threads[0].message_count, 2);
 
-    std::env::remove_var("CRM_EMAIL_WEBHOOK_SECRET");
     drop_db(&admin_url, &db_name, pool).await;
 }
 
 #[tokio::test]
 async fn pg_email_ingest_rejects_bad_secret() {
-    let _lock = WEBHOOK_SECRET_LOCK.lock().expect("webhook lock");
     let Some((pool, admin_url, db_name)) = fresh_db().await else {
         eprintln!("pg_email_ingest_secret: DATABASE_URL not set, skipping");
         return;
@@ -2819,13 +2815,11 @@ async fn pg_email_ingest_rejects_bad_secret() {
     .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 
-    std::env::remove_var("CRM_EMAIL_WEBHOOK_SECRET");
     drop_db(&admin_url, &db_name, pool).await;
 }
 
 #[tokio::test]
 async fn pg_email_threads_are_profile_scoped() {
-    let _lock = WEBHOOK_SECRET_LOCK.lock().expect("webhook lock");
     let Some((pool, admin_url, db_name)) = fresh_db().await else {
         eprintln!("pg_email_scope: DATABASE_URL not set, skipping");
         return;
@@ -2893,6 +2887,5 @@ async fn pg_email_threads_are_profile_scoped() {
     .await;
     assert_eq!(status, StatusCode::OK);
 
-    std::env::remove_var("CRM_EMAIL_WEBHOOK_SECRET");
     drop_db(&admin_url, &db_name, pool).await;
 }
