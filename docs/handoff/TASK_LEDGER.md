@@ -30,8 +30,6 @@ Statuses: TODO / IN_PROGRESS / BLOCKED / DONE. Never mark DONE without linked co
 | 04-AUD-03 | TODO | | | |
 | 05-CRM-01 | TODO | | | |
 | 05-CRM-02 | TODO | | | |
-| 05-CRM-03 | TODO | | | |
-| 06-UI-01 | TODO | | | |
 | 06-UI-02 | TODO | | | |
 | 06-UI-03 | TODO | | | |
 | 07-MAIL-01 | TODO | | | |
