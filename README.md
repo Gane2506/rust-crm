@@ -197,7 +197,7 @@ and merge happens on green CI plus review. Follow along via
 | Workstream | Tasks | Status |
 |---|---|---|
 | Workspace and toolchain | 01-FND-01…03 | ✅ Done ([#1](https://github.com/Gane2506/rust-crm/pull/1), [#2](https://github.com/Gane2506/rust-crm/pull/2), [#3](https://github.com/Gane2506/rust-crm/pull/3), [#4](https://github.com/Gane2506/rust-crm/pull/4)) |
-| Persistence foundation | 02-DB-01…03 | 🔨 02-DB-01 in progress ([#5](https://github.com/Gane2506/rust-crm/issues/5), [draft #6](https://github.com/Gane2506/rust-crm/pull/6)) |
+| Persistence foundation | 02-DB-01…03 | ✅ 02-DB-01 done ([issue #5](https://github.com/Gane2506/rust-crm/issues/5), [PR #6](https://github.com/Gane2506/rust-crm/pull/6)); 🔨 02-DB-02 in progress |
 | Identity and RBAC | 03-SEC-01…03 | ⬜ Not started |
 | Audit and observability | 04-AUD-01…03 | ⬜ Not started |
 | Core CRM | 05-CRM-01…03 | ⬜ Not started |
