@@ -59,32 +59,82 @@ impl AnomalySink for LoggingAnomalySink {
     }
 }
 
-/// Denials observed before an [`AnomalySignal::RepeatedAuthorizationDenials`]
-/// is emitted.
-const DENIAL_THRESHOLD: u32 = 10;
+/// Tuning knobs for the denial tracker (task 04-AUD-03).
+///
+/// [`Default`] carries the production values.
+#[derive(Debug, Clone, Copy)]
+pub struct DenialTrackerConfig {
+    /// Denials per actor within [`Self::window`] that emit the anomaly
+    /// signal.
+    pub threshold: u32,
+    /// Sliding window in which denials count toward the threshold.
+    pub window: Duration,
+}
 
-/// Window in which denials count toward the threshold.
-const DENIAL_WINDOW: Duration = Duration::from_secs(300);
+impl Default for DenialTrackerConfig {
+    fn default() -> Self {
+        Self {
+            threshold: 10,
+            window: Duration::from_secs(300),
+        }
+    }
+}
+
+impl DenialTrackerConfig {
+    /// Builds the configuration from environment variables, falling back
+    /// to the production defaults.
+    ///
+    /// | Variable | Default | Meaning |
+    /// |---|---|---|
+    /// | `CRM_DENIAL_THRESHOLD` | `10` | Denials per actor per window that signal |
+    /// | `CRM_DENIAL_WINDOW_SECS` | `300` | Window (seconds) |
+    ///
+    /// Unparseable values fall back to the default (with no panic).
+    pub fn from_env() -> Self {
+        let threshold = std::env::var("CRM_DENIAL_THRESHOLD")
+            .ok()
+            .and_then(|raw| raw.parse().ok())
+            .unwrap_or(10);
+        let window_secs = std::env::var("CRM_DENIAL_WINDOW_SECS")
+            .ok()
+            .and_then(|raw| raw.parse::<u64>().ok())
+            .unwrap_or(300);
+        Self {
+            threshold,
+            window: Duration::from_secs(window_secs),
+        }
+    }
+}
 
 /// Tracks per-actor authorization denials and reports when the pattern
 /// looks like probing.
 ///
 /// In-memory and per-process, like the login rate limiter: exact for the
 /// single-instance deployment, approximate under multi-instance. When an
-/// actor's denials reach [`DENIAL_THRESHOLD`] within [`DENIAL_WINDOW`],
+/// actor's denials reach the configured threshold within the window,
 /// [`DenialTracker::note_denial`] returns the signal to emit; the
 /// counter keeps counting (no reset on emission) so a sustained probe
 /// re-signals at most once per window — callers decide whether to
 /// re-emit.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct DenialTracker {
+    config: DenialTrackerConfig,
     state: Mutex<HashMap<ActorId, VecDeque<Instant>>>,
 }
 
+impl Default for DenialTracker {
+    fn default() -> Self {
+        Self::with_config(DenialTrackerConfig::default())
+    }
+}
+
 impl DenialTracker {
-    /// Creates an empty tracker.
-    pub fn new() -> Self {
-        Self::default()
+    /// Creates an empty tracker with explicit tuning.
+    pub fn with_config(config: DenialTrackerConfig) -> Self {
+        Self {
+            config,
+            state: Mutex::new(HashMap::new()),
+        }
     }
 
     /// Records one denial for `actor`, returning the anomaly signal when
@@ -95,7 +145,7 @@ impl DenialTracker {
         let denials = state.entry(actor).or_default();
         while denials
             .front()
-            .is_some_and(|seen| now.duration_since(*seen) > DENIAL_WINDOW)
+            .is_some_and(|seen| now.duration_since(*seen) > self.config.window)
         {
             denials.pop_front();
         }
@@ -103,11 +153,11 @@ impl DenialTracker {
         let count = denials.len() as u32;
         // Signal once per window: only the exact threshold crossing
         // emits, so a sustained probe does not spam the sink.
-        if count == DENIAL_THRESHOLD {
+        if count == self.config.threshold {
             Some(AnomalySignal::RepeatedAuthorizationDenials {
                 actor_id: actor,
                 denials: count,
-                window_secs: DENIAL_WINDOW.as_secs(),
+                window_secs: self.config.window.as_secs(),
             })
         } else {
             None
@@ -121,9 +171,10 @@ mod tests {
 
     #[test]
     fn denial_tracker_signals_once_at_threshold() {
-        let tracker = DenialTracker::new();
+        let tracker = DenialTracker::default();
+        let threshold = DenialTrackerConfig::default().threshold;
         let actor = ActorId::from(uuid::Uuid::from_u128(1));
-        for _ in 0..DENIAL_THRESHOLD - 1 {
+        for _ in 0..threshold - 1 {
             assert!(tracker.note_denial(actor).is_none());
         }
         let signal = tracker
@@ -136,10 +187,11 @@ mod tests {
 
     #[test]
     fn denial_tracker_is_per_actor() {
-        let tracker = DenialTracker::new();
+        let tracker = DenialTracker::default();
+        let threshold = DenialTrackerConfig::default().threshold;
         let first = ActorId::from(uuid::Uuid::from_u128(1));
         let second = ActorId::from(uuid::Uuid::from_u128(2));
-        for _ in 0..DENIAL_THRESHOLD {
+        for _ in 0..threshold {
             tracker.note_denial(first);
         }
         // The second actor's denials are counted separately.

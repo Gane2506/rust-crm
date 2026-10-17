@@ -187,6 +187,10 @@ workstream.
 
 ## Security audit log (04-AUD-02)
 
+> **Operator's guide:** `audit-log.md` in this directory covers
+> querying the log, verifying the chain, incident response for a
+> broken chain, anomaly triage, thresholds, and retention.
+
 Security-relevant occurrences are appended to the shared `audit_events`
 table as hash-chained [`AuditEvent`]s whose `payload` JSONB column carries
 the serialized [`SecurityEvent`]. Recorded on the request path: login

@@ -56,6 +56,27 @@ impl Default for LoginRateLimitConfig {
 }
 
 impl LoginRateLimitConfig {
+    /// Builds the configuration from environment variables, falling back
+    /// to the production defaults (task 04-AUD-03).
+    ///
+    /// | Variable | Default | Meaning |
+    /// |---|---|---|
+    /// | `CRM_RATE_LIMIT_IP_MAX` | `30` | Max attempts per IP per window |
+    /// | `CRM_RATE_LIMIT_IP_WINDOW_SECS` | `60` | Per-IP window (seconds) |
+    /// | `CRM_RATE_LIMIT_EMAIL_MAX` | `10` | Max attempts per email per window |
+    /// | `CRM_RATE_LIMIT_EMAIL_WINDOW_SECS` | `300` | Per-email window (seconds) |
+    ///
+    /// Unparseable values fall back to the default (with no panic — a
+    /// typo in an env var must not prevent startup).
+    pub fn from_env() -> Self {
+        Self {
+            max_attempts_per_ip: env_u32("CRM_RATE_LIMIT_IP_MAX", 30),
+            ip_window: Duration::from_secs(env_u64("CRM_RATE_LIMIT_IP_WINDOW_SECS", 60)),
+            max_attempts_per_email: env_u32("CRM_RATE_LIMIT_EMAIL_MAX", 10),
+            email_window: Duration::from_secs(env_u64("CRM_RATE_LIMIT_EMAIL_WINDOW_SECS", 300)),
+        }
+    }
+
     /// Tiny limits for tests: trips after 3 attempts per IP within a
     /// minute, so HTTP tests exercise the 429 path without burning CPU
     /// on dozens of Argon2 verifications.
@@ -68,6 +89,24 @@ impl LoginRateLimitConfig {
             email_window: Duration::from_secs(60),
         }
     }
+}
+
+/// Reads a `u32` env var, falling back to `default` when unset or
+/// unparseable.
+fn env_u32(name: &str, default: u32) -> u32 {
+    std::env::var(name)
+        .ok()
+        .and_then(|raw| raw.parse().ok())
+        .unwrap_or(default)
+}
+
+/// Reads a `u64` env var, falling back to `default` when unset or
+/// unparseable.
+fn env_u64(name: &str, default: u64) -> u64 {
+    std::env::var(name)
+        .ok()
+        .and_then(|raw| raw.parse().ok())
+        .unwrap_or(default)
 }
 
 /// Attempt timestamps per bucket key.
@@ -266,5 +305,25 @@ mod tests {
             second_wait <= first_wait,
             "retry hint must not grow while the entry ages"
         );
+    }
+
+    #[test]
+    fn config_from_env_reads_overrides_with_defaults() {
+        // Defaults when nothing is set.
+        let config = LoginRateLimitConfig::from_env();
+        assert_eq!(config.max_attempts_per_ip, 30);
+        assert_eq!(config.max_attempts_per_email, 10);
+
+        std::env::set_var("CRM_RATE_LIMIT_IP_MAX", "5");
+        std::env::set_var("CRM_RATE_LIMIT_EMAIL_WINDOW_SECS", "42");
+        // Unparseable values fall back to the default, never panic.
+        std::env::set_var("CRM_RATE_LIMIT_EMAIL_MAX", "not-a-number");
+        let config = LoginRateLimitConfig::from_env();
+        assert_eq!(config.max_attempts_per_ip, 5);
+        assert_eq!(config.email_window, Duration::from_secs(42));
+        assert_eq!(config.max_attempts_per_email, 10);
+        std::env::remove_var("CRM_RATE_LIMIT_IP_MAX");
+        std::env::remove_var("CRM_RATE_LIMIT_EMAIL_WINDOW_SECS");
+        std::env::remove_var("CRM_RATE_LIMIT_EMAIL_MAX");
     }
 }
