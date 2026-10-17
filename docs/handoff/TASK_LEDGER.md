@@ -6,7 +6,7 @@ Statuses: TODO / IN_PROGRESS / BLOCKED / DONE. Never mark DONE without linked co
 |---|---|---|---|---|
 | 01-FND-01 | DONE | commit `f324985` / PR #1 (merged) | CI run 39001237365: all 9 jobs green (fmt, clippy -D warnings, test, release build, wasm32 build, audit, deny, forbidden-source scan, unsafe report) | Workspace scaffold + domain interfaces shipped; local gates all green; security review clean (2 Lows fixed) |
 | 01-FND-02 | DONE | PR #2 (merged into `task/01-FND-01`) + PR #3 (merged to `main` as `db70a1e`) | CI run 39005491439: all 9 jobs green (fmt, clippy -D warnings, test, release build, wasm32 build, audit, deny, forbidden-source scan, unsafe report); local: 60 tests + live API smoke test (201/409/422) | Vertical slice shipped: in-memory repos/services + contacts API (idempotency keys, RFC 7807) + WASM contacts page. Default branch fixed to `main`. |
-| 01-FND-03 | TODO | | | |
+| 01-FND-03 | IN_PROGRESS | commit `51b2b96` / PR #4 (open) | local gates green (fmt, clippy -D warnings, 65 tests, release + wasm32 builds, audit, deny); live serving verified via curl; CI running | Verify and operationalize: static frontend serving + SPA fallback, dev guide, .env.example |
 | 02-DB-01 | TODO | | | |
 | 02-DB-02 | TODO | | | |
 | 02-DB-03 | TODO | | | |

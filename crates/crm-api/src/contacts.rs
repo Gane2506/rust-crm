@@ -414,7 +414,7 @@ mod tests {
     use tower::ServiceExt;
 
     fn test_router() -> axum::Router {
-        crate::app(AppState::new())
+        crate::app(AppState::new(), None)
     }
 
     fn contact_body(profile: Uuid) -> serde_json::Value {
