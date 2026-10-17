@@ -11,7 +11,7 @@ use std::net::SocketAddr;
 use axum::{
     http::{header, HeaderName, StatusCode, Uri},
     response::{IntoResponse, Json, Response},
-    routing::get,
+    routing::{get, post},
     Router,
 };
 use serde::Serialize;
@@ -23,8 +23,12 @@ use tower_http::{
 };
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
+mod contacts;
+
+use contacts::AppState;
+
 /// Header carrying the request/correlation id.
-const REQUEST_ID_HEADER: &str = "x-request-id";
+pub(crate) const REQUEST_ID_HEADER: &str = "x-request-id";
 /// Environment variable overriding the bind address.
 const BIND_ADDR_ENV: &str = "CRM_API_ADDR";
 /// Default bind address when [`BIND_ADDR_ENV`] is unset.
@@ -99,7 +103,12 @@ async fn not_found(uri: Uri) -> impl IntoResponse {
 }
 
 /// Render a `problem+json` response for `status`.
-fn problem_response(status: StatusCode, title: &str, detail: String, instance: String) -> Response {
+pub(crate) fn problem_response(
+    status: StatusCode,
+    title: &str,
+    detail: String,
+    instance: String,
+) -> Response {
     let body = ProblemDetails {
         problem_type: "about:blank".to_owned(),
         title: title.to_owned(),
@@ -119,12 +128,18 @@ fn problem_response(status: StatusCode, title: &str, detail: String, instance: S
 ///
 /// Layer order (outermost first): generate the request id, trace the request,
 /// then propagate the id onto the response.
-fn app() -> Router {
+pub(crate) fn app(state: AppState) -> Router {
     let header_name = HeaderName::from_static(REQUEST_ID_HEADER);
     Router::new()
         .route("/healthz", get(healthz))
         .route("/api/v1/version", get(version))
+        .route(
+            "/api/v1/contacts",
+            post(contacts::create_contact).get(contacts::list_contacts),
+        )
+        .route("/api/v1/contacts/{id}", get(contacts::get_contact))
         .fallback(not_found)
+        .with_state(state)
         .layer(
             ServiceBuilder::new()
                 .layer(SetRequestIdLayer::new(header_name.clone(), MakeRequestUuid))
@@ -186,7 +201,7 @@ async fn main() -> Result<(), ApiError> {
     let listener = tokio::net::TcpListener::bind(addr).await?;
     tracing::info!(%addr, "crm-api listening");
 
-    axum::serve(listener, app())
+    axum::serve(listener, app(AppState::new()))
         .with_graceful_shutdown(shutdown_signal())
         .await?;
     tracing::info!("crm-api shut down cleanly");
@@ -209,7 +224,10 @@ mod tests {
 
     #[tokio::test]
     async fn healthz_returns_200_with_ok_status() {
-        let response = app().oneshot(get("/healthz")).await.expect("oneshot");
+        let response = app(AppState::new())
+            .oneshot(get("/healthz"))
+            .await
+            .expect("oneshot");
 
         assert_eq!(response.status(), StatusCode::OK);
         let body = to_bytes(response.into_body(), 1024).await.expect("body");
@@ -219,7 +237,7 @@ mod tests {
 
     #[tokio::test]
     async fn version_returns_crate_version() {
-        let response = app()
+        let response = app(AppState::new())
             .oneshot(get("/api/v1/version"))
             .await
             .expect("oneshot");
@@ -232,7 +250,10 @@ mod tests {
 
     #[tokio::test]
     async fn unknown_route_returns_problem_json() {
-        let response = app().oneshot(get("/nope")).await.expect("oneshot");
+        let response = app(AppState::new())
+            .oneshot(get("/nope"))
+            .await
+            .expect("oneshot");
 
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
         let content_type = response
@@ -249,7 +270,10 @@ mod tests {
 
     #[tokio::test]
     async fn response_carries_request_id() {
-        let response = app().oneshot(get("/healthz")).await.expect("oneshot");
+        let response = app(AppState::new())
+            .oneshot(get("/healthz"))
+            .await
+            .expect("oneshot");
 
         assert!(
             response.headers().contains_key(REQUEST_ID_HEADER),
