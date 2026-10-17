@@ -58,6 +58,7 @@ use crm_db::core_crm::{PgAssetRepository, PgClientProfileRepository};
 use crm_db::email::{
     PgEmailAttachmentRepository, PgEmailMessageRepository, PgEmailThreadRepository,
 };
+use crm_db::form::{PgFormFieldRepository, PgFormRepository, PgFormSubmissionRepository};
 use crm_db::jev::{
     PgAgentRunRepository, PgHandoffRepository, PgRoleMembership, PgToolCallRepository,
 };
@@ -129,6 +130,12 @@ pub struct ApiAuth {
     pub workflow_triggers: PgTriggerRepository,
     /// Workflow-version repository for the workflow endpoints.
     pub workflow_versions: PgWorkflowVersionRepository,
+    /// Form repository for the form endpoints.
+    pub forms: PgFormRepository,
+    /// Form-field repository for the form endpoints.
+    pub form_fields: PgFormFieldRepository,
+    /// Form-submission repository for the form endpoints.
+    pub form_submissions: PgFormSubmissionRepository,
 }
 
 impl ApiAuth {
@@ -174,6 +181,9 @@ impl ApiAuth {
             workflow_edges: PgWorkflowEdgeRepository::new(pool.clone()),
             workflow_triggers: PgTriggerRepository::new(pool.clone()),
             workflow_versions: PgWorkflowVersionRepository::new(pool.clone()),
+            forms: PgFormRepository::new(pool.clone()),
+            form_fields: PgFormFieldRepository::new(pool.clone()),
+            form_submissions: PgFormSubmissionRepository::new(pool.clone()),
         }
     }
 }

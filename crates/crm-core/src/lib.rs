@@ -60,6 +60,11 @@ pub mod jev;
 /// simulator over the [`workflow`](crm_domain::workflow) domain.
 pub mod workflow;
 
+/// Form builder service: lifecycle, field management and
+/// validate-then-persist submission intake over the
+/// [`form`](crm_domain::form) domain.
+pub mod form;
+
 /// Errors raised by [`crm-core`](crate) utilities.
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum CoreError {

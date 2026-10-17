@@ -33,6 +33,7 @@ mod auth;
 mod campaigns;
 mod contacts;
 mod emails;
+mod forms;
 mod jev;
 mod observability;
 #[cfg(test)]
@@ -421,6 +422,35 @@ where
         .route(
             "/v1/workflows/{id}/versions",
             get(workflows::list_versions::<R, A, I>),
+        )
+        .route(
+            "/v1/forms",
+            post(forms::create_form::<R, A, I>).get(forms::list_forms::<R, A, I>),
+        )
+        .route("/v1/forms/{id}", get(forms::get_form::<R, A, I>))
+        .route(
+            "/v1/forms/{id}/publish",
+            post(forms::publish_form::<R, A, I>),
+        )
+        .route(
+            "/v1/forms/{id}/archive",
+            post(forms::archive_form::<R, A, I>),
+        )
+        .route(
+            "/v1/forms/{id}/fields",
+            post(forms::add_field::<R, A, I>).get(forms::list_fields::<R, A, I>),
+        )
+        .route(
+            "/v1/forms/{id}/fields/{field_id}",
+            delete(forms::remove_field::<R, A, I>),
+        )
+        .route(
+            "/v1/forms/{id}/submissions",
+            post(forms::submit_form::<R, A, I>).get(forms::list_submissions::<R, A, I>),
+        )
+        .route(
+            "/v1/forms/{id}/submissions/{submission_id}/review",
+            post(forms::review_submission::<R, A, I>),
         )
         .fallback(not_found);
 
