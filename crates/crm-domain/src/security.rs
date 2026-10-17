@@ -403,6 +403,8 @@ pub enum Resource {
     AuditLog,
     /// Client-profile workspaces (agency-managed).
     ClientProfile,
+    /// File/media assets attached to a client profile.
+    Asset,
     /// Staff accounts and their grants.
     StaffUser,
     /// Login sessions (revocation, inspection).
