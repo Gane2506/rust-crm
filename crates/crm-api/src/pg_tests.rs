@@ -556,6 +556,160 @@ async fn pg_login_rejects_unknown_email() {
     drop_db(&admin_url, &db_name, pool).await;
 }
 
+/// Builds a test router whose login rate limiter trips after 3 attempts
+/// per IP, so the 429 path is exercised without burning CPU on dozens of
+/// Argon2 verifications.
+fn pg_router_with_tight_login_limits(pool: &PgPool) -> axum::Router {
+    let mut state = AppState::from_pool(pool);
+    state.auth = Some(crate::auth::ApiAuth::with_rate_limits(
+        pool,
+        crate::rate_limit::LoginRateLimitConfig::for_tests(),
+    ));
+    crate::app(state, None)
+}
+
+#[tokio::test]
+async fn pg_login_rate_limit_trips_with_429_and_retry_after() {
+    let Some((pool, admin_url, db_name)) = fresh_db().await else {
+        eprintln!("skipping Postgres API test: DATABASE_URL is not set");
+        return;
+    };
+    let router = pg_router_with_tight_login_limits(&pool);
+    seed_staff_only(&pool, "ratelimit@example.com").await;
+
+    // The first three attempts fail closed as 401s (wrong password).
+    for _ in 0..3 {
+        let (status, _) = read_json(
+            router
+                .clone()
+                .oneshot(login_request("ratelimit@example.com", "wrong-password"))
+                .await
+                .expect("oneshot"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+
+    // The fourth attempt trips the per-IP bucket: 429 problem+json with
+    // a numeric Retry-After, carrying the security headers like every
+    // other API response.
+    let response = router
+        .clone()
+        .oneshot(login_request("ratelimit@example.com", "wrong-password"))
+        .await
+        .expect("oneshot");
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    let retry_after = response
+        .headers()
+        .get(header::RETRY_AFTER)
+        .expect("retry-after header")
+        .to_str()
+        .expect("retry-after is ascii");
+    assert!(
+        retry_after.parse::<u64>().expect("retry-after is numeric") >= 1,
+        "retry-after must be a positive number of seconds"
+    );
+    assert!(
+        response.headers().contains_key("x-content-type-options"),
+        "the 429 must carry the API security headers"
+    );
+    let (status, problem) = read_json(response).await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(problem["title"], "Too many requests");
+    assert_eq!(problem["status"], 429);
+
+    drop_db(&admin_url, &db_name, pool).await;
+}
+
+#[tokio::test]
+async fn pg_login_rate_limit_keys_off_forwarded_ip() {
+    let Some((pool, admin_url, db_name)) = fresh_db().await else {
+        eprintln!("skipping Postgres API test: DATABASE_URL is not set");
+        return;
+    };
+    let router = pg_router_with_tight_login_limits(&pool);
+    seed_staff_only(&pool, "xff@example.com").await;
+
+    // Exhaust the bucket for one forwarded client IP...
+    let login_as = |ip: &str| {
+        Request::builder()
+            .method("POST")
+            .uri("/api/v1/auth/login")
+            .header(header::CONTENT_TYPE, "application/json")
+            .header("x-forwarded-for", ip)
+            .body(Body::from(
+                serde_json::json!({ "email": "xff@example.com", "password": "wrong" }).to_string(),
+            ))
+            .expect("login request builds")
+    };
+    for _ in 0..3 {
+        let (status, _) = read_json(
+            router
+                .clone()
+                .oneshot(login_as("203.0.113.7"))
+                .await
+                .expect("oneshot"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+    let (status, _) = read_json(
+        router
+            .clone()
+            .oneshot(login_as("203.0.113.7"))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+
+    // ...while a different client IP still has its own budget.
+    let (status, _) = read_json(
+        router
+            .clone()
+            .oneshot(login_as("198.51.100.9"))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    drop_db(&admin_url, &db_name, pool).await;
+}
+
+#[tokio::test]
+async fn pg_unauthorized_responses_carry_security_headers() {
+    let Some((pool, admin_url, db_name)) = fresh_db().await else {
+        eprintln!("skipping Postgres API test: DATABASE_URL is not set");
+        return;
+    };
+    let router = pg_router(&pool);
+
+    // A 401 from the auth middleware must carry the API security headers,
+    // proving the headers layer sits outside the auth middleware.
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/contacts")
+                .body(Body::empty())
+                .expect("test request builds"),
+        )
+        .await
+        .expect("oneshot");
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        response
+            .headers()
+            .get("x-content-type-options")
+            .expect("nosniff")
+            .to_str()
+            .expect("header value is ascii"),
+        "nosniff"
+    );
+
+    drop_db(&admin_url, &db_name, pool).await;
+}
+
 #[tokio::test]
 async fn pg_contacts_require_authentication() {
     let Some((pool, admin_url, db_name)) = fresh_db().await else {

@@ -4,6 +4,9 @@
 //! * `POST /api/v1/auth/login {email, password}` → `200 {token}` — the
 //!   token is rendered via [`SessionToken::as_uuid`] at this boundary
 //!   only; it is never logged and never appears in error messages.
+//!   Login attempts are rate-limited per client IP and per normalized
+//!   email (see [`crate::rate_limit`]); an exhausted bucket is `429`
+//!   `problem+json` with `Retry-After`.
 //! * `POST /api/v1/auth/logout` (Bearer) → `204`; revokes the session.
 //!   Revocation is idempotent: an unknown token still yields `204` so
 //!   logout never leaks whether a token existed.
@@ -21,8 +24,11 @@
 //! falls back to the legacy nil-system-actor context so handler unit
 //! tests keep working without a database.
 
+use std::net::SocketAddr;
+use std::sync::Arc;
+
 use axum::{
-    extract::{rejection::JsonRejection, Extension, Request, State},
+    extract::{rejection::JsonRejection, ConnectInfo, Extension, Request, State},
     http::{header::AUTHORIZATION, HeaderMap, StatusCode},
     middleware::Next,
     response::{IntoResponse, Response},
@@ -39,6 +45,7 @@ use crm_domain::services::{ActionContext, AuthenticationService, AuthorizationSe
 
 use crate::contacts::{request_id, AppState};
 use crate::problem_response;
+use crate::rate_limit::{LoginRateLimitConfig, LoginRateLimiter};
 use crm_core::memory::{ContactReadModel, ContactServiceImpl};
 use crm_domain::services::AuditService;
 
@@ -53,14 +60,25 @@ pub struct ApiAuth {
     pub authentication: PgAuthenticationService,
     /// Server-side per-request authorization enforcement.
     pub authorization: PgAuthorizationService,
+    /// Brute-force mitigation for the login endpoint (shared, in-memory).
+    pub login_limiter: Arc<LoginRateLimiter>,
 }
 
 impl ApiAuth {
-    /// Builds the auth services over `pool`.
+    /// Builds the auth services over `pool`, with the default login
+    /// rate limits.
     pub fn new(pool: &PgPool) -> Self {
+        Self::with_rate_limits(pool, LoginRateLimitConfig::default())
+    }
+
+    /// Builds the auth services over `pool` with explicit login rate
+    /// limits. Production uses [`ApiAuth::new`]; tests use this to trip
+    /// the limiter quickly.
+    pub fn with_rate_limits(pool: &PgPool, config: LoginRateLimitConfig) -> Self {
         Self {
             authentication: PgAuthenticationService::new(pool.clone()),
             authorization: PgAuthorizationService::new(pool.clone()),
+            login_limiter: Arc::new(LoginRateLimiter::new(config)),
         }
     }
 }
@@ -99,6 +117,74 @@ fn forbidden(instance: &str) -> Response {
         "the authenticated caller lacks the grant for this action".to_owned(),
         instance.to_owned(),
     )
+}
+
+/// Optional peer address that never rejects: `ConnectInfo` is only
+/// present when the server runs with
+/// `into_make_service_with_connect_info` (absent in `oneshot` tests),
+/// and `Option<ConnectInfo<_>>` is not a valid axum extractor, so this
+/// wrapper reads the extension directly.
+pub(crate) struct MaybeConnectInfo(Option<SocketAddr>);
+
+impl<S> axum::extract::FromRequestParts<S> for MaybeConnectInfo
+where
+    S: Send + Sync,
+{
+    type Rejection = std::convert::Infallible;
+
+    async fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        _state: &S,
+    ) -> Result<Self, Self::Rejection> {
+        Ok(Self(
+            parts
+                .extensions
+                .get::<ConnectInfo<SocketAddr>>()
+                .map(|info| info.0),
+        ))
+    }
+}
+
+/// Derives the rate-limit key for the caller.
+///
+/// Prefers the TCP peer address (available when the server runs with
+/// `into_make_service_with_connect_info`); behind the documented
+/// trusted reverse proxy, honors the leftmost `X-Forwarded-For` entry.
+/// Falls back to a single shared bucket when neither is present (e.g.
+/// in-process tests), which is the conservative choice.
+fn client_ip_key(peer: Option<SocketAddr>, headers: &HeaderMap) -> String {
+    if let Some(addr) = peer {
+        return addr.ip().to_string();
+    }
+    if let Some(forwarded) = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok()) {
+        if let Some(first) = forwarded
+            .split(',')
+            .next()
+            .map(str::trim)
+            .filter(|entry| !entry.is_empty())
+        {
+            return format!("xff:{first}");
+        }
+    }
+    "unknown".to_owned()
+}
+
+/// Renders a `429` `problem+json` with a `Retry-After` hint in seconds.
+fn rate_limited(instance: &str, retry_after_secs: u64) -> Response {
+    let mut response = problem_response(
+        StatusCode::TOO_MANY_REQUESTS,
+        "Too many requests",
+        "login rate limit exceeded; try again later".to_owned(),
+        instance.to_owned(),
+    );
+    let value = retry_after_secs
+        .to_string()
+        .parse()
+        .expect("retry-after seconds are a valid header value");
+    response
+        .headers_mut()
+        .insert(axum::http::header::RETRY_AFTER, value);
+    response
 }
 
 /// Parses the `Authorization: Bearer <uuid>` header into a [`SessionToken`].
@@ -173,8 +259,14 @@ pub struct LoginResponse {
 /// `200 {token}` on success. Bad credentials are `401` without revealing
 /// whether the email exists — a suspended account is indistinguishable
 /// from a wrong password.
+///
+/// Every attempt consumes from the per-IP and per-email rate-limit
+/// buckets; an exhausted bucket is `429` `problem+json` with a
+/// `Retry-After` hint. The limit applies before credential verification
+/// so attackers cannot probe around it.
 pub async fn login<R, A, I>(
     State(state): State<AppState<ContactServiceImpl<R, A>, I>>,
+    connect_info: MaybeConnectInfo,
     headers: HeaderMap,
     body: Result<Json<LoginBody>, JsonRejection>,
 ) -> Response
@@ -203,6 +295,14 @@ where
             );
         }
     };
+    // Brute-force mitigation runs before any credential work: the email
+    // is normalized the same way the service layer normalizes it so
+    // `Op@Example.com` and `op@example.com` share one bucket.
+    let email_key = body.email.trim().to_lowercase();
+    let ip_key = client_ip_key(connect_info.0, &headers);
+    if let Err(retry_after) = api_auth.login_limiter.check(&ip_key, &email_key) {
+        return rate_limited(&instance, retry_after);
+    }
     if body.email.trim().is_empty() || body.password.is_empty() {
         return unauthorized(&instance);
     }

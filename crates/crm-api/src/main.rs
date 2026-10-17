@@ -31,6 +31,8 @@ mod auth;
 mod contacts;
 #[cfg(test)]
 mod pg_tests;
+mod rate_limit;
+mod security_headers;
 
 use contacts::{request_id, AppState, IdempotencyStore};
 use crm_core::memory::{BackendHealth, ContactReadModel, ContactServiceImpl};
@@ -264,6 +266,13 @@ where
         None => api,
     };
 
+    // Defensive security headers on every API response — successes,
+    // `problem+json` errors, 401s and 403s alike. Applied after the auth
+    // middleware so it is the outermost API layer; see
+    // [`security_headers`] for the header set and the deliberate
+    // omissions (HSTS, CSP).
+    let api = api.layer(middleware::from_fn(security_headers::security_headers));
+
     let router = Router::new()
         .route("/healthz", get(healthz))
         .route("/readyz", get(readyz::<R, A, I>))
@@ -382,9 +391,15 @@ async fn main() -> Result<(), ApiError> {
         None
     };
 
-    axum::serve(listener, app(state, web_dir))
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
+    // `ConnectInfo` feeds the login rate limiter the TCP peer address;
+    // the login handler falls back to `X-Forwarded-For` (trusted proxy)
+    // or a shared bucket when it is absent.
+    axum::serve(
+        listener,
+        app(state, web_dir).into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal())
+    .await?;
     tracing::info!("crm-api shut down cleanly");
     Ok(())
 }
@@ -504,6 +519,47 @@ mod tests {
         assert!(
             response.headers().contains_key(REQUEST_ID_HEADER),
             "response must propagate x-request-id"
+        );
+    }
+
+    #[tokio::test]
+    async fn api_responses_carry_security_headers() {
+        let response = app(AppState::new(), None)
+            .oneshot(get("/api/v1/version"))
+            .await
+            .expect("oneshot");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let headers = response.headers();
+        let as_str = |name: &str| {
+            headers
+                .get(name)
+                .unwrap_or_else(|| panic!("{name} must be set"))
+                .to_str()
+                .expect("header value is ascii")
+        };
+        assert_eq!(as_str("x-content-type-options"), "nosniff");
+        assert_eq!(as_str("x-frame-options"), "DENY");
+        assert_eq!(as_str("referrer-policy"), "no-referrer");
+        assert!(
+            headers.contains_key("permissions-policy"),
+            "permissions-policy must be set"
+        );
+    }
+
+    #[tokio::test]
+    async fn api_error_responses_carry_security_headers() {
+        // The headers layer is outermost on the API router, so even the
+        // problem+json 404 carries them.
+        let response = app(AppState::new(), None)
+            .oneshot(get("/api/v1/nope"))
+            .await
+            .expect("oneshot");
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        assert!(
+            response.headers().contains_key("x-content-type-options"),
+            "error responses must carry the security headers"
         );
     }
 
