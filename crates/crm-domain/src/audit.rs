@@ -501,6 +501,85 @@ impl SecurityEvent {
         }
     }
 
+    /// Forensic payload for the audit log: a flat JSON object carrying
+    /// the variant's fields (e.g. `{"email_fingerprint": "..."}`).
+    ///
+    /// This is what the audit service persists in the `payload` column
+    /// and what the query API returns. It is deliberately flat — not
+    /// the enum's tagged serde form — so API consumers and auditors get
+    /// a stable, variant-agnostic shape. Secrets never appear here:
+    /// only fingerprints and IDs.
+    #[must_use]
+    pub fn payload(&self) -> serde_json::Value {
+        match self {
+            Self::LoginSucceeded { staff_id } => {
+                serde_json::json!({"staff_id": staff_id.to_string()})
+            }
+            Self::LoginFailed { email_fingerprint } => {
+                serde_json::json!({"email_fingerprint": email_fingerprint})
+            }
+            Self::Logout {
+                staff_id,
+                session_id,
+            } => serde_json::json!({
+                "staff_id": staff_id.to_string(),
+                "session_id": session_id.to_string(),
+            }),
+            Self::SessionRevoked {
+                staff_id,
+                session_id,
+                reason,
+            } => serde_json::json!({
+                "staff_id": staff_id.to_string(),
+                "session_id": session_id.to_string(),
+                "reason": format!("{reason:?}"),
+            }),
+            Self::GrantAssigned {
+                staff_id,
+                grant_id,
+                action,
+                scope,
+            } => serde_json::json!({
+                "staff_id": staff_id.to_string(),
+                "grant_id": grant_id.to_string(),
+                "action": action,
+                "scope": scope,
+            }),
+            Self::GrantRevoked { staff_id, grant_id } => serde_json::json!({
+                "staff_id": staff_id.to_string(),
+                "grant_id": grant_id.to_string(),
+            }),
+            Self::DelegationCreated {
+                delegator_staff_id,
+                delegation_id,
+                agent_principal_id,
+            } => serde_json::json!({
+                "delegator_staff_id": delegator_staff_id.to_string(),
+                "delegation_id": delegation_id.to_string(),
+                "agent_principal_id": agent_principal_id.to_string(),
+            }),
+            Self::DelegationRevoked { delegation_id } => {
+                serde_json::json!({"delegation_id": delegation_id.to_string()})
+            }
+            Self::StaffSuspended { staff_id } => {
+                serde_json::json!({"staff_id": staff_id.to_string()})
+            }
+            Self::StaffReactivated { staff_id } => {
+                serde_json::json!({"staff_id": staff_id.to_string()})
+            }
+            Self::PasswordEnrolled { staff_id } => {
+                serde_json::json!({"staff_id": staff_id.to_string()})
+            }
+            Self::RateLimitTripped {
+                bucket,
+                key_fingerprint,
+            } => serde_json::json!({
+                "bucket": format!("{bucket:?}"),
+                "key_fingerprint": key_fingerprint,
+            }),
+        }
+    }
+
     /// Renders this occurrence onto an [`AuditEvent`] envelope.
     ///
     /// The actor always comes from the caller's context — never from the

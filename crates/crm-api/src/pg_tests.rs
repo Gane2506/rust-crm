@@ -18,18 +18,20 @@ use sqlx::PgPool;
 use tower::ServiceExt;
 
 use crm_core::IdempotencyKey;
+use crm_db::audit_log::PgAuditLogService;
 use crm_db::auth::hash_password;
 use crm_db::postgres::{
     PgAuditRepository, PgContactRepository, PgGrantRepository, PgStaffRepository,
 };
-use crm_domain::audit::verify_chain;
-use crm_domain::ids::{AgencyId, ClientProfileId, ContactId, GrantId, StaffId};
+use crm_domain::audit::{fingerprint, ActorKind, SecurityEvent};
+use crm_domain::ids::{ActorId, AgencyId, ClientProfileId, ContactId, GrantId, StaffId};
 use crm_domain::repositories::{
     AuditRepository, ContactRepository, GrantRepository, SessionRepository, StaffRepository,
 };
 use crm_domain::security::{
     Action, Grant, Operation, PasswordCredential, Resource, Scope, StaffStatus, StaffUser,
 };
+use crm_domain::services::{ActionContext, AuditLogService, AuditQuery};
 
 use crate::contacts::{AppState, IDEMPOTENCY_KEY_HEADER};
 
@@ -464,7 +466,15 @@ async fn pg_create_records_verifiable_audit_chain() {
         .expect("list audit events");
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].action, "contact.create");
-    assert!(verify_chain(&events), "single event links from genesis");
+    // The chain is global (one log): the seeded login's security event
+    // precedes the contact event, so verify the full chain from genesis
+    // via the audit-log service rather than the profile-filtered subset.
+    let verification = PgAuditLogService::new(pool.clone())
+        .verify_chain()
+        .await
+        .expect("verify chain");
+    assert!(verification.valid, "full chain verifies from genesis");
+    assert!(verification.events_checked >= 2);
 
     drop_db(&admin_url, &db_name, pool).await;
 }
@@ -978,6 +988,572 @@ async fn pg_delegation_session_fails_closed() {
     assert!(
         matches!(err, crm_domain::error::DomainError::Unauthorized),
         "fail closed, got: {err:?}"
+    );
+
+    drop_db(&admin_url, &db_name, pool).await;
+}
+
+// ---------------------------------------------------------------------------
+// 04-AUD-02: security audit log vertical slice
+// ---------------------------------------------------------------------------
+
+/// Agency-scoped system context for reading the audit log in tests.
+///
+/// Mirrors the unattributed-actor convention: no authenticated actor, so
+/// the well-known system actor reads. Production queries go through
+/// `GET /api/v1/audit/events` with an `AuditLog:Read` agency grant.
+fn audit_system_ctx() -> ActionContext {
+    ActionContext {
+        actor_kind: ActorKind::System,
+        actor_id: ActorId::from(uuid::Uuid::nil()),
+        client_profile_id: None,
+        correlation_id: uuid::Uuid::new_v4(),
+    }
+}
+
+/// The newest event recorded with `action`, with its forensic payload.
+async fn latest_security_event(
+    audit_log: &PgAuditLogService,
+    action: &str,
+) -> (crm_domain::audit::AuditEvent, Option<serde_json::Value>) {
+    let (events, _) = audit_log
+        .query_detailed(
+            &audit_system_ctx(),
+            &AuditQuery {
+                action: Some(action.to_owned()),
+                ..AuditQuery::default()
+            },
+        )
+        .await
+        .expect("query the audit log");
+    events
+        .into_iter()
+        .next_back()
+        .expect("the security event was recorded")
+}
+
+/// `POST /api/v1/auth/login` records `auth.login` against the staff
+/// actor — with no raw email in the payload.
+#[tokio::test]
+async fn pg_login_records_security_audit_event() {
+    let Some((pool, admin_url, db_name)) = fresh_db().await else {
+        eprintln!("skipping Postgres API test: DATABASE_URL is not set");
+        return;
+    };
+    let router = pg_router(&pool);
+    let profile = uuid::Uuid::new_v4();
+    let (_token, staff_id, _) =
+        seed_authed_user(&pool, &router, profile, "auditor@example.com").await;
+
+    let audit_log = PgAuditLogService::new(pool.clone());
+    let (event, payload) = latest_security_event(&audit_log, "auth.login").await;
+    assert_eq!(event.actor_id, ActorId::from(staff_id));
+    assert_eq!(event.action, "auth.login");
+    let payload_text = payload
+        .expect("login event carries its forensic payload")
+        .to_string();
+    assert!(
+        !payload_text.contains("auditor@example.com"),
+        "raw email must never appear in the audit payload: {payload_text}"
+    );
+
+    drop_db(&admin_url, &db_name, pool).await;
+}
+
+/// A failed login (401) still records `auth.login_failed` — with only
+/// the email fingerprint, never the address.
+#[tokio::test]
+async fn pg_failed_login_records_fingerprinted_audit_event() {
+    let Some((pool, admin_url, db_name)) = fresh_db().await else {
+        eprintln!("skipping Postgres API test: DATABASE_URL is not set");
+        return;
+    };
+    let router = pg_router(&pool);
+    let profile = uuid::Uuid::new_v4();
+    seed_authed_user(&pool, &router, profile, "target@example.com").await;
+
+    let (status, _) = read_json(
+        router
+            .clone()
+            .oneshot(login_request("target@example.com", "wrong-password"))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    let audit_log = PgAuditLogService::new(pool.clone());
+    let (event, payload) = latest_security_event(&audit_log, "auth.login_failed").await;
+    assert_eq!(event.action, "auth.login_failed");
+    let payload = payload.expect("failed-login event carries its payload");
+    assert_eq!(
+        payload
+            .get("email_fingerprint")
+            .and_then(serde_json::Value::as_str),
+        Some(fingerprint("target@example.com").as_str()),
+        "the payload carries the fingerprint, not the address"
+    );
+    assert!(
+        !payload.to_string().contains("target@example.com"),
+        "raw email must never appear in the audit payload"
+    );
+
+    drop_db(&admin_url, &db_name, pool).await;
+}
+
+/// Tripping the login rate limiter (429) records `auth.rate_limit_tripped`
+/// with a fingerprinted bucket key — never the raw IP or email.
+#[tokio::test]
+async fn pg_rate_limit_trip_records_audit_event() {
+    let Some((pool, admin_url, db_name)) = fresh_db().await else {
+        eprintln!("skipping Postgres API test: DATABASE_URL is not set");
+        return;
+    };
+    let router = pg_router_with_tight_login_limits(&pool);
+    seed_staff_only(&pool, "flooded@example.com").await;
+
+    for _ in 0..3 {
+        let (status, _) = read_json(
+            router
+                .clone()
+                .oneshot(login_request("flooded@example.com", "wrong-password"))
+                .await
+                .expect("oneshot"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+    let (status, _) = read_json(
+        router
+            .clone()
+            .oneshot(login_request("flooded@example.com", "wrong-password"))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+
+    let audit_log = PgAuditLogService::new(pool.clone());
+    let (event, payload) = latest_security_event(&audit_log, "auth.rate_limit_tripped").await;
+    assert_eq!(event.action, "auth.rate_limit_tripped");
+    let payload_text = payload
+        .expect("rate-limit event carries its payload")
+        .to_string();
+    assert!(
+        !payload_text.contains("flooded@example.com"),
+        "raw email must never appear in the audit payload: {payload_text}"
+    );
+
+    drop_db(&admin_url, &db_name, pool).await;
+}
+
+/// `POST /api/v1/auth/logout` records `auth.logout` against the staff
+/// actor before revoking the session.
+#[tokio::test]
+async fn pg_logout_records_security_audit_event() {
+    let Some((pool, admin_url, db_name)) = fresh_db().await else {
+        eprintln!("skipping Postgres API test: DATABASE_URL is not set");
+        return;
+    };
+    let router = pg_router(&pool);
+    let profile = uuid::Uuid::new_v4();
+    let (token, staff_id, _) =
+        seed_authed_user(&pool, &router, profile, "leaver@example.com").await;
+
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/auth/logout")
+                .header("Authorization", format!("Bearer {token}"))
+                .body(Body::empty())
+                .expect("test request builds"),
+        )
+        .await
+        .expect("oneshot");
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+
+    let audit_log = PgAuditLogService::new(pool.clone());
+    let (event, payload) = latest_security_event(&audit_log, "auth.logout").await;
+    assert_eq!(event.actor_id, ActorId::from(staff_id));
+    assert_eq!(event.action, "auth.logout");
+    assert!(
+        payload.is_some(),
+        "logout event carries its forensic payload"
+    );
+
+    drop_db(&admin_url, &db_name, pool).await;
+}
+
+/// Recording twice with the same idempotency key yields exactly one row
+/// and returns the original event both times.
+#[tokio::test]
+async fn pg_audit_record_is_idempotent() {
+    let Some((pool, admin_url, db_name)) = fresh_db().await else {
+        eprintln!("skipping Postgres API test: DATABASE_URL is not set");
+        return;
+    };
+    let audit_log = PgAuditLogService::new(pool.clone());
+    let ctx = audit_system_ctx();
+    let key = uuid::Uuid::new_v4();
+    let event = SecurityEvent::login_failed("retry@example.com");
+
+    let first = audit_log
+        .record(&ctx, &event, key)
+        .await
+        .expect("first record appends");
+    let second = audit_log
+        .record(&ctx, &event, key)
+        .await
+        .expect("retried record returns the original");
+    assert_eq!(
+        first.event_id, second.event_id,
+        "the retry must return the original event, not a duplicate"
+    );
+
+    let (count,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM audit_events")
+        .fetch_one(&pool)
+        .await
+        .expect("count audit rows");
+    assert_eq!(count, 1, "one key must produce exactly one row");
+
+    drop_db(&admin_url, &db_name, pool).await;
+}
+
+/// The chain verifies end to end; tampering with a link reports the
+/// first bad event.
+#[tokio::test]
+async fn pg_audit_chain_verifies_and_reports_tamper() {
+    let Some((pool, admin_url, db_name)) = fresh_db().await else {
+        eprintln!("skipping Postgres API test: DATABASE_URL is not set");
+        return;
+    };
+    let audit_log = PgAuditLogService::new(pool.clone());
+    let ctx = audit_system_ctx();
+    let mut recorded = Vec::new();
+    for email in ["a@example.com", "b@example.com", "c@example.com"] {
+        recorded.push(
+            audit_log
+                .record(
+                    &ctx,
+                    &SecurityEvent::login_failed(email),
+                    uuid::Uuid::new_v4(),
+                )
+                .await
+                .expect("record"),
+        );
+    }
+
+    let verification = audit_log.verify_chain().await.expect("verify chain");
+    assert!(verification.valid, "an untampered chain must verify");
+    assert_eq!(verification.events_checked, 3);
+
+    // Tamper with the second link's hash in place: the next
+    // verification must flag exactly that event.
+    let tampered_id = recorded[1].event_id;
+    sqlx::query("UPDATE audit_events SET chain_hash = $1 WHERE event_id = $2")
+        .bind(vec![0u8; 32])
+        .bind(tampered_id.as_uuid())
+        .execute(&pool)
+        .await
+        .expect("tamper with the chain hash");
+
+    let verification = audit_log.verify_chain().await.expect("verify chain");
+    assert!(!verification.valid, "a tampered chain must not verify");
+    assert_eq!(
+        verification.first_bad_event,
+        Some(tampered_id),
+        "verification must report the first bad event"
+    );
+    assert_eq!(verification.events_checked, 1);
+
+    drop_db(&admin_url, &db_name, pool).await;
+}
+
+/// `AuditQuery` filters (actor, action, time range) narrow the page, and
+/// pages come back in chain order with a working cursor.
+#[tokio::test]
+async fn pg_audit_query_filters_and_cursor() {
+    let Some((pool, admin_url, db_name)) = fresh_db().await else {
+        eprintln!("skipping Postgres API test: DATABASE_URL is not set");
+        return;
+    };
+    let audit_log = PgAuditLogService::new(pool.clone());
+    let ctx = audit_system_ctx();
+    let staff_id = StaffId::new();
+    let staff_ctx = ActionContext {
+        actor_kind: ActorKind::Human,
+        actor_id: ActorId::from(staff_id),
+        client_profile_id: None,
+        correlation_id: uuid::Uuid::new_v4(),
+    };
+
+    for (n, event_ctx) in [(0, &ctx), (1, &staff_ctx), (2, &staff_ctx)]
+        .into_iter()
+        .enumerate()
+    {
+        let event = if n == 0 {
+            SecurityEvent::login_failed("filter@example.com")
+        } else {
+            SecurityEvent::LoginSucceeded { staff_id }
+        };
+        audit_log
+            .record(event_ctx.1, &event, uuid::Uuid::new_v4())
+            .await
+            .expect("record");
+    }
+
+    // By actor: only the staff member's two logins.
+    let page = audit_log
+        .query(
+            &audit_system_ctx(),
+            &AuditQuery {
+                actor_id: Some(ActorId::from(staff_id)),
+                ..AuditQuery::default()
+            },
+        )
+        .await
+        .expect("query by actor");
+    assert_eq!(page.events.len(), 2);
+    assert!(
+        page.events.iter().all(|event| event.action == "auth.login"),
+        "both events are logins"
+    );
+
+    // By action: only the failed login.
+    let page = audit_log
+        .query(
+            &audit_system_ctx(),
+            &AuditQuery {
+                action: Some("auth.login_failed".to_owned()),
+                ..AuditQuery::default()
+            },
+        )
+        .await
+        .expect("query by action");
+    assert_eq!(page.events.len(), 1);
+
+    // Cursor pagination: one per page, chain order.
+    let first_page = audit_log
+        .query(
+            &audit_system_ctx(),
+            &AuditQuery {
+                limit: 1,
+                ..AuditQuery::default()
+            },
+        )
+        .await
+        .expect("first page");
+    assert_eq!(first_page.events.len(), 1);
+    assert!(first_page.has_more);
+    let second_page = audit_log
+        .query(
+            &audit_system_ctx(),
+            &AuditQuery {
+                limit: 1,
+                after: Some(first_page.events[0].event_id),
+                ..AuditQuery::default()
+            },
+        )
+        .await
+        .expect("second page");
+    assert_eq!(second_page.events.len(), 1);
+    assert!(second_page.has_more);
+    assert_ne!(
+        first_page.events[0].event_id, second_page.events[0].event_id,
+        "the cursor must advance the page"
+    );
+
+    drop_db(&admin_url, &db_name, pool).await;
+}
+
+/// Scope isolation: a profile-scoped reader only sees events attributed
+/// to their own profile; asking for another profile's log yields an
+/// empty page (fail closed).
+#[tokio::test]
+async fn pg_audit_query_scope_isolation() {
+    let Some((pool, admin_url, db_name)) = fresh_db().await else {
+        eprintln!("skipping Postgres API test: DATABASE_URL is not set");
+        return;
+    };
+    let audit_log = PgAuditLogService::new(pool.clone());
+    let profile_a = ClientProfileId::new();
+    let profile_b = ClientProfileId::new();
+    for profile in [profile_a, profile_b] {
+        let ctx = ActionContext {
+            actor_kind: ActorKind::Human,
+            actor_id: ActorId::from(StaffId::new()),
+            client_profile_id: Some(profile),
+            correlation_id: uuid::Uuid::new_v4(),
+        };
+        audit_log
+            .record(
+                &ctx,
+                &SecurityEvent::login_failed("scoped@example.com"),
+                uuid::Uuid::new_v4(),
+            )
+            .await
+            .expect("record");
+    }
+
+    // A profile-A reader sees only profile A's event.
+    let reader_a = ActionContext {
+        client_profile_id: Some(profile_a),
+        ..audit_system_ctx()
+    };
+    let page = audit_log
+        .query(&reader_a, &AuditQuery::default())
+        .await
+        .expect("query as profile A");
+    assert_eq!(page.events.len(), 1);
+    assert_eq!(page.events[0].client_profile_id, Some(profile_a));
+
+    // Asking for profile B's log from a profile-A context: empty page.
+    let page = audit_log
+        .query(
+            &reader_a,
+            &AuditQuery {
+                client_profile_id: Some(profile_b),
+                ..AuditQuery::default()
+            },
+        )
+        .await
+        .expect("cross-profile query");
+    assert!(
+        page.events.is_empty(),
+        "cross-profile reads must fail closed"
+    );
+
+    // An agency-scoped reader sees both.
+    let page = audit_log
+        .query(&audit_system_ctx(), &AuditQuery::default())
+        .await
+        .expect("agency query");
+    assert_eq!(page.events.len(), 2);
+
+    drop_db(&admin_url, &db_name, pool).await;
+}
+
+/// `GET /api/v1/audit/events` is a 401 without a token and a 403 for a
+/// caller without the `AuditLog:Read` agency grant — the audit log is an
+/// agency-level resource, not visible to profile-scoped readers.
+#[tokio::test]
+async fn pg_audit_events_endpoint_requires_audit_grant() {
+    let Some((pool, admin_url, db_name)) = fresh_db().await else {
+        eprintln!("skipping Postgres API test: DATABASE_URL is not set");
+        return;
+    };
+    let router = pg_router(&pool);
+    let profile = uuid::Uuid::new_v4();
+    // `seed_authed_user` grants only Contact read/create on the profile —
+    // deliberately no audit grant.
+    let (token, _, _) = seed_authed_user(&pool, &router, profile, "nonauditor@example.com").await;
+
+    let (status, _) = read_json(
+        router
+            .clone()
+            .oneshot(get_unauthenticated("/api/v1/audit/events".to_owned()))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    let (status, _) = read_json(
+        router
+            .clone()
+            .oneshot(get("/api/v1/audit/events".to_owned(), &token))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "a profile-scoped caller must not read the agency audit log"
+    );
+
+    drop_db(&admin_url, &db_name, pool).await;
+}
+
+/// `GET /api/v1/audit/events` returns chain-order pages (with forensic
+/// payloads) for a caller holding `AuditLog:Read` at agency scope, and
+/// `GET /api/v1/audit/verify` reports the chain as valid.
+#[tokio::test]
+async fn pg_audit_endpoints_serve_agency_auditor() {
+    let Some((pool, admin_url, db_name)) = fresh_db().await else {
+        eprintln!("skipping Postgres API test: DATABASE_URL is not set");
+        return;
+    };
+    let router = pg_router(&pool);
+    let profile = uuid::Uuid::new_v4();
+    let (token, staff_id, agency_id) =
+        seed_authed_user(&pool, &router, profile, "auditor@example.com").await;
+
+    // Grant the seeded staff member audit read at agency scope.
+    PgGrantRepository::new(pool.clone())
+        .assign(
+            staff_id,
+            Grant {
+                grant_id: GrantId::new(),
+                action: Action {
+                    resource: Resource::AuditLog,
+                    operation: Operation::Read,
+                },
+                scope: Scope::Agency { agency_id },
+            },
+        )
+        .await
+        .expect("assign the audit-read grant");
+
+    let (status, body) = read_json(
+        router
+            .clone()
+            .oneshot(get("/api/v1/audit/events?limit=10".to_owned(), &token))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let events = body
+        .get("events")
+        .and_then(serde_json::Value::as_array)
+        .expect("events array");
+    assert!(
+        !events.is_empty(),
+        "the login itself must have been recorded"
+    );
+    assert!(
+        events.iter().any(
+            |event| event.get("action").and_then(serde_json::Value::as_str) == Some("auth.login")
+        ),
+        "the login event must be in the page"
+    );
+    let login_event = events
+        .iter()
+        .find(|event| event.get("action").and_then(serde_json::Value::as_str) == Some("auth.login"))
+        .expect("login event present");
+    assert!(
+        login_event
+            .get("payload")
+            .is_some_and(|payload| !payload.is_null()),
+        "the login event must carry its forensic payload"
+    );
+
+    let (status, body) = read_json(
+        router
+            .clone()
+            .oneshot(get("/api/v1/audit/verify".to_owned(), &token))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        body.get("valid").and_then(serde_json::Value::as_bool),
+        Some(true),
+        "the chain must verify as valid"
     );
 
     drop_db(&admin_url, &db_name, pool).await;

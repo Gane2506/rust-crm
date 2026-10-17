@@ -25,6 +25,8 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
+use crm_domain::audit::RateLimitBucket;
+
 /// Tuning knobs for login rate limiting.
 ///
 /// [`Default`] carries the production values; tests use
@@ -93,17 +95,25 @@ impl LoginRateLimiter {
         }
     }
 
+    /// Returns the tuning configuration (for audit/anomaly reporting).
+    pub fn config(&self) -> LoginRateLimitConfig {
+        self.config
+    }
+
     /// Records a login attempt from `ip_key` for `email_key`.
     ///
     /// Returns `Ok(())` and records the attempt when both buckets have
-    /// capacity, or `Err(retry_after_secs)` when either bucket is
-    /// exhausted (the sooner of the two expiries). Rejected attempts are
-    /// not recorded.
+    /// capacity, or `Err((bucket, retry_after_secs))` naming the tripped
+    /// bucket and the sooner of the two expiries when either bucket is
+    /// exhausted. Rejected attempts are not recorded.
     ///
     /// Fail-closed: a poisoned lock rejects with a 60-second retry hint
     /// instead of bypassing the limit.
-    pub fn check(&self, ip_key: &str, email_key: &str) -> Result<(), u64> {
-        let mut state = self.state.lock().map_err(|_| 60u64)?;
+    pub fn check(&self, ip_key: &str, email_key: &str) -> Result<(), (RateLimitBucket, u64)> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| (RateLimitBucket::Ip, 60u64))?;
         let now = Instant::now();
         let ip_wait = bucket_wait(
             &mut state.by_ip,
@@ -125,8 +135,13 @@ impl LoginRateLimiter {
                 record(&mut state.by_email, email_key, now);
                 Ok(())
             }
-            (Err(a), Err(b)) => Err(a.min(b)),
-            (Err(wait), _) | (_, Err(wait)) => Err(wait),
+            (Err(a), Err(b)) => Err(if a <= b {
+                (RateLimitBucket::Ip, a)
+            } else {
+                (RateLimitBucket::Email, b)
+            }),
+            (Err(wait), _) => Err((RateLimitBucket::Ip, wait)),
+            (_, Err(wait)) => Err((RateLimitBucket::Email, wait)),
         }
     }
 }
@@ -193,19 +208,20 @@ mod tests {
         assert!(limiter.check("ip", "a@example.com").is_ok());
         assert!(limiter.check("ip", "a@example.com").is_ok());
         // IP bucket is full now; a different email from the same IP trips.
-        let wait = limiter
+        let (bucket, wait) = limiter
             .check("ip", "b@example.com")
             .expect_err("third attempt from the IP must trip");
+        assert_eq!(bucket, RateLimitBucket::Ip);
         assert!(wait >= 1, "retry hint must be positive");
 
         // A fresh IP trips on the exhausted email bucket instead.
         let limiter = LoginRateLimiter::new(tiny_config());
         assert!(limiter.check("ip-1", "a@example.com").is_ok());
         assert!(limiter.check("ip-2", "a@example.com").is_ok());
-        assert!(
-            limiter.check("ip-3", "a@example.com").is_err(),
-            "third attempt for the email must trip"
-        );
+        let (bucket, _) = limiter
+            .check("ip-3", "a@example.com")
+            .expect_err("third attempt for the email must trip");
+        assert_eq!(bucket, RateLimitBucket::Email);
     }
 
     #[test]
@@ -240,11 +256,12 @@ mod tests {
         };
         let limiter = LoginRateLimiter::new(config);
         assert!(limiter.check("ip", "a@example.com").is_ok());
-        let first_wait = limiter.check("ip", "a@example.com").expect_err("trips");
+        let first_wait = limiter.check("ip", "a@example.com").expect_err("trips").1;
         std::thread::sleep(Duration::from_millis(150));
         let second_wait = limiter
             .check("ip", "a@example.com")
-            .expect_err("still trips");
+            .expect_err("still trips")
+            .1;
         assert!(
             second_wait <= first_wait,
             "retry hint must not grow while the entry ages"
