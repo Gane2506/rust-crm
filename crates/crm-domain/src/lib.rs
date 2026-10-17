@@ -46,6 +46,8 @@ pub mod contract;
 pub mod error;
 /// Typed UUID newtypes used as stable entity identifiers.
 pub mod ids;
+/// Domain-level observability hooks: tracing, health and anomaly signals.
+pub mod observability;
 /// Repository traits (persistence ports; SQLx implementations land in 02-DB).
 pub mod repositories;
 /// Staff identity, sessions, RBAC grants and bounded agent delegation.
@@ -54,7 +56,7 @@ pub mod security;
 pub mod services;
 
 pub use agent::AgentAction;
-pub use audit::AuditEvent;
+pub use audit::{AuditEvent, SecurityEvent};
 pub use campaign::Campaign;
 pub use contact::Contact;
 pub use contract::Contract;
