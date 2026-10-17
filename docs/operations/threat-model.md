@@ -91,6 +91,43 @@ untrusted network ──▶ reverse proxy (TLS) ──▶ crm-api (127.0.0.1:300
 
 - Application-layer attacks on future endpoints (injection, etc.) —
   each workstream owns its input validation.
-- Client-side attacks (XSS in the SPA) — the UI workstream's scope.
+- Client-side attacks (XSS in the SPA) — the UI workstream's scope
+  (see "Frontend (SPA) security posture" below).
 - Denial of service beyond login rate limiting.
 - Insider threat from the trusted operator or database superuser.
+
+## Frontend (SPA) security posture
+
+The Leptos frontend (`crates/crm-web`, task 06-UI) is a thin client:
+it holds no authority — every scope decision is re-checked
+server-side per request. Its own attack surface:
+
+- **XSS.** The app never uses `inner_html` / `dangerously_set_inner_html`
+  or equivalent; all rendering goes through Leptos's typed view macro,
+  which escapes text by construction. The remaining XSS vector is a
+  compromised dependency (supply chain), mitigated by `cargo audit` /
+  `cargo deny` in CI and the lockfile.
+- **Token storage.** The bearer token lives in a Leptos signal (memory
+  only) — never `localStorage`, `sessionStorage`, or cookies. A stolen
+  disk image can't replay it; closing the tab ends the client session.
+  The tradeoff: no persistence across tab closes (accepted).
+- **No CSRF.** There are no cookies, so there is nothing for a
+  cross-site request to ride on. The `Authorization: Bearer` header is
+  not sent cross-origin by browsers without CORS opt-in, which the API
+  does not grant.
+- **Route params → API URLs.** Contact/profile ids from the URL are
+  interpolated into API paths client-side. They are untrusted input,
+  but the backend parses them as UUIDs and returns 404 on garbage —
+  the worst case is a failed fetch, not an injection (no SQL, no
+  filesystem, no shell anywhere near this path).
+- **Error hygiene.** The UI renders `ApiError` display strings, which
+  the client keeps secret-free; 409 dedupe messages never echo the
+  conflicting email/phone.
+- **Framing.** The API sends `X-Frame-Options: DENY` on all responses,
+  so the SPA cannot be clickjacked via iframe embed even if an
+  attacker could serve it.
+- **WASM supply chain.** The served WASM is built from this repo's
+  lockfile via the pinned toolchain; `wasm-bindgen` CLI version must
+  match the lockfile (0.2.129) or the module fails closed at load.
+  Verify the served bytes match a local build when investigating a
+  suspected compromise (see `frontend.md`).
