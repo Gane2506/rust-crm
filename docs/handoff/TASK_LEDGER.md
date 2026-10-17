@@ -12,7 +12,8 @@ Statuses: TODO / IN_PROGRESS / BLOCKED / DONE. Never mark DONE without linked co
 | 02-DB-03 | DONE | issue #9 / PR #10 (merge `00458f8`) | | Persistence foundation: verify + operationalize (migration tests, seed/migrate CLI, /readyz, ops docs) |
 | 03-SEC-01 | DONE | issue #11 / PR #12 (merge `f808e48`) | | Identity and RBAC: staff/sessions/grants/delegation domain + traits (security-reviewed) |
 | 03-SEC-02 | DONE | issue #13 / PR #14 (merge `9ed1b5b`) | | Identity and RBAC: auth vertical slice — Argon2, sessions, middleware (security-reviewed) |
-| 03-SEC-03 | IN_PROGRESS | issue #15 / branch `task/03-SEC-03` | | Identity and RBAC: verify and operationalize |
+| 03-SEC-03 | DONE | issue #15 / PR #16 (merge `2ba2860`) | | Identity and RBAC: rate limiting, security headers, runbooks (verified) |
+| 04-AUD-01 | IN_PROGRESS | issue #17 / branch `task/04-AUD-01` | | Audit and observability: define domain and interfaces |
 | 02-DB-02 | TODO | | | |
 | 02-DB-03 | TODO | | | |
 | 03-SEC-01 | TODO | | | |
