@@ -80,6 +80,7 @@ fn Shell(token: String, on_logout: impl Fn() + Clone + Send + 'static) -> impl I
                         <A href="/audit">"Audit"</A>
                     </nav>
                     <button
+                        type="button"
                         on:click=move |_| on_logout()
                         style=format!("{} margin-left: auto;", styles::BTN)
                     >

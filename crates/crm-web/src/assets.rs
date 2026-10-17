@@ -84,18 +84,30 @@ pub fn AssetsPage(token: String) -> impl IntoView {
 fn AssetBrowser(token: String, selected: RwSignal<String>) -> impl IntoView {
     let reload = RwSignal::new(0u32);
     let assets = RwSignal::new(None::<Result<AssetListResponse, ApiError>>);
+    // Generation counter: each effect run bumps it; a response is applied
+    // only if its generation is still current, so a slow earlier request
+    // can never overwrite a newer one.
+    let generation = RwSignal::new(0u64);
     {
         let token = token.clone();
         Effect::new(move |_| {
             reload.get();
             let profile_id = selected.get();
+            // Clear the list when the profile changes (or a reload starts)
+            // so stale rows never linger under the new selection.
+            assets.set(None);
             if profile_id.is_empty() {
-                assets.set(None);
                 return;
             }
+            let my_generation = generation.get() + 1;
+            generation.set(my_generation);
             let token = token.clone();
             spawn_local(async move {
-                assets.set(Some(fetch_assets(&profile_id, &token).await));
+                let result = fetch_assets(&profile_id, &token).await;
+                // Drop stale responses: only the latest generation wins.
+                if generation.get_untracked() == my_generation {
+                    assets.set(Some(result));
+                }
             });
         });
     }
@@ -255,13 +267,24 @@ fn AssetRegisterForm(
         let token = token.clone();
         spawn_local(async move {
             match register_asset(&request, &token).await {
-                Ok(asset) => {
+                Ok(result) => {
                     for field in [&name_ref, &mime_ref, &size_ref, &sha_ref] {
                         if let Some(input) = field.get() {
                             input.set_value("");
                         }
                     }
-                    status.set(Some(Ok(format!("Asset registered: {}", asset.file_name))));
+                    // `200 OK` (not `201`) means the same bytes were already
+                    // registered under the profile — report the dedupe
+                    // distinctly instead of claiming a fresh registration.
+                    let message = if result.deduplicated {
+                        format!(
+                            "Already registered: {} (same bytes exist under this profile).",
+                            result.asset.file_name
+                        )
+                    } else {
+                        format!("Asset registered: {}", result.asset.file_name)
+                    };
+                    status.set(Some(Ok(message)));
                     on_registered();
                 }
                 Err(error) => status.set(Some(Err(error.to_string()))),
@@ -335,6 +358,10 @@ fn AssetRegisterForm(
 }
 
 /// One asset row: name, kind, size, short hash, archive action.
+///
+/// Archive failures surface inline via [`ErrorAlert`]; `on_archived` fires
+/// only on success so the list refetch (and its error state) stays
+/// consistent.
 #[component]
 fn AssetRow(
     asset: Asset,
@@ -342,6 +369,7 @@ fn AssetRow(
     on_archived: impl Fn() + Clone + 'static,
 ) -> impl IntoView {
     let working = RwSignal::new(false);
+    let archive_error = RwSignal::new(None::<String>);
     let asset_id = asset.asset_id.to_string();
     let short_hash: String = asset
         .sha256
@@ -355,15 +383,16 @@ fn AssetRow(
             return;
         }
         working.set(true);
+        archive_error.set(None);
         let token = token.clone();
         let asset_id = asset_id.clone();
         let on_archived = on_archived.clone();
         spawn_local(async move {
-            // Errors surface via the list refetch (or its error state);
-            // the row itself just disables while working.
-            archive_asset(&asset_id, &token).await.ok();
+            match archive_asset(&asset_id, &token).await {
+                Ok(_) => on_archived(),
+                Err(error) => archive_error.set(Some(error.to_string())),
+            }
             working.set(false);
-            on_archived();
         });
     };
 
@@ -381,9 +410,19 @@ fn AssetRow(
                 <dt style=styles::DT>"SHA-256"</dt>
                 <dd style=styles::MONO>{format!("{short_hash}…")}</dd>
             </dl>
+            {move || {
+                archive_error
+                    .get()
+                    .map(|message| view! { <ErrorAlert message=message /> })
+            }}
             <div style="margin-top: 0.75rem;">
-                <button on:click=on_archive disabled=move || working.get() style=styles::BTN_DANGER>
-                    "Archive"
+                <button
+                    type="button"
+                    on:click=on_archive
+                    disabled=move || working.get()
+                    style=styles::BTN_DANGER
+                >
+                    {move || if working.get() { "Archiving…" } else { "Archive" }}
                 </button>
             </div>
         </li>

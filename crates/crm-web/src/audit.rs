@@ -3,8 +3,12 @@
 //! the chain.
 //!
 //! Both endpoints require `AuditLog:Read` at agency scope — a caller
-//! without it gets `403`. Events render in chain order (oldest first);
-//! the viewer offers newest-first via a toggle.
+//! without it gets `403`. The server returns events in chain order
+//! (oldest first) with no descending-order parameter; the "newest first"
+//! toggle therefore only reorders the fetched page for display. It does
+//! NOT fetch the newest N events — with more than one page of matches,
+//! the newest events may be beyond the fetched page. True newest-first
+//! querying needs a backend `order` parameter (a future backend task).
 
 use crate::api::{
     fetch_audit_events, verify_audit_chain, ApiError, AuditEventsResponse, AuditQuery,
@@ -28,6 +32,9 @@ pub fn AuditPage(token: String) -> impl IntoView {
     let events = RwSignal::new(None::<Result<AuditEventsResponse, ApiError>>);
     let verification = RwSignal::new(None::<Result<VerifyResponse, ApiError>>);
     let verifying = RwSignal::new(false);
+    // Generation counter: a response is applied only if its generation is
+    // still current, so a slow earlier query can never overwrite a newer one.
+    let generation = RwSignal::new(0u64);
 
     {
         let token = token.clone();
@@ -46,9 +53,14 @@ pub fn AuditPage(token: String) -> impl IntoView {
                 },
                 limit: Some(50),
             };
+            let my_generation = generation.get() + 1;
+            generation.set(my_generation);
             let token = token.clone();
             spawn_local(async move {
-                events.set(Some(fetch_audit_events(&query, &token).await));
+                let result = fetch_audit_events(&query, &token).await;
+                if generation.get_untracked() == my_generation {
+                    events.set(Some(result));
+                }
             });
         });
     }
@@ -82,11 +94,11 @@ pub fn AuditPage(token: String) -> impl IntoView {
                         style=styles::INPUT
                     />
                 </div>
-                <button on:click=move |_| retry() style=styles::BTN_PRIMARY>"Query"</button>
-                <button on:click=on_verify disabled=move || verifying.get() style=styles::BTN>
+                <button type="button" on:click=move |_| retry() style=styles::BTN_PRIMARY>"Query"</button>
+                <button type="button" on:click=on_verify disabled=move || verifying.get() style=styles::BTN>
                     {move || if verifying.get() { "Verifying…" } else { "Verify chain" }}
                 </button>
-                <label style="display: flex; gap: 0.375rem; align-items: center; font-size: 0.875rem;">
+                <label style="display: flex; gap: 0.375rem; align-items: center; font-size: 0.875rem;" title="Reorders the fetched page only — the API returns chain order (oldest first) with no descending option.">
                     <input
                         type="checkbox"
                         checked=move || newest_first.get()

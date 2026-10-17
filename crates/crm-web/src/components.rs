@@ -61,7 +61,9 @@ pub fn ErrorAlert(
             {on_retry
                 .map(|retry| {
                     view! {
-                        <button on:click=move |_| retry() style=styles::BTN>
+                        // `type="button"`: the alert can render inside a
+                        // `<form>`; without this the button would submit it.
+                        <button type="button" on:click=move |_| retry() style=styles::BTN>
                             "Retry"
                         </button>
                     }
