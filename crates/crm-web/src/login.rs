@@ -12,6 +12,7 @@ use leptos::prelude::*;
 use leptos::task::spawn_local;
 
 use crate::api::{login, ApiError};
+use crate::styles;
 
 /// Outcome of a login attempt, shown under the form.
 #[derive(Debug, Clone)]
@@ -78,33 +79,34 @@ pub fn LoginForm(on_logged_in: impl Fn(String) + Clone + 'static) -> impl IntoVi
 
     view! {
         <section aria-label="Log in" style="max-width: 24rem; margin: 4rem auto;">
-            <h2>"Rust CRM"</h2>
-            <p style="color: #6b7280;">"Log in to continue."</p>
+            <h2 style=styles::H2>"Rust CRM"</h2>
+            <p style=styles::MUTED>"Log in to continue."</p>
             <form on:submit=on_submit>
                 <div style="margin-bottom: 0.75rem;">
-                    <label for="login-email" style="display: block; margin-bottom: 0.25rem;">"Email"</label>
+                    <label for="login-email" style=styles::LABEL>"Email"</label>
                     <input
                         id="login-email"
                         node_ref=email_ref
                         type="email"
                         autocomplete="username"
-                        style="width: 100%; padding: 0.5rem; border: 1px solid #d1d5db; border-radius: 0.375rem;"
+                        autofocus
+                        style=styles::INPUT
                     />
                 </div>
                 <div style="margin-bottom: 0.75rem;">
-                    <label for="login-password" style="display: block; margin-bottom: 0.25rem;">"Password"</label>
+                    <label for="login-password" style=styles::LABEL>"Password"</label>
                     <input
                         id="login-password"
                         node_ref=password_ref
                         type="password"
                         autocomplete="current-password"
-                        style="width: 100%; padding: 0.5rem; border: 1px solid #d1d5db; border-radius: 0.375rem;"
+                        style=styles::INPUT
                     />
                 </div>
                 <button
                     type="submit"
                     disabled=move || submitting.get()
-                    style="padding: 0.5rem 1rem; background: #2563eb; color: white; border: none; border-radius: 0.375rem; cursor: pointer;"
+                    style=styles::BTN_PRIMARY
                 >
                     {move || if submitting.get() { "Logging in…" } else { "Log in" }}
                 </button>
@@ -113,7 +115,7 @@ pub fn LoginForm(on_logged_in: impl Fn(String) + Clone + 'static) -> impl IntoVi
                 None => ().into_any(),
                 Some(LoginStatus::Error(message)) => {
                     view! {
-                        <p role="alert" style="color: #b91c1c; margin-top: 0.75rem;">{message}</p>
+                        <p role="alert" style=styles::ALERT_ERROR>{message}</p>
                     }
                         .into_any()
                 }

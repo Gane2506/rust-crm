@@ -189,69 +189,79 @@ fn ContactForm(token: String, on_created: impl Fn() + Clone + 'static) -> impl I
     };
 
     view! {
-        <form
-            on:submit=on_submit
-            style="display: grid; gap: 0.5rem; max-width: 32rem; margin-bottom: 1.5rem; border: 1px solid #e5e7eb; border-radius: 0.5rem; padding: 1rem;"
-        >
-            <h3 style="margin: 0;">"New contact"</h3>
-            <label for="contact-emails">"Emails (comma-separated)"</label>
-            <input
-                id="contact-emails"
-                type="text"
-                node_ref=emails_ref
-                placeholder="a@example.com, b@example.com"
-                autocomplete="off"
-            />
-            <label for="contact-phones">"Phones (comma-separated, optional)"</label>
-            <input
-                id="contact-phones"
-                type="text"
-                node_ref=phones_ref
-                placeholder="+14165550100"
-                autocomplete="off"
-            />
-            <label for="contact-source">"Source"</label>
-            <input
-                id="contact-source"
-                type="text"
-                node_ref=source_ref
-                placeholder="manual-entry"
-                autocomplete="off"
-            />
-            <div>
-                <button type="submit" disabled=move || submitting.get()>
-                    {move || if submitting.get() { "Creating…" } else { "Create contact" }}
-                </button>
+        <form on:submit=on_submit style=styles::CARD>
+            <h3 style="margin: 0 0 0.5rem;">"New contact"</h3>
+            <div style=styles::FORM>
+                <div>
+                    <label for="contact-emails" style=styles::LABEL>"Emails (comma-separated)"</label>
+                    <input
+                        id="contact-emails"
+                        type="text"
+                        node_ref=emails_ref
+                        placeholder="a@example.com, b@example.com"
+                        autocomplete="off"
+                        style=styles::INPUT
+                    />
+                </div>
+                <div>
+                    <label for="contact-phones" style=styles::LABEL>"Phones (comma-separated, optional)"</label>
+                    <input
+                        id="contact-phones"
+                        type="text"
+                        node_ref=phones_ref
+                        placeholder="+14165550100"
+                        autocomplete="off"
+                        style=styles::INPUT
+                    />
+                </div>
+                <div>
+                    <label for="contact-source" style=styles::LABEL>"Source"</label>
+                    <input
+                        id="contact-source"
+                        type="text"
+                        node_ref=source_ref
+                        placeholder="manual-entry"
+                        autocomplete="off"
+                        style=styles::INPUT
+                    />
+                </div>
+                <div>
+                    <button type="submit" disabled=move || submitting.get() style=styles::BTN_PRIMARY>
+                        {move || if submitting.get() { "Creating…" } else { "Create contact" }}
+                    </button>
+                </div>
+                {move || {
+                    status
+                        .get()
+                        .map(|state| match state {
+                            FormStatus::Created(id) => {
+                                view! {
+                                    <p role="status" style=styles::ALERT_OK>
+                                        {format!("Contact created: {id}")}
+                                    </p>
+                                }
+                                    .into_any()
+                            }
+                            FormStatus::Duplicate => {
+                                view! {
+                                    <div role="alert" style=styles::ALERT_ERROR>
+                                        <p style="margin: 0 0 0.5rem;">
+                                            "A contact with these details already exists. "
+                                            <A href="/contacts/merge">"Merge duplicates →"</A>
+                                        </p>
+                                    </div>
+                                }
+                                    .into_any()
+                            }
+                            FormStatus::Error(message) => {
+                                view! {
+                                    <p role="alert" style=styles::ALERT_ERROR>{message}</p>
+                                }
+                                    .into_any()
+                            }
+                        })
+                }}
             </div>
-            {move || {
-                status
-                    .get()
-                    .map(|state| match state {
-                        FormStatus::Created(id) => {
-                            view! {
-                                <p role="status" style="margin: 0; color: #166534;">
-                                    {format!("Contact created: {id}")}
-                                </p>
-                            }
-                                .into_any()
-                        }
-                        FormStatus::Duplicate => {
-                            view! {
-                                <p role="alert" style="margin: 0; color: #92400e;">
-                                    "A contact with these details already exists. "
-                                    <A href="/contacts/merge">"Merge duplicates →"</A>
-                                </p>
-                            }
-                                .into_any()
-                        }
-                        FormStatus::Error(message) => {
-                            view! {
-                                <p role="alert" style="margin: 0; color: #b91c1c;">{message}</p>
-                            }
-                                .into_any()
-                        }
-                    })
-            }}
         </form>
     }
 }
