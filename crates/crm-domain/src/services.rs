@@ -21,11 +21,16 @@ use uuid::Uuid;
 
 use crate::asset::Asset;
 use crate::audit::{ActionResult, ActorKind, AuditEvent, PermissionDecision, SecurityEvent};
+use crate::campaign::{
+    AttributionModel, Campaign, CampaignStep, Channel, Conversion, OptOut, OptOutChannel,
+    OwnerContext, ProspectPool, StepKind, Touchpoint,
+};
 use crate::contact::{Contact, Lifecycle};
 use crate::contract::{Contract, ContractState};
 use crate::error::DomainError;
 use crate::ids::{
-    ActorId, AgencyId, AssetId, AuditEventId, ClientProfileId, ContactId, ContractId, EmailThreadId,
+    ActorId, AgencyId, AssetId, AuditEventId, CampaignId, ClientProfileId, ContactId, ContractId,
+    EmailThreadId,
 };
 use crate::profile::ClientProfile;
 use crate::security::{Action, IssuedSession, Scope, Session, SessionToken};
@@ -587,6 +592,179 @@ pub trait EmailProvider {
         &'a self,
         provider_message_id: &'a str,
     ) -> impl Future<Output = Result<InboundEmail, DomainError>> + Send + 'a;
+}
+
+/// Input for [`CampaignService::create_campaign`].
+#[derive(Debug, Clone)]
+pub struct NewCampaign {
+    /// Human-readable campaign name (non-blank).
+    pub name: String,
+    /// Who owns the campaign (agency or one client profile).
+    pub owner_context: OwnerContext,
+    /// Outreach channel.
+    pub channel: Channel,
+    /// Identifier of the prospect pool the campaign draws from.
+    pub prospect_pool_id: String,
+    /// Cron expression for the delivery schedule.
+    pub schedule: String,
+    /// Suppression rules reference (opt-outs, do-not-contact lists).
+    pub suppression_policy: String,
+    /// How conversions are attributed to this campaign.
+    pub conversion_rules: String,
+    /// Days after a touch during which a conversion still attributes.
+    pub attribution_window_days: u32,
+    /// Idempotency key: retries with the same key return the original
+    /// campaign instead of creating a duplicate.
+    pub idempotency_key: String,
+}
+
+/// Input for [`CampaignService::add_step`].
+#[derive(Debug, Clone)]
+pub struct NewCampaignStep {
+    /// The campaign the step belongs to.
+    pub campaign_id: CampaignId,
+    /// What the step does.
+    pub kind: StepKind,
+    /// Position in the sequence (0-based; unique per campaign).
+    pub position: u32,
+    /// Template (email) or script (call) reference.
+    pub template_id: Option<String>,
+    /// Wait duration in seconds (wait steps only).
+    pub wait_duration_secs: Option<u64>,
+}
+
+/// Input for [`CampaignService::record_conversion`].
+#[derive(Debug, Clone)]
+pub struct NewConversion {
+    /// Owning client profile (tenant boundary).
+    pub client_profile_id: ClientProfileId,
+    /// The contact who converted.
+    pub contact_id: ContactId,
+    /// Candidate touchpoints for attribution; the service applies the
+    /// campaign's attribution window and
+    /// [`AttributionModel`](crate::campaign::AttributionModel) before
+    /// crediting.
+    pub touchpoints: Vec<Touchpoint>,
+    /// Which attribution model to apply.
+    pub attribution_model: AttributionModel,
+    /// Monetary value in cents, if known.
+    pub value_cents: Option<u64>,
+    /// When the conversion happened.
+    pub occurred_at: DateTime<Utc>,
+}
+
+/// Authorized entry point for campaign operations.
+///
+/// Every method takes an [`ActionContext`]: the service enforces
+/// deny-by-default authorization against
+/// [`Resource::Campaign`](crate::security::Resource::Campaign),
+/// validates client-profile scope, and records an [`AuditEvent`] for
+/// every mutation.
+pub trait CampaignService {
+    /// Creates a campaign in `Draft` via
+    /// [`Campaign::new`](crate::campaign::Campaign::new). Records a
+    /// `"campaign.created"` audit event.
+    fn create_campaign<'a>(
+        &'a self,
+        input: NewCampaign,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<Campaign, DomainError>> + Send + 'a;
+
+    /// Appends a step to a draft campaign via
+    /// [`CampaignStep::new`](crate::campaign::CampaignStep::new).
+    /// Rejected once the campaign has left `Draft` — the sequence is
+    /// frozen at schedule time. Records a `"campaign.step_added"` audit
+    /// event.
+    fn add_step<'a>(
+        &'a self,
+        input: NewCampaignStep,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<CampaignStep, DomainError>> + Send + 'a;
+
+    /// Schedules a draft campaign: `Draft → Scheduled`. The launch time
+    /// must be in the future. Records a `"campaign.scheduled"` audit
+    /// event.
+    fn schedule<'a>(
+        &'a self,
+        campaign_id: CampaignId,
+        schedule_for: DateTime<Utc>,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<Campaign, DomainError>> + Send + 'a;
+
+    /// Launches a draft or scheduled campaign: `Draft|Scheduled →
+    /// Running`. Requires at least one step. Records a
+    /// `"campaign.launched"` audit event.
+    fn launch<'a>(
+        &'a self,
+        campaign_id: CampaignId,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<Campaign, DomainError>> + Send + 'a;
+
+    /// Pauses a running campaign. Records a `"campaign.paused"` audit
+    /// event.
+    fn pause<'a>(
+        &'a self,
+        campaign_id: CampaignId,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<Campaign, DomainError>> + Send + 'a;
+
+    /// Resumes a paused campaign. Records a `"campaign.resumed"` audit
+    /// event.
+    fn resume<'a>(
+        &'a self,
+        campaign_id: CampaignId,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<Campaign, DomainError>> + Send + 'a;
+
+    /// Completes a running or paused campaign. Records a
+    /// `"campaign.completed"` audit event.
+    fn complete<'a>(
+        &'a self,
+        campaign_id: CampaignId,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<Campaign, DomainError>> + Send + 'a;
+
+    /// Cancels a campaign from any non-terminal state. Records a
+    /// `"campaign.cancelled"` audit event.
+    fn cancel<'a>(
+        &'a self,
+        campaign_id: CampaignId,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<Campaign, DomainError>> + Send + 'a;
+
+    /// Records a conversion, attributing it to one of the candidate
+    /// touchpoints per the campaign's attribution model and window.
+    /// The credited campaign id (if any) is stored on the
+    /// [`Conversion`](crate::campaign::Conversion). Records a
+    /// `"campaign.conversion_recorded"` audit event.
+    fn record_conversion<'a>(
+        &'a self,
+        input: NewConversion,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<Conversion, DomainError>> + Send + 'a;
+
+    /// Creates a prospect pool via
+    /// [`ProspectPool::new`](crate::campaign::ProspectPool::new).
+    /// Records a `"campaign.pool_created"` audit event.
+    fn create_pool<'a>(
+        &'a self,
+        client_profile_id: ClientProfileId,
+        name: String,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<ProspectPool, DomainError>> + Send + 'a;
+
+    /// Records a contact's opt-out via
+    /// [`OptOut::new`](crate::campaign::OptOut::new). Opt-outs are
+    /// immutable and append-only. Records a `"campaign.opted_out"`
+    /// audit event.
+    fn record_opt_out<'a>(
+        &'a self,
+        client_profile_id: ClientProfileId,
+        contact_id: ContactId,
+        channel: OptOutChannel,
+        reason: Option<String>,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<OptOut, DomainError>> + Send + 'a;
 }
 
 #[cfg(test)]

@@ -136,6 +136,22 @@ define_id!(
     /// Identifies the link between an email message and its asset bytes.
     EmailAttachmentId
 );
+define_id!(
+    /// Identifies one step in a campaign's outreach sequence.
+    CampaignStepId
+);
+define_id!(
+    /// Identifies a named prospect pool inside a client profile.
+    ProspectPoolId
+);
+define_id!(
+    /// Identifies one opt-out record (immutable once created).
+    OptOutId
+);
+define_id!(
+    /// Identifies one recorded conversion.
+    ConversionId
+);
 
 impl From<StaffId> for ActorId {
     /// Renders a staff member as the actor of an audit event.
@@ -183,6 +199,13 @@ mod tests {
         assert_id_round_trip(DelegationId::new());
         assert_id_round_trip(AgentPrincipalId::new());
         assert_id_round_trip(AssetId::new());
+        assert_id_round_trip(EmailMessageId::new());
+        assert_id_round_trip(EmailThreadId::new());
+        assert_id_round_trip(EmailAttachmentId::new());
+        assert_id_round_trip(CampaignStepId::new());
+        assert_id_round_trip(ProspectPoolId::new());
+        assert_id_round_trip(OptOutId::new());
+        assert_id_round_trip(ConversionId::new());
     }
 
     #[test]
