@@ -56,6 +56,10 @@ pub mod campaign;
 /// [`jev::StubModelAdapter`] test/dev adapter.
 pub mod jev;
 
+/// Workflow builder service: lifecycle, validation and the pure
+/// simulator over the [`workflow`](crm_domain::workflow) domain.
+pub mod workflow;
+
 /// Errors raised by [`crm-core`](crate) utilities.
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum CoreError {

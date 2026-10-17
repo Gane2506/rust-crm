@@ -14,7 +14,7 @@ use axum::{
     http::{header, HeaderMap, HeaderName, StatusCode},
     middleware,
     response::{IntoResponse, Json, Response},
-    routing::{delete, get, post},
+    routing::{delete, get, post, put},
     Router,
 };
 use serde::Serialize;
@@ -40,6 +40,7 @@ mod pg_tests;
 mod profiles;
 mod rate_limit;
 mod security_headers;
+mod workflows;
 
 use contacts::{request_id, AppState, IdempotencyStore};
 use crm_core::memory::{BackendHealth, ContactReadModel, ContactServiceImpl};
@@ -376,6 +377,50 @@ where
         .route(
             "/v1/agent-runs/{id}/handoffs",
             get(jev::list_handoffs::<R, A, I>),
+        )
+        .route(
+            "/v1/workflows",
+            post(workflows::create_workflow::<R, A, I>).get(workflows::list_workflows::<R, A, I>),
+        )
+        .route(
+            "/v1/workflows/{id}",
+            get(workflows::get_workflow::<R, A, I>),
+        )
+        .route(
+            "/v1/workflows/{id}/publish",
+            post(workflows::publish_workflow::<R, A, I>),
+        )
+        .route(
+            "/v1/workflows/{id}/archive",
+            post(workflows::archive_workflow::<R, A, I>),
+        )
+        .route(
+            "/v1/workflows/{id}/nodes",
+            post(workflows::add_node::<R, A, I>).get(workflows::list_nodes::<R, A, I>),
+        )
+        .route(
+            "/v1/workflows/{id}/nodes/{node_id}",
+            delete(workflows::remove_node::<R, A, I>),
+        )
+        .route(
+            "/v1/workflows/{id}/edges",
+            post(workflows::add_edge::<R, A, I>).get(workflows::list_edges::<R, A, I>),
+        )
+        .route(
+            "/v1/workflows/{id}/edges/{edge_id}",
+            delete(workflows::remove_edge::<R, A, I>),
+        )
+        .route(
+            "/v1/workflows/{id}/trigger",
+            put(workflows::set_trigger::<R, A, I>).get(workflows::get_trigger::<R, A, I>),
+        )
+        .route(
+            "/v1/workflows/{id}/simulate",
+            post(workflows::simulate_workflow::<R, A, I>),
+        )
+        .route(
+            "/v1/workflows/{id}/versions",
+            get(workflows::list_versions::<R, A, I>),
         )
         .fallback(not_found);
 

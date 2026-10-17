@@ -806,6 +806,13 @@ pub trait WorkflowEdgeRepository {
         edge: crate::workflow::WorkflowEdge,
     ) -> impl Future<Output = Result<crate::workflow::WorkflowEdge, DomainError>> + Send + 'a;
 
+    /// Fetches an edge by id (needed to resolve the owning workflow
+    /// for authorization).
+    fn get<'a>(
+        &'a self,
+        edge_id: crate::ids::WorkflowEdgeId,
+    ) -> impl Future<Output = Result<crate::workflow::WorkflowEdge, DomainError>> + Send + 'a;
+
     /// Deletes an edge.
     fn delete<'a>(
         &'a self,
@@ -847,4 +854,25 @@ pub trait WorkflowVersionRepository {
         workflow_id: crate::ids::WorkflowId,
         limit: u64,
     ) -> impl Future<Output = Result<Vec<crate::workflow::WorkflowVersion>, DomainError>> + Send + 'a;
+}
+
+/// Persistence port for [`Trigger`](crate::workflow::Trigger) records.
+///
+/// Intended storage shape (task 10-WORK-02): `workflow_triggers` table
+/// keyed by `trigger_id`, with a UNIQUE `workflow_id` foreign key —
+/// exactly one trigger per workflow. Setting a trigger replaces the
+/// existing one, so the port exposes `set` (upsert) rather than
+/// separate create/update methods.
+pub trait TriggerRepository {
+    /// Sets the workflow's trigger, replacing any existing one.
+    fn set<'a>(
+        &'a self,
+        trigger: crate::workflow::Trigger,
+    ) -> impl Future<Output = Result<crate::workflow::Trigger, DomainError>> + Send + 'a;
+
+    /// Fetches the workflow's trigger, if one is set.
+    fn get_by_workflow<'a>(
+        &'a self,
+        workflow_id: crate::ids::WorkflowId,
+    ) -> impl Future<Output = Result<Option<crate::workflow::Trigger>, DomainError>> + Send + 'a;
 }
