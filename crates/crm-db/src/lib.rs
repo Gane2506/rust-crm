@@ -10,7 +10,12 @@
 //! All queries use the dynamic `sqlx::query` form (never the `query!`
 //! macros), so this crate compiles with no database available; column
 //! types are checked at runtime instead.
+//!
+//! [`auth`] holds the Argon2id password hashing helpers and the
+//! authentication/authorization services over the [`postgres`]
+//! repositories.
 
+pub mod auth;
 pub mod postgres;
 
 use thiserror::Error;

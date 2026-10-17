@@ -249,6 +249,20 @@ impl SessionToken {
     pub fn as_uuid(self) -> uuid::Uuid {
         self.0
     }
+
+    /// Reconstructs a token from its UUID form.
+    ///
+    /// This is the inverse of [`as_uuid`](Self::as_uuid), for the API
+    /// boundary only: parsing a presented `Authorization: Bearer <uuid>`
+    /// header back into a token so its [`token_hash`](Self::token_hash)
+    /// can be looked up. Added for task 03-SEC-02 — the service traits
+    /// take `&SessionToken`, so the HTTP layer needs this constructor to
+    /// resolve presented bearer tokens. Handle the result as a secret:
+    /// never log it, never put it in error messages.
+    #[must_use]
+    pub fn from_uuid(id: uuid::Uuid) -> Self {
+        Self(id)
+    }
 }
 
 /// A login session.

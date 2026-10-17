@@ -25,7 +25,7 @@ use std::sync::Arc;
 use axum::{
     extract::{
         rejection::{JsonRejection, PathRejection, QueryRejection},
-        Path, Query, State,
+        Extension, Path, Query, State,
     },
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
@@ -37,8 +37,8 @@ use tokio::sync::RwLock;
 use uuid::Uuid;
 
 use crm_core::memory::{
-    api_action_context, ContactReadModel, ContactServiceImpl, InMemoryAuditRepository,
-    InMemoryContactRepository, MemoryAuditService, MemoryContactService,
+    ContactReadModel, ContactServiceImpl, InMemoryAuditRepository, InMemoryContactRepository,
+    MemoryAuditService, MemoryContactService,
 };
 use crm_core::{IdempotencyKey, Pagination};
 use crm_db::postgres::{
@@ -47,8 +47,10 @@ use crm_db::postgres::{
 use crm_domain::contact::Contact;
 use crm_domain::error::DomainError;
 use crm_domain::ids::{ClientProfileId, ContactId};
+use crm_domain::security::{Action, Operation, Resource};
 use crm_domain::services::{AuditService, ContactService, NewContact};
 
+use crate::auth::{resolve_context, RequestAuth};
 use crate::{problem_response, REQUEST_ID_HEADER};
 
 /// Header carrying the client-generated idempotency key for mutating calls.
@@ -68,10 +70,16 @@ pub type PgContactService = ContactServiceImpl<PgContactRepository, PgAuditServi
 /// The in-memory instantiation ([`AppState::new`]) backs the unit tests;
 /// the Postgres instantiation ([`AppState::from_pool`]) serves production
 /// traffic.
+///
+/// `auth` carries the authentication/authorization services. It is `None`
+/// for the in-memory test slice (no database, no user store) and `Some`
+/// for the Postgres-backed server, where the auth middleware and the
+/// per-handler authorization gate are active.
 #[derive(Debug, Clone)]
 pub struct AppState<S, I> {
     contacts: S,
     idempotency: I,
+    pub auth: Option<crate::auth::ApiAuth>,
 }
 
 impl<S, I> AppState<S, I> {
@@ -84,6 +92,9 @@ impl<S, I> AppState<S, I> {
 
 impl AppState<MemoryContactService, MemoryIdempotencyStore> {
     /// Builds fresh in-memory state. Tests build one per test for isolation.
+    ///
+    /// Authentication is not configured: the auth middleware is not
+    /// installed and handlers fall back to the nil-system-actor context.
     #[must_use]
     pub fn new() -> Self {
         let audit = MemoryAuditService::new(InMemoryAuditRepository::new());
@@ -91,6 +102,7 @@ impl AppState<MemoryContactService, MemoryIdempotencyStore> {
         Self {
             contacts,
             idempotency: MemoryIdempotencyStore::default(),
+            auth: None,
         }
     }
 }
@@ -105,7 +117,9 @@ impl AppState<PgContactService, PgIdempotencyStore> {
     /// Builds Postgres-backed state over `pool`.
     ///
     /// Callers run [`crm_db::run_migrations`] first; the server does this
-    /// at startup before serving traffic.
+    /// at startup before serving traffic. Authentication and
+    /// authorization are configured: the auth middleware gates the
+    /// protected routes and handlers authorize per action.
     #[must_use]
     pub fn from_pool(pool: &PgPool) -> Self {
         Self {
@@ -114,6 +128,7 @@ impl AppState<PgContactService, PgIdempotencyStore> {
                 PgAuditService::new(PgAuditRepository::new(pool.clone())),
             ),
             idempotency: PgIdempotencyStore::new(pool.clone()),
+            auth: Some(crate::auth::ApiAuth::new(pool)),
         }
     }
 }
@@ -317,7 +332,7 @@ fn validate_create_body(body: &CreateContactBody) -> Result<(), DomainError> {
 
 /// Maps a [`DomainError`] to an RFC 7807 `problem+json` response,
 /// preserving the crate's error shape and never leaking internals.
-fn domain_error_response(error: DomainError, instance: String) -> Response {
+pub(crate) fn domain_error_response(error: DomainError, instance: String) -> Response {
     let (status, title) = match &error {
         DomainError::Validation(_) => (StatusCode::UNPROCESSABLE_ENTITY, "Validation failed"),
         DomainError::NotFound { .. } => (StatusCode::NOT_FOUND, "Not found"),
@@ -335,8 +350,13 @@ fn domain_error_response(error: DomainError, instance: String) -> Response {
 /// supplied, a repeated request with the same key and body replays the
 /// original `201` without re-executing; the same key with a different
 /// body is a `409`.
+///
+/// Requires the `contact/create` grant within the request's client
+/// profile scope (`403` without it); the audit event carries the real
+/// actor from the session.
 pub async fn create_contact<R, A, I>(
     State(state): State<AppState<ContactServiceImpl<R, A>, I>>,
+    auth: Option<Extension<RequestAuth>>,
     headers: HeaderMap,
     body: Result<Json<CreateContactBody>, JsonRejection>,
 ) -> Response
@@ -345,7 +365,7 @@ where
     A: AuditService + Clone + Send + Sync + 'static,
     I: IdempotencyStore,
 {
-    let (instance, correlation_id) = request_id(&headers);
+    let (instance, _correlation_id) = request_id(&headers);
     let body = match body {
         Ok(Json(body)) => body,
         Err(rejection) => {
@@ -374,7 +394,14 @@ where
     }
 
     let profile_id = ClientProfileId::from(body.client_profile_id);
-    let ctx = api_action_context(Some(profile_id), correlation_id);
+    let action = Action {
+        resource: Resource::Contact,
+        operation: Operation::Create,
+    };
+    let ctx = match resolve_context(&state, auth, &headers, &action, Some(profile_id)).await {
+        Ok(ctx) => ctx,
+        Err(response) => return *response,
+    };
     let contact = match state
         .contact_service()
         .create_contact(
@@ -417,8 +444,11 @@ where
 /// `GET /api/v1/contacts/{id}` — fetches one contact.
 ///
 /// `200` with the contact, or `404` `problem+json` for an unknown id.
+/// Requires the `contact/read` grant within the contact's client profile
+/// scope (`403` without it).
 pub async fn get_contact<R, A, I>(
     State(state): State<AppState<ContactServiceImpl<R, A>, I>>,
+    auth: Option<Extension<RequestAuth>>,
     headers: HeaderMap,
     path: Result<Path<Uuid>, PathRejection>,
 ) -> Response
@@ -439,15 +469,33 @@ where
             );
         }
     };
-    match state
+    let contact = match state
         .contact_service()
         .repository()
         .get(ContactId::from(id))
         .await
     {
-        Ok(contact) => Json(contact).into_response(),
-        Err(error) => domain_error_response(error, instance),
+        Ok(contact) => contact,
+        Err(error) => return domain_error_response(error, instance),
+    };
+    // Authorize against the contact's own profile scope: the request
+    // carries no tenant parameter on this route.
+    let action = Action {
+        resource: Resource::Contact,
+        operation: Operation::Read,
+    };
+    if let Err(response) = resolve_context(
+        &state,
+        auth,
+        &headers,
+        &action,
+        Some(contact.client_profile_id),
+    )
+    .await
+    {
+        return *response;
     }
+    Json(contact).into_response()
 }
 
 /// `GET /api/v1/contacts` — lists contacts for one client profile.
@@ -455,8 +503,12 @@ where
 /// Returns `200 {"contacts": [...], "total": n}`. `limit` is validated
 /// through [`Pagination`] (default 20, max 100); `offset` skips into the
 /// client's contacts.
+///
+/// Requires the `contact/read` grant within the requested client profile
+/// scope (`403` without it).
 pub async fn list_contacts<R, A, I>(
     State(state): State<AppState<ContactServiceImpl<R, A>, I>>,
+    auth: Option<Extension<RequestAuth>>,
     headers: HeaderMap,
     query: Result<Query<ListContactsQuery>, QueryRejection>,
 ) -> Response
@@ -496,6 +548,14 @@ where
     }
 
     let profile_id = ClientProfileId::from(query.client_profile_id);
+    let action = Action {
+        resource: Resource::Contact,
+        operation: Operation::Read,
+    };
+    if let Err(response) = resolve_context(&state, auth, &headers, &action, Some(profile_id)).await
+    {
+        return *response;
+    }
     let repository = state.contact_service().repository();
     // The domain repository port is limit-only, so the handler
     // over-fetches `offset + limit` rows and slices in memory; `MAX_OFFSET`

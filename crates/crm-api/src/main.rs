@@ -12,6 +12,7 @@ use std::path::PathBuf;
 use axum::{
     extract::{OriginalUri, State},
     http::{header, HeaderMap, HeaderName, StatusCode},
+    middleware,
     response::{IntoResponse, Json, Response},
     routing::{get, post},
     Router,
@@ -26,6 +27,7 @@ use tower_http::{
 };
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
+mod auth;
 mod contacts;
 #[cfg(test)]
 mod pg_tests;
@@ -244,6 +246,23 @@ where
         )
         .route("/v1/contacts/{id}", get(contacts::get_contact::<R, A, I>))
         .fallback(not_found);
+
+    // When authentication is configured (the Postgres-backed server), the
+    // login/logout routes are registered and every other `/api/v1/*`
+    // route goes through the auth middleware: a missing or invalid
+    // bearer token is a `401` before any handler runs. The in-memory test
+    // slice carries no `ApiAuth`, so the middleware is not installed and
+    // handler unit tests keep working without tokens.
+    let api = match state.auth.clone() {
+        Some(api_auth) => Router::new()
+            .route("/v1/auth/login", post(auth::login::<R, A, I>))
+            .route("/v1/auth/logout", post(auth::logout::<R, A, I>))
+            .merge(api.layer(middleware::from_fn_with_state(
+                api_auth,
+                auth::auth_middleware,
+            ))),
+        None => api,
+    };
 
     let router = Router::new()
         .route("/healthz", get(healthz))

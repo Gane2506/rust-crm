@@ -123,15 +123,70 @@ async fn api_error_from_response(response: &gloo_net::http::Response) -> ApiErro
     }
 }
 
+/// `POST /api/v1/auth/login` response body: the bearer token.
+#[derive(Debug, Clone, Deserialize)]
+pub struct LoginResponse {
+    /// The bearer token (UUID string). Keep in memory; never persist.
+    pub token: String,
+}
+
+/// Logs in with email + password, returning the bearer token.
+///
+/// The token is kept in memory (a Leptos signal) for the session and sent
+/// as `Authorization: Bearer <token>` on every API call. It is never
+/// written to local storage.
+pub async fn login(email: &str, password: &str) -> Result<String, ApiError> {
+    let url = format!("{API_BASE}/api/v1/auth/login");
+    let body = serde_json::json!({ "email": email, "password": password }).to_string();
+    let response = Request::post(&url)
+        .header("Content-Type", "application/json")
+        .body(body)
+        .map_err(|error| ApiError::Transport(error.to_string()))?
+        .send()
+        .await
+        .map_err(|error| ApiError::Transport(error.to_string()))?;
+    if response.ok() {
+        let login: LoginResponse = response
+            .json()
+            .await
+            .map_err(|error| ApiError::Transport(format!("invalid login response: {error}")))?;
+        Ok(login.token)
+    } else {
+        Err(api_error_from_response(&response).await)
+    }
+}
+
+/// Logs out: revokes the session server-side (`204`).
+///
+/// Best-effort from the UI's perspective — the local token is dropped
+/// regardless, so a failed call still ends the client session.
+pub async fn logout(token: &str) -> Result<(), ApiError> {
+    let url = format!("{API_BASE}/api/v1/auth/logout");
+    let response = bearer(Request::post(&url), token)
+        .send()
+        .await
+        .map_err(|error| ApiError::Transport(error.to_string()))?;
+    if response.status() == 204 || response.ok() {
+        Ok(())
+    } else {
+        Err(api_error_from_response(&response).await)
+    }
+}
+
+/// Adds the bearer token to a request builder.
+fn bearer(request: gloo_net::http::RequestBuilder, token: &str) -> gloo_net::http::RequestBuilder {
+    request.header("Authorization", &format!("Bearer {token}"))
+}
+
 /// Fetches the first page (`limit=20`) of contacts for the demo tenant,
 /// returning the full envelope (page + `total`) so the UI can report the
 /// count the server computed.
-pub async fn fetch_contacts() -> Result<ContactListResponse, ApiError> {
+pub async fn fetch_contacts(token: &str) -> Result<ContactListResponse, ApiError> {
     let url = format!(
         "{API_BASE}/api/v1/contacts?client_profile_id={}&limit=20",
         demo_profile_id()
     );
-    let response = Request::get(&url)
+    let response = bearer(Request::get(&url), token)
         .send()
         .await
         .map_err(|error| ApiError::Transport(error.to_string()))?;
@@ -147,18 +202,24 @@ pub async fn fetch_contacts() -> Result<ContactListResponse, ApiError> {
 
 /// Creates a contact, minting a fresh `Idempotency-Key` per call so a
 /// retried submission never creates a duplicate.
-pub async fn create_contact(request: &CreateContactRequest) -> Result<Contact, ApiError> {
+pub async fn create_contact(
+    request: &CreateContactRequest,
+    token: &str,
+) -> Result<Contact, ApiError> {
     let url = format!("{API_BASE}/api/v1/contacts");
     let body = serde_json::to_string(request)
         .map_err(|error| ApiError::Transport(format!("invalid create-contact request: {error}")))?;
-    let response = Request::post(&url)
-        .header("Idempotency-Key", &new_idempotency_key())
-        .header("Content-Type", "application/json")
-        .body(body)
-        .map_err(|error| ApiError::Transport(error.to_string()))?
-        .send()
-        .await
-        .map_err(|error| ApiError::Transport(error.to_string()))?;
+    let response = bearer(
+        Request::post(&url)
+            .header("Idempotency-Key", &new_idempotency_key())
+            .header("Content-Type", "application/json"),
+        token,
+    )
+    .body(body)
+    .map_err(|error| ApiError::Transport(error.to_string()))?
+    .send()
+    .await
+    .map_err(|error| ApiError::Transport(error.to_string()))?;
     if response.ok() {
         response
             .json::<Contact>()
