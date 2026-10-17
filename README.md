@@ -183,12 +183,36 @@ IDs. See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the full checklist.
   `rustup toolchain install 1.99.1` (rustup also auto-installs the pinned
   toolchain on the first `cargo` run in this directory).
 
-## Task manifest
+## Build progress
 
-Work proceeds one task ID per PR under the 51-task manifest in
-[`docs/handoff/TASKS.md`](docs/handoff/TASKS.md) (progress in
-`docs/handoff/TASK_LEDGER.md`). Current task: **01-FND-03** — verify and
-operationalize the vertical slice (frontend serving, developer docs).
+Work proceeds one task per PR under the 51-task manifest in
+[`docs/handoff/TASKS.md`](docs/handoff/TASKS.md), following
+**issue → draft PR → PR → CI → merge**: each task gets a tracking issue,
+work happens on a `task/<ID>` branch with a draft PR open from the start,
+and merge happens on green CI plus review. Follow along via
+[issues](https://github.com/Gane2506/rust-crm/issues) and
+[pull requests](https://github.com/Gane2506/rust-crm/pulls)
+(progress is also recorded in `docs/handoff/TASK_LEDGER.md`).
+
+| Workstream | Tasks | Status |
+|---|---|---|
+| Workspace and toolchain | 01-FND-01…03 | ✅ Done ([#1](https://github.com/Gane2506/rust-crm/pull/1), [#2](https://github.com/Gane2506/rust-crm/pull/2), [#3](https://github.com/Gane2506/rust-crm/pull/3), [#4](https://github.com/Gane2506/rust-crm/pull/4)) |
+| Persistence foundation | 02-DB-01…03 | 🔨 02-DB-01 in progress ([#5](https://github.com/Gane2506/rust-crm/issues/5), [draft #6](https://github.com/Gane2506/rust-crm/pull/6)) |
+| Identity and RBAC | 03-SEC-01…03 | ⬜ Not started |
+| Audit and observability | 04-AUD-01…03 | ⬜ Not started |
+| Core CRM | 05-CRM-01…03 | ⬜ Not started |
+| Design system | 06-UI-01…03 | ⬜ Not started |
+| Email and threaded chat | 07-MAIL-01…03 | ⬜ Not started |
+| Campaigns | 08-CAMP-01…03 | ⬜ Not started |
+| Jev agents | 09-JEV-01…03 | ⬜ Not started |
+| Workflow builder | 10-WORK-01…03 | ⬜ Not started |
+| Form builder | 11-FORM-01…03 | ⬜ Not started |
+| Billing | 12-BILL-01…03 | ⬜ Not started |
+| Contract signing | 13-SIGN-01…03 | ⬜ Not started |
+| Calling | 14-VOICE-01…03 | ⬜ Not started |
+| Analytics and staff | 15-DASH-01…03 | ⬜ Not started |
+| Admin and operations | 16-ADMIN-01…03 | ⬜ Not started |
+| Hardening and release | 17-PERF-01…03 | ⬜ Not started |
 
 ## CI gates (summary)
 
