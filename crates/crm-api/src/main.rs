@@ -44,6 +44,7 @@ mod profiles;
 mod rate_limit;
 mod security_headers;
 mod signing;
+mod voice;
 mod workflows;
 
 use contacts::{request_id, AppState, IdempotencyStore};
@@ -523,6 +524,21 @@ where
         .route(
             "/v1/contracts/{id}/void",
             post(signing::void_contract::<R, A, I>),
+        )
+        .route(
+            "/v1/calls",
+            post(voice::place_call::<R, A, I>).get(voice::list_calls::<R, A, I>),
+        )
+        .route("/v1/calls/{id}", get(voice::get_call::<R, A, I>))
+        .route("/v1/calls/{id}/answer", post(voice::answer_call::<R, A, I>))
+        .route("/v1/calls/{id}/end", post(voice::end_call::<R, A, I>))
+        .route(
+            "/v1/calls/{id}/recordings",
+            post(voice::start_recording::<R, A, I>),
+        )
+        .route(
+            "/v1/calls/{id}/recordings/stop",
+            post(voice::stop_recording::<R, A, I>),
         )
         .fallback(not_found);
 
