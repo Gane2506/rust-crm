@@ -795,3 +795,61 @@ server-side per request. Its own attack surface:
   match the lockfile (0.2.129) or the module fails closed at load.
   Verify the served bytes match a local build when investigating a
   suspected compromise (see `frontend.md`).
+
+## Analytics surface
+
+Analytics (tasks 15-DASH-01 through 15-DASH-03) is read-mostly:
+dashboards and reports are staff-authored configuration, and
+`run_widget` executes one widget's metric against the entity
+tables. The security-critical property is that **no
+caller-controlled string ever reaches query text**:
+
+- **Metric SQL is allowlist-built.** `run_widget` resolves the
+  entity, the grouping field, and the sum field through
+  hardcoded `entity_plan` match arms in
+  `crates/crm-core/src/dashboard.rs` — the table and column
+  names in the generated SQL are compile-time constants.
+  `group_by` and the sum field are validated against the
+  entity's allowlists *before* the query is built, and dates
+  plus the profile filter travel as bound parameters. A
+  crafted `MetricDefinition` (e.g. `group_by: "1; DROP
+  TABLE contacts"`) is rejected at domain validation, not at
+  the database. The one `Sum` the service supports is
+  `payment`/`amount`; every other entity rejects `Sum` rather
+  than guessing at a numeric column.
+- **Scope isolation by aggregation.** A profile-scoped context
+  may only touch its own profile's dashboards, and
+  agency-level dashboards require an agency-scoped context —
+  a profile must never see agency-wide aggregates, even as a
+  single number. The metric executes in the dashboard's own
+  scope, and agency-owned campaigns with NULL
+  `client_profile_id` are excluded from profile-scoped
+  campaign metrics. An aggregation oracle ("how many
+  customers does the agency have?") is closed by the same
+  grant checks as the row-level reads.
+- **Report immutability.** Reports have no update path — a
+  saved report is a fixed metric plus fixed parameters, so a
+  report's meaning cannot drift under a reader. Duplicate
+  parameter names are rejected at construction.
+- **Metric JSONB is staff-supplied — the trust boundary.**
+  Metrics and parameters persist as JSONB and hydrate
+  through the domain's manual `Deserialize` validating
+  constructors, so a corrupt or hand-edited row fails loudly
+  instead of executing a half-valid metric. But the metric
+  itself is authored by whoever holds `dashboard/create` —
+  `run_widget` trusts the *shape* of a validated metric, not
+  its *intent*. A malicious insider with dashboard grants
+  could exfiltrate aggregates they are legitimately allowed
+  to read; that is an authorization problem, not an injection
+  one, and is bounded by the scope rules above.
+- **Read-only execution.** `run_widget` emits no audit event
+  and performs no mutation — but it does touch every entity
+  table, so it inherits each table's row-visibility rules
+  through the scope filter. A `403` on the dashboard is a
+  `403` on the metric; there is no back door to the numbers.
+- **Dashboard JSONB in transit.** Widget definitions travel
+  over the same authenticated API as everything else; the
+  domain's type/metric-compatibility rules (`Breakdown`
+  requires `group_by`, `Count` rejects it, unique grid
+  positions) are enforced server-side on every write, so a
+  client cannot smuggle an invalid widget past the API.

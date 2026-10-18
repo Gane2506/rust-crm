@@ -32,6 +32,7 @@ use std::collections::HashMap;
 
 use crm_core::billing::BillingServiceImpl;
 use crm_core::campaign::CampaignServiceImpl;
+use crm_core::dashboard::DashboardServiceImpl;
 use crm_core::email::{EmailServiceImpl, StubEmailProvider};
 use crm_core::memory::ContactServiceImpl;
 use crm_core::signing::SigningServiceImpl;
@@ -42,6 +43,7 @@ use crm_db::campaign::{
     PgCampaignRepository, PgConversionRepository, PgOptOutRepository, PgProspectPoolRepository,
 };
 use crm_db::core_crm::{PgAssetRepository, PgClientProfileRepository};
+use crm_db::dashboard::{PgDashboardRepository, PgReportRepository};
 use crm_db::email::{
     PgEmailAttachmentRepository, PgEmailMessageRepository, PgEmailThreadRepository,
 };
@@ -56,21 +58,26 @@ use crm_domain::audit::ActorKind;
 use crm_domain::billing::Money;
 use crm_domain::campaign::{Channel as CampaignChannel, OptOutChannel, OwnerContext, StepKind};
 use crm_domain::contract::PaymentRequirement;
+use crm_domain::dashboard::{
+    DashboardWidget, DateRange, MetricAggregation, MetricDefinition, MetricEntity, WidgetPosition,
+    WidgetType,
+};
 use crm_domain::email::InboundThreadHints;
 use crm_domain::error::DomainError;
 use crm_domain::ids::{ActorId, AgencyId, ClientProfileId, ContactId, GrantId, StaffId};
 use crm_domain::profile::{ClientProfile, ProfileStatus};
 use crm_domain::repositories::{
     AssetRepository, CallRepository, ClientProfileRepository, ContactRepository,
-    ContractRepository, EmailMessageRepository, EmailThreadRepository, GrantRepository,
-    InvoiceRepository, ProspectPoolRepository, StaffRepository,
+    ContractRepository, DashboardRepository, EmailMessageRepository, EmailThreadRepository,
+    GrantRepository, InvoiceRepository, ProspectPoolRepository, StaffRepository,
 };
 use crm_domain::security::{Action, Grant, Operation, PasswordCredential, Resource, Scope};
 use crm_domain::services::ActionContext;
 use crm_domain::services::{
-    BillingService, CampaignService, ContactService, EmailService, InboundEmail, NewCall,
-    NewCampaign, NewCampaignStep, NewContact, NewContract, NewEmailMessage, NewInvoice,
-    NewInvoiceLine, NewPayment, NewSigningTemplate, SigningService, VoiceService,
+    BillingService, CampaignService, ContactService, DashboardService, EmailService, InboundEmail,
+    NewCall, NewCampaign, NewCampaignStep, NewContact, NewContract, NewDashboard, NewEmailMessage,
+    NewInvoice, NewInvoiceLine, NewPayment, NewReport, NewSigningTemplate, SigningService,
+    UpdateDashboard, VoiceService,
 };
 use crm_domain::voice::{CallDirection, PhoneNumber};
 
@@ -969,6 +976,111 @@ async fn seed_voice(pool: &sqlx::PgPool) -> Result<bool, DomainError> {
     Ok(true)
 }
 
+/// Seeds an agency-level demo dashboard ("Agency overview") with two
+/// widgets — a `Count` of contacts over the last 30 days and a
+/// `Breakdown` of contacts by lifecycle — plus a demo report ("New
+/// contacts by lifecycle", same metric, no parameters), through the real
+/// `DashboardServiceImpl` (so scope rules, widget validation, and audit
+/// behavior match production). Idempotent: skipped when any
+/// agency-level dashboards already exist. The report is owned by the
+/// demo staff user.
+async fn seed_dashboard(pool: &sqlx::PgPool) -> Result<bool, DomainError> {
+    let dashboards = PgDashboardRepository::new(pool.clone());
+    // Idempotency anchor: the agency-level dashboards.
+    if !dashboards.list(None, 1).await?.is_empty() {
+        return Ok(false);
+    }
+
+    let service = DashboardServiceImpl::new(
+        dashboards,
+        PgReportRepository::new(pool.clone()),
+        pool.clone(),
+        PgAuditService::new(PgAuditRepository::new(pool.clone())),
+    );
+    let ctx = ActionContext {
+        actor_kind: ActorKind::System,
+        actor_id: ActorId::from(Uuid::nil()),
+        client_profile_id: None,
+        correlation_id: Uuid::new_v4(),
+    };
+
+    let dashboard = service
+        .create_dashboard(
+            NewDashboard {
+                name: "Agency overview".to_string(),
+                client_profile_id: None,
+            },
+            &ctx,
+        )
+        .await?;
+
+    let contacts_count = MetricDefinition::new(
+        MetricEntity::Contact,
+        MetricAggregation::count(),
+        None,
+        DateRange::Last30Days,
+    )
+    .expect("demo contacts count metric is valid");
+    let contacts_by_lifecycle = MetricDefinition::new(
+        MetricEntity::Contact,
+        MetricAggregation::count(),
+        Some("lifecycle".to_string()),
+        DateRange::Last30Days,
+    )
+    .expect("demo contacts breakdown metric is valid");
+
+    service
+        .update_dashboard(
+            dashboard.dashboard_id(),
+            UpdateDashboard {
+                name: None,
+                widgets_to_add: vec![
+                    DashboardWidget::new(
+                        "Contacts (30d)".to_string(),
+                        WidgetType::Count,
+                        contacts_count,
+                        WidgetPosition::new(0, 0),
+                    )
+                    .expect("demo count widget is valid"),
+                    DashboardWidget::new(
+                        "Contacts by lifecycle".to_string(),
+                        WidgetType::Breakdown,
+                        contacts_by_lifecycle,
+                        WidgetPosition::new(1, 0),
+                    )
+                    .expect("demo breakdown widget is valid"),
+                ],
+                widget_ids_to_remove: Vec::new(),
+            },
+            &ctx,
+        )
+        .await?;
+
+    let staff = PgStaffRepository::new(pool.clone())
+        .find_by_email(DEMO_STAFF_EMAIL)
+        .await?
+        .expect("demo staff user exists (seed_staff runs first)");
+    service
+        .create_report(
+            NewReport {
+                name: "New contacts by lifecycle".to_string(),
+                owner: staff.staff_id,
+                metric: MetricDefinition::new(
+                    MetricEntity::Contact,
+                    MetricAggregation::count(),
+                    Some("lifecycle".to_string()),
+                    DateRange::Last30Days,
+                )
+                .expect("demo report metric is valid"),
+                parameters: Vec::new(),
+            },
+            &ctx,
+        )
+        .await?;
+
+    Ok(true)
+}
+
 /// Env var gating writes: `CRM_SEED_DEV=1` is the explicit opt-in that
 /// lets this example write to the database.
 const SEED_DEV_ENV: &str = "CRM_SEED_DEV";
@@ -1228,6 +1340,9 @@ async fn run() -> Result<(), String> {
         println!("  12. seed demo invoice (issued, 2 lines, partial payment) (idempotent)");
         println!("  13. seed demo signing template + draft contract (idempotent)");
         println!("  14. seed demo call (outbound, ended) (idempotent)");
+        println!(
+            "  15. seed demo dashboard (agency overview, 2 widgets) + demo report (idempotent)"
+        );
         return Ok(());
     }
 
@@ -1325,6 +1440,16 @@ async fn run() -> Result<(), String> {
         println!("seed complete: demo call (outbound, ended) created");
     } else {
         println!("seed complete: demo call already present");
+    }
+    if seed_dashboard(&pool)
+        .await
+        .map_err(|error| format!("seed dashboard: {error}"))?
+    {
+        println!(
+            "seed complete: demo dashboard (agency overview, 2 widgets) + demo report created"
+        );
+    } else {
+        println!("seed complete: demo dashboard already present");
     }
     println!("dev login: email {DEMO_STAFF_EMAIL}, password {DEMO_STAFF_PASSWORD} (local only)");
     Ok(())
