@@ -748,6 +748,8 @@ fn resource_as_str(resource: Resource) -> &'static str {
         Resource::Call => "call",
         Resource::Dashboard => "dashboard",
         Resource::Report => "report",
+        Resource::AgencySettings => "agency_settings",
+        Resource::System => "system",
     }
 }
 
@@ -773,6 +775,8 @@ fn resource_from_str(raw: &str) -> Result<Resource, DomainError> {
         "call" => Ok(Resource::Call),
         "dashboard" => Ok(Resource::Dashboard),
         "report" => Ok(Resource::Report),
+        "agency_settings" => Ok(Resource::AgencySettings),
+        "system" => Ok(Resource::System),
         other => Err(DomainError::Validation(format!(
             "storage error: unknown resource '{other}'"
         ))),

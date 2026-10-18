@@ -1246,3 +1246,205 @@ pub trait ReportRepository {
         limit: u64,
     ) -> impl Future<Output = Result<Vec<crate::dashboard::Report>, DomainError>> + Send + 'a;
 }
+
+/// Persistence port for staff invitations (task 16-ADMIN-01).
+///
+/// Invitations are looked up by id; pending invitations are also
+/// listed for the admin console. Status changes go through
+/// [`crate::admin::StaffInvitation`]'s transitions and are persisted
+/// with `update`.
+pub trait StaffInvitationRepository {
+    /// Persists a new invitation.
+    fn save<'a>(
+        &'a self,
+        invitation: crate::admin::StaffInvitation,
+    ) -> impl Future<Output = Result<crate::admin::StaffInvitation, DomainError>> + Send + 'a;
+
+    /// Fetches an invitation by id.
+    fn get<'a>(
+        &'a self,
+        invitation_id: crate::ids::InvitationId,
+    ) -> impl Future<Output = Result<crate::admin::StaffInvitation, DomainError>> + Send + 'a;
+
+    /// Persists invitation changes (accept, expire, revoke).
+    fn update<'a>(
+        &'a self,
+        invitation: crate::admin::StaffInvitation,
+    ) -> impl Future<Output = Result<crate::admin::StaffInvitation, DomainError>> + Send + 'a;
+
+    /// Lists invitations, newest first.
+    fn list<'a>(
+        &'a self,
+        limit: u64,
+    ) -> impl Future<Output = Result<Vec<crate::admin::StaffInvitation>, DomainError>> + Send + 'a;
+}
+
+/// Persistence port for role assignments (task 16-ADMIN-01).
+///
+/// Assignments are append-only in spirit: revocation flips the
+/// status via `update`, and re-granting creates a new assignment so
+/// the grant history stays complete.
+pub trait RoleAssignmentRepository {
+    /// Persists a new assignment.
+    fn save<'a>(
+        &'a self,
+        assignment: crate::admin::RoleAssignment,
+    ) -> impl Future<Output = Result<crate::admin::RoleAssignment, DomainError>> + Send + 'a;
+
+    /// Fetches an assignment by id.
+    fn get<'a>(
+        &'a self,
+        assignment_id: crate::ids::RoleAssignmentId,
+    ) -> impl Future<Output = Result<crate::admin::RoleAssignment, DomainError>> + Send + 'a;
+
+    /// Persists assignment changes (revocation).
+    fn update<'a>(
+        &'a self,
+        assignment: crate::admin::RoleAssignment,
+    ) -> impl Future<Output = Result<crate::admin::RoleAssignment, DomainError>> + Send + 'a;
+
+    /// Lists a staff member's assignments, newest first.
+    fn list_for_staff<'a>(
+        &'a self,
+        staff_id: crate::ids::StaffId,
+        limit: u64,
+    ) -> impl Future<Output = Result<Vec<crate::admin::RoleAssignment>, DomainError>> + Send + 'a;
+}
+
+/// Persistence port for versioned agency settings (task 16-ADMIN-01).
+///
+/// Every update is a new versioned snapshot; history is never
+/// rewritten. `get_current` returns the highest version.
+pub trait AgencySettingsRepository {
+    /// Persists a new settings version.
+    fn save<'a>(
+        &'a self,
+        settings: crate::admin::AgencySettings,
+    ) -> impl Future<Output = Result<crate::admin::AgencySettings, DomainError>> + Send + 'a;
+
+    /// Fetches the current (highest-version) settings for the agency.
+    fn get_current<'a>(
+        &'a self,
+        agency_id: crate::ids::AgencyId,
+    ) -> impl Future<Output = Result<crate::admin::AgencySettings, DomainError>> + Send + 'a;
+
+    /// Lists settings versions, newest first.
+    fn list_versions<'a>(
+        &'a self,
+        agency_id: crate::ids::AgencyId,
+        limit: u64,
+    ) -> impl Future<Output = Result<Vec<crate::admin::AgencySettings>, DomainError>> + Send + 'a;
+}
+
+/// Persistence port for the maintenance-mode record (task 16-ADMIN-01).
+///
+/// Singleton per agency: at most one record exists.
+pub trait MaintenanceRepository {
+    /// Persists the maintenance record (insert or replace).
+    fn save<'a>(
+        &'a self,
+        mode: crate::admin::MaintenanceMode,
+    ) -> impl Future<Output = Result<crate::admin::MaintenanceMode, DomainError>> + Send + 'a;
+
+    /// Fetches the maintenance record, if one was ever stored.
+    fn get<'a>(
+        &'a self,
+    ) -> impl Future<Output = Result<Option<crate::admin::MaintenanceMode>, DomainError>> + Send + 'a;
+}
+
+/// Persistence port for backup records (task 16-ADMIN-01).
+pub trait BackupRepository {
+    /// Persists a new backup record.
+    fn save<'a>(
+        &'a self,
+        backup: crate::admin::BackupRecord,
+    ) -> impl Future<Output = Result<crate::admin::BackupRecord, DomainError>> + Send + 'a;
+
+    /// Fetches a backup by id.
+    fn get<'a>(
+        &'a self,
+        backup_id: crate::ids::BackupId,
+    ) -> impl Future<Output = Result<crate::admin::BackupRecord, DomainError>> + Send + 'a;
+
+    /// Persists lifecycle changes (start, complete, fail).
+    fn update<'a>(
+        &'a self,
+        backup: crate::admin::BackupRecord,
+    ) -> impl Future<Output = Result<crate::admin::BackupRecord, DomainError>> + Send + 'a;
+
+    /// Lists backups, newest first.
+    fn list<'a>(
+        &'a self,
+        limit: u64,
+    ) -> impl Future<Output = Result<Vec<crate::admin::BackupRecord>, DomainError>> + Send + 'a;
+}
+
+/// Persistence port for data exports (task 16-ADMIN-01).
+pub trait ExportRepository {
+    /// Persists a new export request.
+    fn save<'a>(
+        &'a self,
+        export: crate::admin::DataExport,
+    ) -> impl Future<Output = Result<crate::admin::DataExport, DomainError>> + Send + 'a;
+
+    /// Fetches an export by id.
+    fn get<'a>(
+        &'a self,
+        export_id: crate::ids::ExportId,
+    ) -> impl Future<Output = Result<crate::admin::DataExport, DomainError>> + Send + 'a;
+
+    /// Persists lifecycle changes (start, complete, fail, expire).
+    fn update<'a>(
+        &'a self,
+        export: crate::admin::DataExport,
+    ) -> impl Future<Output = Result<crate::admin::DataExport, DomainError>> + Send + 'a;
+
+    /// Lists exports, newest first.
+    fn list<'a>(
+        &'a self,
+        limit: u64,
+    ) -> impl Future<Output = Result<Vec<crate::admin::DataExport>, DomainError>> + Send + 'a;
+}
+
+/// Persistence port for system upgrades (task 16-ADMIN-01).
+pub trait UpgradeRepository {
+    /// Persists a new upgrade record.
+    fn save<'a>(
+        &'a self,
+        upgrade: crate::admin::SystemUpgrade,
+    ) -> impl Future<Output = Result<crate::admin::SystemUpgrade, DomainError>> + Send + 'a;
+
+    /// Fetches an upgrade by id.
+    fn get<'a>(
+        &'a self,
+        upgrade_id: crate::ids::UpgradeId,
+    ) -> impl Future<Output = Result<crate::admin::SystemUpgrade, DomainError>> + Send + 'a;
+
+    /// Persists lifecycle changes (start, complete, fail, rollback).
+    fn update<'a>(
+        &'a self,
+        upgrade: crate::admin::SystemUpgrade,
+    ) -> impl Future<Output = Result<crate::admin::SystemUpgrade, DomainError>> + Send + 'a;
+
+    /// Lists upgrades, newest first.
+    fn list<'a>(
+        &'a self,
+        limit: u64,
+    ) -> impl Future<Output = Result<Vec<crate::admin::SystemUpgrade>, DomainError>> + Send + 'a;
+}
+
+/// Persistence port for the installation record (task 16-ADMIN-01).
+///
+/// Singleton: at most one record exists.
+pub trait InstallationRepository {
+    /// Persists the installation record (insert or replace).
+    fn save<'a>(
+        &'a self,
+        installation: crate::admin::Installation,
+    ) -> impl Future<Output = Result<crate::admin::Installation, DomainError>> + Send + 'a;
+
+    /// Fetches the installation record, if the installer ever ran.
+    fn get<'a>(
+        &'a self,
+    ) -> impl Future<Output = Result<Option<crate::admin::Installation>, DomainError>> + Send + 'a;
+}

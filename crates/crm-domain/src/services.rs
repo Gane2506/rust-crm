@@ -2180,3 +2180,384 @@ pub trait DashboardService {
         ctx: &'a ActionContext,
     ) -> impl Future<Output = Result<Vec<crate::dashboard::Report>, DomainError>> + Send + 'a;
 }
+
+/// Domain operations for administration and operations (task
+/// 16-ADMIN-01).
+///
+/// The admin console's authorized entry point. Every mutation takes
+/// an [`ActionContext`], enforces deny-by-default authorization, and
+/// records an audit event under one of the pinned
+/// `ADMIN_*` action names ([`crate::admin`]).
+///
+/// Authorization model:
+/// * staff administration (invitations, disable/reactivate, role
+///   assignments) requires [`crate::security::Resource::StaffUser`]
+///   with [`crate::security::Operation::Manage`] at agency scope;
+/// * agency settings require
+///   [`crate::security::Resource::AgencySettings`] with
+///   [`crate::security::Operation::Manage`] at agency scope;
+/// * system operations (maintenance, backups, upgrades, exports,
+///   installation) require [`crate::security::Resource::System`]
+///   with [`crate::security::Operation::Manage`] at agency scope.
+/// Reads require the matching
+/// [`crate::security::Operation::Read`]. Client-profile
+/// scopes never authorize admin operations — admin is agency-wide by
+/// construction.
+pub trait AdminService {
+    // -- Staff invitations ------------------------------------------
+
+    /// Invites a staff member. Records
+    /// [`ADMIN_STAFF_INVITED`](crate::admin::ADMIN_STAFF_INVITED).
+    fn invite_staff<'a>(
+        &'a self,
+        input: NewStaffInvitation,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<crate::admin::StaffInvitation, DomainError>> + Send + 'a;
+
+    /// Accepts an invitation. Records
+    /// [`ADMIN_INVITATION_ACCEPTED`](crate::admin::ADMIN_INVITATION_ACCEPTED).
+    fn accept_invitation<'a>(
+        &'a self,
+        invitation_id: crate::ids::InvitationId,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<crate::admin::StaffInvitation, DomainError>> + Send + 'a;
+
+    /// Revokes a pending invitation. Records
+    /// [`ADMIN_INVITATION_REVOKED`](crate::admin::ADMIN_INVITATION_REVOKED).
+    fn revoke_invitation<'a>(
+        &'a self,
+        invitation_id: crate::ids::InvitationId,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<crate::admin::StaffInvitation, DomainError>> + Send + 'a;
+
+    /// Lists invitations, newest first.
+    fn list_invitations<'a>(
+        &'a self,
+        limit: u64,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<Vec<crate::admin::StaffInvitation>, DomainError>> + Send + 'a;
+
+    // -- Staff lifecycle --------------------------------------------
+
+    /// Disables a staff account (suspends it). Records
+    /// [`ADMIN_STAFF_DISABLED`](crate::admin::ADMIN_STAFF_DISABLED).
+    /// A staff member cannot disable their own account.
+    fn disable_staff<'a>(
+        &'a self,
+        staff_id: crate::ids::StaffId,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<(), DomainError>> + Send + 'a;
+
+    /// Reactivates a disabled staff account. Records
+    /// [`ADMIN_STAFF_REACTIVATED`](crate::admin::ADMIN_STAFF_REACTIVATED).
+    fn reactivate_staff<'a>(
+        &'a self,
+        staff_id: crate::ids::StaffId,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<(), DomainError>> + Send + 'a;
+
+    // -- Role assignments -------------------------------------------
+
+    /// Assigns a role to a staff member within a scope. Records
+    /// [`ADMIN_ROLE_ASSIGNED`](crate::admin::ADMIN_ROLE_ASSIGNED).
+    fn assign_role<'a>(
+        &'a self,
+        input: NewRoleAssignment,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<crate::admin::RoleAssignment, DomainError>> + Send + 'a;
+
+    /// Revokes a role assignment. Records
+    /// [`ADMIN_ROLE_REVOKED`](crate::admin::ADMIN_ROLE_REVOKED).
+    fn revoke_role_assignment<'a>(
+        &'a self,
+        assignment_id: crate::ids::RoleAssignmentId,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<crate::admin::RoleAssignment, DomainError>> + Send + 'a;
+
+    /// Lists a staff member's role assignments, newest first.
+    fn list_role_assignments<'a>(
+        &'a self,
+        staff_id: crate::ids::StaffId,
+        limit: u64,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<Vec<crate::admin::RoleAssignment>, DomainError>> + Send + 'a;
+
+    // -- Agency settings --------------------------------------------
+
+    /// Reads the current agency settings.
+    fn get_settings<'a>(
+        &'a self,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<crate::admin::AgencySettings, DomainError>> + Send + 'a;
+
+    /// Stores a new settings version. Records
+    /// [`ADMIN_SETTINGS_UPDATED`](crate::admin::ADMIN_SETTINGS_UPDATED).
+    fn update_settings<'a>(
+        &'a self,
+        input: UpdateAgencySettings,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<crate::admin::AgencySettings, DomainError>> + Send + 'a;
+
+    // -- Maintenance mode -------------------------------------------
+
+    /// Reads the maintenance-mode record.
+    fn get_maintenance<'a>(
+        &'a self,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<crate::admin::MaintenanceMode, DomainError>> + Send + 'a;
+
+    /// Enables maintenance mode. Records
+    /// [`ADMIN_MAINTENANCE_ENABLED`](crate::admin::ADMIN_MAINTENANCE_ENABLED).
+    fn enable_maintenance<'a>(
+        &'a self,
+        reason: String,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<crate::admin::MaintenanceMode, DomainError>> + Send + 'a;
+
+    /// Disables maintenance mode. Records
+    /// [`ADMIN_MAINTENANCE_DISABLED`](crate::admin::ADMIN_MAINTENANCE_DISABLED).
+    fn disable_maintenance<'a>(
+        &'a self,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<crate::admin::MaintenanceMode, DomainError>> + Send + 'a;
+
+    // -- System health ----------------------------------------------
+
+    /// Aggregates component health into an operator-facing summary.
+    /// Read-only: no audit event, like
+    /// [`DashboardService::run_widget`].
+    fn get_system_health<'a>(
+        &'a self,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<crate::admin::SystemHealthSummary, DomainError>> + Send + 'a;
+
+    // -- Backups ----------------------------------------------------
+
+    /// Schedules a backup.
+    fn schedule_backup<'a>(
+        &'a self,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<crate::admin::BackupRecord, DomainError>> + Send + 'a;
+
+    /// Starts a scheduled backup. Records
+    /// [`ADMIN_BACKUP_STARTED`](crate::admin::ADMIN_BACKUP_STARTED).
+    fn start_backup<'a>(
+        &'a self,
+        backup_id: crate::ids::BackupId,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<crate::admin::BackupRecord, DomainError>> + Send + 'a;
+
+    /// Completes a running backup. Records
+    /// [`ADMIN_BACKUP_COMPLETED`](crate::admin::ADMIN_BACKUP_COMPLETED).
+    fn complete_backup<'a>(
+        &'a self,
+        backup_id: crate::ids::BackupId,
+        size_bytes: u64,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<crate::admin::BackupRecord, DomainError>> + Send + 'a;
+
+    /// Fails a running backup. Records
+    /// [`ADMIN_BACKUP_FAILED`](crate::admin::ADMIN_BACKUP_FAILED).
+    fn fail_backup<'a>(
+        &'a self,
+        backup_id: crate::ids::BackupId,
+        reason: String,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<crate::admin::BackupRecord, DomainError>> + Send + 'a;
+
+    /// Lists backups, newest first.
+    fn list_backups<'a>(
+        &'a self,
+        limit: u64,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<Vec<crate::admin::BackupRecord>, DomainError>> + Send + 'a;
+
+    // -- Data exports -----------------------------------------------
+
+    /// Requests a data export. Records
+    /// [`ADMIN_EXPORT_REQUESTED`](crate::admin::ADMIN_EXPORT_REQUESTED).
+    fn request_export<'a>(
+        &'a self,
+        input: NewExport,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<crate::admin::DataExport, DomainError>> + Send + 'a;
+
+    /// Starts producing a requested export.
+    fn start_export<'a>(
+        &'a self,
+        export_id: crate::ids::ExportId,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<crate::admin::DataExport, DomainError>> + Send + 'a;
+
+    /// Marks an export ready. Records
+    /// [`ADMIN_EXPORT_READY`](crate::admin::ADMIN_EXPORT_READY).
+    fn complete_export<'a>(
+        &'a self,
+        export_id: crate::ids::ExportId,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<crate::admin::DataExport, DomainError>> + Send + 'a;
+
+    /// Fails an in-progress export. Records
+    /// [`ADMIN_EXPORT_FAILED`](crate::admin::ADMIN_EXPORT_FAILED).
+    fn fail_export<'a>(
+        &'a self,
+        export_id: crate::ids::ExportId,
+        reason: String,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<crate::admin::DataExport, DomainError>> + Send + 'a;
+
+    /// Expires a ready export past its retention window.
+    fn expire_export<'a>(
+        &'a self,
+        export_id: crate::ids::ExportId,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<crate::admin::DataExport, DomainError>> + Send + 'a;
+
+    /// Lists exports, newest first.
+    fn list_exports<'a>(
+        &'a self,
+        limit: u64,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<Vec<crate::admin::DataExport>, DomainError>> + Send + 'a;
+
+    // -- System upgrades --------------------------------------------
+
+    /// Schedules a system upgrade.
+    fn schedule_upgrade<'a>(
+        &'a self,
+        input: NewUpgrade,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<crate::admin::SystemUpgrade, DomainError>> + Send + 'a;
+
+    /// Starts a scheduled upgrade. Records
+    /// [`ADMIN_UPGRADE_STARTED`](crate::admin::ADMIN_UPGRADE_STARTED).
+    fn start_upgrade<'a>(
+        &'a self,
+        upgrade_id: crate::ids::UpgradeId,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<crate::admin::SystemUpgrade, DomainError>> + Send + 'a;
+
+    /// Completes a running upgrade. Records
+    /// [`ADMIN_UPGRADE_COMPLETED`](crate::admin::ADMIN_UPGRADE_COMPLETED).
+    fn complete_upgrade<'a>(
+        &'a self,
+        upgrade_id: crate::ids::UpgradeId,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<crate::admin::SystemUpgrade, DomainError>> + Send + 'a;
+
+    /// Fails a running upgrade. Records
+    /// [`ADMIN_UPGRADE_FAILED`](crate::admin::ADMIN_UPGRADE_FAILED).
+    fn fail_upgrade<'a>(
+        &'a self,
+        upgrade_id: crate::ids::UpgradeId,
+        reason: String,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<crate::admin::SystemUpgrade, DomainError>> + Send + 'a;
+
+    /// Rolls back a failed upgrade. Records
+    /// [`ADMIN_UPGRADE_ROLLED_BACK`](crate::admin::ADMIN_UPGRADE_ROLLED_BACK).
+    fn rollback_upgrade<'a>(
+        &'a self,
+        upgrade_id: crate::ids::UpgradeId,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<crate::admin::SystemUpgrade, DomainError>> + Send + 'a;
+
+    /// Lists upgrades, newest first.
+    fn list_upgrades<'a>(
+        &'a self,
+        limit: u64,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<Vec<crate::admin::SystemUpgrade>, DomainError>> + Send + 'a;
+
+    // -- Installation -----------------------------------------------
+
+    /// Reads the installation record, if the installer ever ran.
+    fn get_installation<'a>(
+        &'a self,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<Option<crate::admin::Installation>, DomainError>> + Send + 'a;
+
+    /// Begins the first-run installation.
+    fn begin_installation<'a>(
+        &'a self,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<crate::admin::Installation, DomainError>> + Send + 'a;
+
+    /// Completes the installation. Records
+    /// [`ADMIN_INSTALLATION_COMPLETED`](crate::admin::ADMIN_INSTALLATION_COMPLETED).
+    fn complete_installation<'a>(
+        &'a self,
+        version: String,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<crate::admin::Installation, DomainError>> + Send + 'a;
+}
+
+/// Input for [`AdminService::invite_staff`]: the email to invite, the
+/// roles granted on acceptance, and the invitation expiry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewStaffInvitation {
+    /// The email address to invite.
+    pub email: String,
+    /// Role ids granted when the invitation is accepted.
+    pub role_ids: Vec<crate::ids::RoleId>,
+    /// When the invitation stops being acceptable.
+    pub expires_at: DateTime<Utc>,
+}
+
+/// Input for [`AdminService::assign_role`]: who gets which role,
+/// within which scope.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewRoleAssignment {
+    /// The staff member receiving the role.
+    pub staff_id: crate::ids::StaffId,
+    /// The role to assign.
+    pub role_id: crate::ids::RoleId,
+    /// The scope the role is held within.
+    pub scope: Scope,
+}
+
+/// Input for creating the first agency settings version; every field
+/// is required. See [`UpdateAgencySettings`] for partial updates.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewAgencySettings {
+    /// Human-readable agency name.
+    pub display_name: String,
+    /// Support contact address, when configured.
+    pub support_email: Option<String>,
+    /// Default session TTL for the agency, in seconds.
+    pub session_ttl_secs: u64,
+}
+
+/// Input for [`AdminService::update_settings`]: `None` keeps the
+/// current value; `Some(None)` clears the support email.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UpdateAgencySettings {
+    /// New display name, when changing it.
+    pub display_name: Option<String>,
+    /// New support email: `Some(Some(_))` sets, `Some(None)` clears,
+    /// `None` keeps.
+    pub support_email: Option<Option<String>>,
+    /// New session TTL in seconds, when changing it.
+    pub session_ttl_secs: Option<u64>,
+}
+
+/// Input for [`AdminService::request_export`]: the scope of the
+/// extract and the file format.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewExport {
+    /// The client profile the extract covers, or `None` for an
+    /// agency-wide extract.
+    pub client_profile_id: Option<ClientProfileId>,
+    /// The export file format.
+    pub format: crate::admin::ExportFormat,
+}
+
+/// Input for [`AdminService::schedule_upgrade`]: the version moving
+/// from and to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewUpgrade {
+    /// The version being upgraded from.
+    pub from_version: String,
+    /// The version being upgraded to.
+    pub to_version: String,
+}

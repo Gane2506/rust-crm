@@ -16,6 +16,7 @@
 use std::future::Future;
 
 use chrono::{DateTime, Utc};
+use serde::Serialize;
 use uuid::Uuid;
 
 use crate::ids::{ActorId, StaffId};
@@ -84,7 +85,7 @@ pub trait Tracer {
 /// This is the domain vocabulary behind the HTTP `/healthz` (liveness)
 /// and `/readyz` (readiness) probes: reporters further down the stack
 /// aggregate these into probe responses.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub enum ComponentHealth {
     /// The component is operating normally.
     Healthy,
@@ -101,7 +102,7 @@ pub enum ComponentHealth {
 }
 
 /// A point-in-time health statement about one component.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct HealthReport {
     /// Which component reported, e.g. `"database"` or `"auth"`.
     pub component: &'static str,
