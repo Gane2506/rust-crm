@@ -87,9 +87,17 @@ pub async fn create_pool() -> Result<sqlx::PgPool, DbError> {
 /// Builds a PostgreSQL connection pool from an explicit URL.
 ///
 /// Used by tests that create a dedicated database per test run.
+///
+/// The pool is tuned for the 1/2-core, 2/4 GiB envelope: 5 connections
+/// bound the database load, a 5s acquire timeout fails fast instead of
+/// queueing requests behind a saturated pool, and idle/lifetime
+/// recycling keeps long-lived connections fresh.
 pub async fn connect(url: &str) -> Result<sqlx::PgPool, DbError> {
     sqlx::postgres::PgPoolOptions::new()
         .max_connections(5)
+        .acquire_timeout(std::time::Duration::from_secs(5))
+        .idle_timeout(std::time::Duration::from_secs(300))
+        .max_lifetime(std::time::Duration::from_secs(1800))
         .connect(url)
         .await
         .map_err(DbError::Sqlx)

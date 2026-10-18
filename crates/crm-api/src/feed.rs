@@ -201,7 +201,7 @@ where
     // query goes through the same constructor, so the invariant holds
     // for HTTP input too.
     let feed_query = match FeedQuery::new(
-        query.limit.unwrap_or(20),
+        query.limit.unwrap_or(20).min(100),
         query.include_hidden,
         query.unread_only,
     ) {

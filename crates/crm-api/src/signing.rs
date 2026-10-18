@@ -325,7 +325,7 @@ where
     }
     let templates = match api_auth
         .signing_templates
-        .list(query.limit.unwrap_or(20))
+        .list(query.limit.unwrap_or(20).min(100))
         .await
     {
         Ok(templates) => templates,
@@ -446,7 +446,7 @@ where
     };
     let service = signing_service(api_auth);
     let contracts = match service
-        .list_contracts(query.limit.unwrap_or(20), &ctx)
+        .list_contracts(query.limit.unwrap_or(20).min(100), &ctx)
         .await
     {
         Ok(contracts) => contracts,

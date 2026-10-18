@@ -295,7 +295,7 @@ where
     };
     let service = dashboard_service(api_auth);
     let dashboards = match service
-        .list_dashboards(query.limit.unwrap_or(20), &ctx)
+        .list_dashboards(query.limit.unwrap_or(20).min(100), &ctx)
         .await
     {
         Ok(dashboards) => dashboards,
@@ -576,7 +576,10 @@ where
         Err(response) => return *response,
     };
     let service = dashboard_service(api_auth);
-    let reports = match service.list_reports(query.limit.unwrap_or(20), &ctx).await {
+    let reports = match service
+        .list_reports(query.limit.unwrap_or(20).min(100), &ctx)
+        .await
+    {
         Ok(reports) => reports,
         Err(error) => return domain_error_response(error, instance),
     };

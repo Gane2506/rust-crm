@@ -320,7 +320,10 @@ where
         Err(response) => return *response,
     };
     let service = billing_service(api_auth);
-    let invoices = match service.list_invoices(query.limit.unwrap_or(20), &ctx).await {
+    let invoices = match service
+        .list_invoices(query.limit.unwrap_or(20).min(100), &ctx)
+        .await
+    {
         Ok(invoices) => invoices,
         Err(error) => return domain_error_response(error, instance),
     };
