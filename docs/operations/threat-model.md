@@ -813,8 +813,8 @@ caller-controlled string ever reaches query text**:
   entity's allowlists *before* the query is built, and dates
   plus the profile filter travel as bound parameters. A
   crafted `MetricDefinition` (e.g. `group_by: "1; DROP
-  TABLE contacts"`) is rejected at domain validation, not at
-  the database. The one `Sum` the service supports is
+  TABLE contacts"`) is rejected before query construction,
+  not at the database. The one `Sum` the service supports is
   `payment`/`amount`; every other entity rejects `Sum` rather
   than guessing at a numeric column.
 - **Scope isolation by aggregation.** A profile-scoped context

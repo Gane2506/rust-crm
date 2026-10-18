@@ -5,7 +5,8 @@ How the analytics vertical slice (tasks 15-DASH-01 through
 metric widgets, and immutable parameterized reports.
 Analytics is **read-mostly** — dashboards and reports are
 configuration; `run_widget` executes one widget's metric
-against the entity tables and returns the computed result.
+against the table selected by the metric's entity and
+returns the computed result.
 For the auth model, see `security.md`; for the audit events
 analytics emits, `audit-log.md`; for the analytics security
 posture, `threat-model.md`.
