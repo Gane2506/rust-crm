@@ -200,6 +200,10 @@ define_id!(
     /// Identifies one form submission (task 11-FORM-01).
     FormSubmissionId
 );
+define_id!(
+    /// Identifies one feed item (task 12-FEED-01).
+    FeedItemId
+);
 
 impl From<StaffId> for ActorId {
     /// Renders a staff member as the actor of an audit event.
@@ -266,6 +270,7 @@ mod tests {
         assert_id_round_trip(FormId::new());
         assert_id_round_trip(FormFieldId::new());
         assert_id_round_trip(FormSubmissionId::new());
+        assert_id_round_trip(FeedItemId::new());
     }
 
     #[test]
