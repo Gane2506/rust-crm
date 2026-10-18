@@ -32,17 +32,28 @@ outermost-first:
 | Layer | Bound | Effect |
 |---|---|---|
 | Request id + tracing | — | observability, no cost bound |
+| Write rate limit | 300 writes/min/IP | `429` + `Retry-After` on floods |
 | Security headers | — | response headers only |
 | Auth middleware | — | 401 before any handler runs |
+| Request timeout | 30 s | `504 problem+json` on expiry |
 | Handlers | per-handler | see cost model below |
 
-- **No global request timeout is configured.** A handler that hangs
-  holds its connection until the client gives up; the 5s pool
-  acquire timeout bounds the blast radius on the database side.
-  Adding a `tower::timeout::TimeoutLayer` (with a `HandleErrorLayer`
-  mapping `Elapsed` to `408`, since Axum's `Router::layer` requires
-  the error type to convert to `Infallible`) is a recommended
-  17-PERF-02 follow-up.
+- **Global request timeout (task 17-PERF-02):** `tower::timeout::TimeoutLayer`
+  wrapped in a `HandleErrorLayer` (Axum's `Router::layer` requires the
+  error type to convert to `Infallible`; bare `TimeoutLayer` produces
+  `Elapsed`) maps expiry to `504 problem+json`. Default 30 s,
+  env-tunable via `CRM_REQUEST_TIMEOUT_SECS` (minimum 1 s). The timer
+  bounds handler latency, not body streaming.
+
+- **Write rate limiting (task 17-PERF-02):** every `POST`/`PUT`/`PATCH`/
+  `DELETE` on `/api/v1/*` consumes from a per-client-IP sliding-window
+  bucket (300/min default; env-tunable via `CRM_RATE_LIMIT_WRITE_MAX`
+  / `CRM_RATE_LIMIT_WRITE_WINDOW_SECS`); reads are unlimited. The
+  middleware sits outside the auth middleware so floods are rejected
+  before session lookups. Trips are `429` with `Retry-After` and an
+  `auth.rate_limit_tripped` security event (fingerprinted bucket key).
+  The login endpoint keeps its own dual-bucket limiter (30/min/IP,
+  10/5min/email).
 
 - **Body size:** Axum's default `Json` extractor limit (**2 MiB**)
   applies to every JSON body; larger payloads are rejected with
@@ -83,28 +94,30 @@ LIMIT`, then hydrate in memory).
       (admin, billing, dashboard, feed, signing, voice).
 - [x] Pool acquire/idle/lifetime timeouts set; 5-connection cap
       documented.
-- [x] Global 30s request timeout on the API router.
+- [x] Global 30s request timeout on the API router (task
+      17-PERF-02): `TimeoutLayer` + `HandleErrorLayer` → `504`
+      `problem+json`, env-tunable via `CRM_REQUEST_TIMEOUT_SECS`.
+- [x] Per-endpoint write rate limiting (task 17-PERF-02): every
+      `POST`/`PUT`/`PATCH`/`DELETE` on `/api/v1/*` consumes from a
+      per-client-IP bucket (300/min default, env-tunable via
+      `CRM_RATE_LIMIT_WRITE_MAX` / `CRM_RATE_LIMIT_WRITE_WINDOW_SECS`);
+      reads are unlimited. Trips are `429` with `Retry-After` and an
+      `auth.rate_limit_tripped` audit event.
 - [x] No N+1 query patterns found in repository/service layers.
 - [x] Admin endpoints verified behind the auth middleware (they
       merge into the authenticated `api` router; the email ingest
       webhook is the only deliberate exception).
-- [ ] A global request timeout (`TimeoutLayer` + `HandleErrorLayer`
-      → `408`) is not yet wired; the pool acquire timeout is the
-      current backstop.
-- [ ] Per-endpoint rate limiting beyond login is **not**
-      implemented — authenticated abuse (a staff token hammering
-      list endpoints) is bounded only by the 100-row cap and the
-      30s timeout. Documented as a known limitation.
 - [ ] No load benchmarks have been run; the numbers above are
       reasoned from the query shapes, not measured. A `k6` or
       `oha` pass against a seeded database is the natural
-      17-PERF-02/03 follow-up.
+      17-PERF-03 follow-up.
 
 ## Known limitations
 
-- No global request timeout; slow handlers are bounded only by
-  client behavior and the pool acquire timeout.
 - `cargo` benchmarks (`criterion`) are not wired up; performance
   claims are architectural, not measured.
 - The in-memory vertical slice (tests) does not apply the timeout
   or pool settings — production-only hardening.
+- Rate limiters are per-process and in-memory (exact for the
+  documented single-instance deployment; a multi-instance deployment
+  needs a shared store).

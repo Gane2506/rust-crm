@@ -29,7 +29,7 @@ use std::sync::Arc;
 
 use axum::{
     extract::{rejection::JsonRejection, ConnectInfo, Extension, Request, State},
-    http::{header::AUTHORIZATION, HeaderMap, StatusCode},
+    http::{header::AUTHORIZATION, HeaderMap, Method, StatusCode},
     middleware::Next,
     response::{IntoResponse, Response},
     Json,
@@ -48,7 +48,9 @@ use crm_domain::services::{ActionContext, AuthenticationService, AuthorizationSe
 use crate::contacts::{request_id, AppState};
 use crate::observability::{DenialTracker, DenialTrackerConfig, LoggingAnomalySink, TracingTracer};
 use crate::problem_response;
-use crate::rate_limit::{LoginRateLimitConfig, LoginRateLimiter};
+use crate::rate_limit::{
+    LoginRateLimitConfig, LoginRateLimiter, WriteRateLimitConfig, WriteRateLimiter,
+};
 use crm_core::memory::{ContactReadModel, ContactServiceImpl};
 use crm_db::admin::{
     PgAgencySettingsRepository, PgBackupRepository, PgExportRepository, PgInstallationRepository,
@@ -92,6 +94,10 @@ pub struct ApiAuth {
     pub authorization: PgAuthorizationService,
     /// Brute-force mitigation for the login endpoint (shared, in-memory).
     pub login_limiter: Arc<LoginRateLimiter>,
+    /// Flood mitigation for mutating endpoints: every `POST`/`PUT`/
+    /// `PATCH`/`DELETE` on `/api/v1/*` consumes from a per-IP bucket
+    /// (shared, in-memory). Reads are unlimited.
+    pub write_limiter: Arc<WriteRateLimiter>,
     /// Tamper-evident security audit log.
     pub audit_log: PgAuditLogService,
     /// Structured trace emitter (fire-and-forget).
@@ -191,9 +197,10 @@ pub struct ApiAuth {
 }
 
 impl ApiAuth {
-    /// Builds the auth services over `pool`, with login rate limits and
-    /// denial-tracker tuning read from the environment (see
-    /// [`LoginRateLimitConfig::from_env`] and
+    /// Builds the auth services over `pool`, with login and write rate
+    /// limits and denial-tracker tuning read from the environment (see
+    /// [`LoginRateLimitConfig::from_env`],
+    /// [`WriteRateLimitConfig::from_env`] and
     /// [`DenialTrackerConfig::from_env`]).
     pub fn new(pool: &PgPool) -> Self {
         Self::with_rate_limits(pool, LoginRateLimitConfig::from_env())
@@ -203,10 +210,22 @@ impl ApiAuth {
     /// limits. Production uses [`ApiAuth::new`]; tests use this to trip
     /// the limiter quickly.
     pub fn with_rate_limits(pool: &PgPool, config: LoginRateLimitConfig) -> Self {
+        Self::with_rate_limit_configs(pool, config, WriteRateLimitConfig::from_env())
+    }
+
+    /// Builds the auth services over `pool` with explicit login and
+    /// write rate limits. Production uses [`ApiAuth::new`]; tests use
+    /// this to trip either limiter quickly.
+    pub fn with_rate_limit_configs(
+        pool: &PgPool,
+        login_config: LoginRateLimitConfig,
+        write_config: WriteRateLimitConfig,
+    ) -> Self {
         Self {
             authentication: PgAuthenticationService::new(pool.clone()),
             authorization: PgAuthorizationService::new(pool.clone()),
-            login_limiter: Arc::new(LoginRateLimiter::new(config)),
+            login_limiter: Arc::new(LoginRateLimiter::new(login_config)),
+            write_limiter: Arc::new(WriteRateLimiter::new(write_config)),
             audit_log: PgAuditLogService::new(pool.clone()),
             tracer: TracingTracer,
             anomaly_sink: LoggingAnomalySink,
@@ -328,7 +347,7 @@ where
 /// trusted reverse proxy, honors the leftmost `X-Forwarded-For` entry.
 /// Falls back to a single shared bucket when neither is present (e.g.
 /// in-process tests), which is the conservative choice.
-fn client_ip_key(peer: Option<SocketAddr>, headers: &HeaderMap) -> String {
+pub(crate) fn client_ip_key(peer: Option<SocketAddr>, headers: &HeaderMap) -> String {
     if let Some(addr) = peer {
         return addr.ip().to_string();
     }
@@ -346,11 +365,11 @@ fn client_ip_key(peer: Option<SocketAddr>, headers: &HeaderMap) -> String {
 }
 
 /// Renders a `429` `problem+json` with a `Retry-After` hint in seconds.
-fn rate_limited(instance: &str, retry_after_secs: u64) -> Response {
+pub(crate) fn rate_limited(instance: &str, detail: &str, retry_after_secs: u64) -> Response {
     let mut response = problem_response(
         StatusCode::TOO_MANY_REQUESTS,
         "Too many requests",
-        "login rate limit exceeded; try again later".to_owned(),
+        detail.to_owned(),
         instance.to_owned(),
     );
     let value = retry_after_secs
@@ -361,6 +380,45 @@ fn rate_limited(instance: &str, retry_after_secs: u64) -> Response {
         .headers_mut()
         .insert(axum::http::header::RETRY_AFTER, value);
     response
+}
+
+/// Flood mitigation for mutating API endpoints (task 17-PERF-02).
+///
+/// Applied as middleware to the whole `/api` router, *outside* the auth
+/// middleware so floods are rejected before session lookups. Every
+/// `POST`/`PUT`/`PATCH`/`DELETE` consumes from the per-client-IP write
+/// bucket ([`WriteRateLimiter`], same key derivation as the login
+/// limiter); reads pass through untouched. A tripped bucket is `429`
+/// `problem+json` with a `Retry-After` hint and records an
+/// `auth.rate_limit_tripped` security event with a fingerprinted (never
+/// raw) bucket key, mirroring the login limiter's audit behavior.
+pub(crate) async fn write_rate_limit_middleware(
+    State(api_auth): State<ApiAuth>,
+    connect_info: MaybeConnectInfo,
+    request: Request,
+    next: Next,
+) -> Response {
+    const WRITE_METHODS: [Method; 4] = [Method::POST, Method::PUT, Method::PATCH, Method::DELETE];
+    if !WRITE_METHODS.contains(request.method()) {
+        return next.run(request).await;
+    }
+    let (instance, correlation_id) = request_id(request.headers());
+    let ip_key = client_ip_key(connect_info.0, request.headers());
+    if let Err(retry_after) = api_auth.write_limiter.check(&ip_key) {
+        let sys_ctx = crate::audit::system_action_context(correlation_id);
+        crate::audit::record_security_event(
+            &api_auth.audit_log,
+            &sys_ctx,
+            &SecurityEvent::rate_limit_tripped(RateLimitBucket::Ip, &ip_key),
+        )
+        .await;
+        return rate_limited(
+            &instance,
+            "write rate limit exceeded; try again later",
+            retry_after,
+        );
+    }
+    next.run(request).await
 }
 
 /// Parses the `Authorization: Bearer <uuid>` header into a [`SessionToken`].
@@ -510,7 +568,11 @@ where
                 vec![("result".to_string(), "rate_limited".to_string())],
             ))
             .await;
-        return rate_limited(&instance, retry_after);
+        return rate_limited(
+            &instance,
+            "login rate limit exceeded; try again later",
+            retry_after,
+        );
     }
     if body.email.trim().is_empty() || body.password.is_empty() {
         return unauthorized(&instance);

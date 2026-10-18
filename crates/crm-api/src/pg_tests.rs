@@ -104,9 +104,13 @@ fn pg_router(pool: &PgPool) -> axum::Router {
 }
 
 fn contact_body(profile: uuid::Uuid) -> serde_json::Value {
+    contact_body_with_email(profile, "Test@Example.COM ")
+}
+
+fn contact_body_with_email(profile: uuid::Uuid, email: &str) -> serde_json::Value {
     serde_json::json!({
         "client_profile_id": profile,
-        "emails": ["Test@Example.COM "],
+        "emails": [email],
         "phones": [" +1-555-0100 "],
         "source": "web-form"
     })
@@ -688,6 +692,113 @@ async fn pg_login_rate_limit_keys_off_forwarded_ip() {
     )
     .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    drop_db(&admin_url, &db_name, pool).await;
+}
+
+/// Builds the API router with tight *write* limits but default login
+/// limits (task 17-PERF-02): the login step in the test below must not
+/// trip the login limiter, only the write limiter.
+fn pg_router_with_tight_write_limits(pool: &PgPool) -> axum::Router {
+    let mut state = AppState::from_pool(pool);
+    state.auth = Some(crate::auth::ApiAuth::with_rate_limit_configs(
+        pool,
+        crate::rate_limit::LoginRateLimitConfig::default(),
+        crate::rate_limit::WriteRateLimitConfig::for_tests(),
+    ));
+    crate::app(state, None)
+}
+
+/// The write rate limiter (task 17-PERF-02) trips on mutating endpoints
+/// with `429 problem+json` + `Retry-After`, while reads stay unlimited.
+#[tokio::test]
+async fn pg_write_rate_limit_trips_with_429_and_retry_after() {
+    let Some((pool, admin_url, db_name)) = fresh_db().await else {
+        eprintln!("skipping Postgres API test: DATABASE_URL is not set");
+        return;
+    };
+    let router = pg_router_with_tight_write_limits(&pool);
+    let profile = uuid::Uuid::new_v4();
+    let (token, staff_id, agency_id) =
+        seed_authed_user(&pool, &router, profile, "writer@example.com").await;
+    PgGrantRepository::new(pool.clone())
+        .assign(
+            staff_id,
+            Grant {
+                grant_id: GrantId::new(),
+                action: Action {
+                    resource: Resource::Contact,
+                    operation: Operation::Create,
+                },
+                scope: Scope::ClientProfile {
+                    agency_id,
+                    client_profile_id: ClientProfileId::from(profile),
+                },
+            },
+        )
+        .await
+        .expect("assign contact create grant");
+
+    // The login above consumed one write-bucket slot (it is a POST);
+    // two contact creates succeed, the third trips the per-IP bucket.
+    for i in 0..2 {
+        let (status, _) = read_json(
+            router
+                .clone()
+                .oneshot(post_contacts(
+                    contact_body_with_email(profile, &format!("writer{i}@example.com")),
+                    Some(&uuid::Uuid::new_v4().to_string()),
+                    &token,
+                ))
+                .await
+                .expect("oneshot"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "write {i} must succeed");
+    }
+
+    let response = router
+        .clone()
+        .oneshot(post_contacts(
+            contact_body_with_email(profile, "writer2@example.com"),
+            Some(&uuid::Uuid::new_v4().to_string()),
+            &token,
+        ))
+        .await
+        .expect("oneshot");
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    let retry_after = response
+        .headers()
+        .get(header::RETRY_AFTER)
+        .expect("retry-after header")
+        .to_str()
+        .expect("retry-after is ascii");
+    assert!(
+        retry_after.parse::<u64>().expect("retry-after is numeric") >= 1,
+        "retry-after must be a positive number of seconds"
+    );
+    assert!(
+        response.headers().contains_key("x-content-type-options"),
+        "the 429 must carry the API security headers"
+    );
+    let (status, problem) = read_json(response).await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(problem["title"], "Too many requests");
+    assert_eq!(problem["status"], 429);
+
+    // Reads are not write-limited: the contact list still works.
+    let (status, _) = read_json(
+        router
+            .clone()
+            .oneshot(get(
+                format!("/api/v1/contacts?client_profile_id={profile}"),
+                &token,
+            ))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "reads stay unlimited");
 
     drop_db(&admin_url, &db_name, pool).await;
 }

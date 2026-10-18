@@ -37,8 +37,9 @@ thiserror = { version = "2" }
 # (RUSTSEC-2023-0071, no fixed upgrade). We use PostgreSQL only; `macros`
 # and `json` are kept from the default set for the 02-DB work.
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "postgres", "uuid", "chrono", "migrate", "macros", "json"] }
-# "util" for tower::ServiceExt (oneshot tests).
-tower = { version = "0.5", features = ["util"] }
+# "util" for tower::ServiceExt (oneshot tests); "timeout" for the
+# server-wide request timeout (task 17-PERF-02).
+tower = { version = "0.5", features = ["util", "timeout"] }
 # "fs" for tower_http::services::{ServeDir, ServeFile} (static frontend).
 tower-http = { version = "0.6", features = ["trace", "request-id", "cors", "fs"] }
 tracing = { version = "0.1" }
