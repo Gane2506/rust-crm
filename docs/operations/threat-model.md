@@ -662,6 +662,104 @@ attack surface:
   as elsewhere: keep `contract/*` grants
   least-privilege.
 
+## Calling surface
+
+The calling slice (tasks 14-VOICE-01 through
+14-VOICE-03) adds the forward-only call
+lifecycle, consent-gated recordings, and a
+provider abstraction to the boundary. The
+novel risks are legal (recording consent),
+financial (outbound dialing costs money), and
+PII (phone numbers everywhere):
+
+- **Recording consent.** The legal basis is
+  captured per call and enforced in the domain,
+  not at the API edge: `start_recording()`
+  rejects unless `RecordingConsent::Granted`
+  was recorded first — `Unknown` and `Denied`
+  both reject, so silence is not consent.
+  Consent pins when recording starts (changing
+  it afterwards would rewrite the legal
+  basis), while `Unknown → Granted` mid-call
+  is allowed. What the domain does *not* do:
+  it cannot verify the consent was genuinely
+  given — a staffer can send `{"consent":
+  "granted"}` for a party who never agreed.
+  The consent record is attributable to the
+  *staffer's* action (`voice.recording_started`
+  audit event, scoped to the profile), not to
+  the called party. Operators must treat the
+  consent as staff-attested, and any future
+  consent-capture UI must make the attestation
+  explicit rather than a silent default.
+- **Provider trust boundary.** Today the
+  provider is `StubVoiceProvider` (in-memory,
+  deterministic fake ids) — no calls leave the
+  process, which is the safe default. The
+  Telnyx adapter (later task) moves the trust
+  boundary outward: provider API credentials
+  become high-value secrets, a compromised
+  provider account can place calls as the
+  agency, and provider-returned content (call
+  ids, statuses, failure reasons) becomes
+  untrusted input to the status machine. The
+  design keeps that contained: the provider
+  reference is an opaque string the domain
+  never parses, and every transition still goes
+  through the domain methods. Store provider
+  credentials the way webhook secrets are
+  stored — never in the repo or chat.
+- **Toll fraud.** Outbound calls cost money,
+  and this slice has no spend limit, no rate
+  limit on `POST /api/v1/calls`, and no
+  anomaly detection. A compromised staff
+  account holding `call/create` on a profile
+  can dial premium numbers indefinitely —
+  bounded only by the provider's credit. The
+  audit trail (`voice.call_placed` per call)
+  is the only signal today. Before wiring a
+  real provider: add per-profile rate limits,
+  destination allowlists or premium-number
+  blocks, and spend alerting. Do not ship the
+  Telnyx adapter without these.
+- **Metadata exposure.** Phone numbers are PII
+  and are stored plaintext on `calls` rows
+  (`from_number`, `to_number`), served in the
+  clear by the call endpoints, and validated
+  but never normalized beyond the E.164-ish
+  shape — the same number dialed as
+  `+14155550199` and `14155550199` is two
+  distinct strings in storage (no canonical
+  form is enforced). Audit payloads carry the
+  call id rather than the numbers, but anyone
+  with database read access sees every number,
+  same as contacts and email. No field-level
+  encryption is planned.
+- **Cross-profile leakage.** Every call
+  endpoint is fetch-then-authorize against
+  `Resource::Call` with profile-scoped grants:
+  a missing call is `404` before any grant
+  check, and `list_calls` fails closed on an
+  agency-scoped context that names no profile.
+  The remaining vector is operator error, as
+  with the feed and invoices: a staffer with
+  grants on two profiles sees both profiles'
+  calls. Keep `call/*` grants least-privilege.
+- **Unreachable states are not attack
+  surface.** `Ringing`, `InProgress`,
+  `Completed`, `NoAnswer`, and `Busy` are not
+  reachable through the current service/HTTP
+  surface (nothing drives `Initiated →
+  Ringing` — see the runbook), so an attacker
+  cannot manipulate live-call state that does
+  not exist. But the *domain* accepts those
+  transitions, and any future driver (provider
+  webhook, status poller) inherits the domain's
+  rules. That driver must be authenticated and
+  replay-protected before it ships — an
+  unauthenticated status webhook would let an
+  attacker walk calls through the lifecycle.
+
 ## Frontend (SPA) security posture
 
 The Leptos frontend (`crates/crm-web`, task 06-UI) is a thin client:
