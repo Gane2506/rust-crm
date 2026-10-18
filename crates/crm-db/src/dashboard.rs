@@ -311,7 +311,7 @@ impl DashboardRepository for PgDashboardRepository {
                 sqlx::query(
                     "SELECT dashboard_id, name, owner_client_profile_id, status, created_at, updated_at \
                      FROM dashboards WHERE owner_client_profile_id IS NULL \
-                     ORDER BY created_at DESC, dashboard_id DESC LIMIT $2",
+                     ORDER BY created_at DESC, dashboard_id DESC LIMIT $1",
                 )
                 .bind(limit as i64)
                 .fetch_all(&self.pool)
