@@ -35,6 +35,7 @@ use crm_core::campaign::CampaignServiceImpl;
 use crm_core::email::{EmailServiceImpl, StubEmailProvider};
 use crm_core::memory::ContactServiceImpl;
 use crm_core::signing::SigningServiceImpl;
+use crm_core::voice::{StubVoiceProvider, VoiceServiceImpl};
 use crm_db::auth::hash_password;
 use crm_db::billing::{PgInvoiceRepository, PgPaymentRepository};
 use crm_db::campaign::{
@@ -48,6 +49,7 @@ use crm_db::postgres::{
     PgAuditRepository, PgAuditService, PgContactRepository, PgGrantRepository, PgStaffRepository,
 };
 use crm_db::signing::{PgContractRepository, PgSigningTemplateRepository};
+use crm_db::voice::PgCallRepository;
 use crm_db::{run_migrations, DATABASE_URL_ENV, DATABASE_URL_EXAMPLE};
 use crm_domain::asset::Asset;
 use crm_domain::audit::ActorKind;
@@ -59,17 +61,18 @@ use crm_domain::error::DomainError;
 use crm_domain::ids::{ActorId, AgencyId, ClientProfileId, ContactId, GrantId, StaffId};
 use crm_domain::profile::{ClientProfile, ProfileStatus};
 use crm_domain::repositories::{
-    AssetRepository, ClientProfileRepository, ContactRepository, ContractRepository,
-    EmailMessageRepository, EmailThreadRepository, GrantRepository, InvoiceRepository,
-    ProspectPoolRepository, StaffRepository,
+    AssetRepository, CallRepository, ClientProfileRepository, ContactRepository,
+    ContractRepository, EmailMessageRepository, EmailThreadRepository, GrantRepository,
+    InvoiceRepository, ProspectPoolRepository, StaffRepository,
 };
 use crm_domain::security::{Action, Grant, Operation, PasswordCredential, Resource, Scope};
 use crm_domain::services::ActionContext;
 use crm_domain::services::{
-    BillingService, CampaignService, ContactService, EmailService, InboundEmail, NewCampaign,
-    NewCampaignStep, NewContact, NewContract, NewEmailMessage, NewInvoice, NewInvoiceLine,
-    NewPayment, NewSigningTemplate, SigningService,
+    BillingService, CampaignService, ContactService, EmailService, InboundEmail, NewCall,
+    NewCampaign, NewCampaignStep, NewContact, NewContract, NewEmailMessage, NewInvoice,
+    NewInvoiceLine, NewPayment, NewSigningTemplate, SigningService, VoiceService,
 };
+use crm_domain::voice::{CallDirection, PhoneNumber};
 
 /// Demo tenant also used by the `crm-web` vertical slice until real
 /// auth/tenancy lands (task 03-SEC-01).
@@ -918,6 +921,54 @@ async fn seed_signing(pool: &sqlx::PgPool) -> Result<bool, DomainError> {
     Ok(true)
 }
 
+/// Seeds a demo outbound call on the demo profile through the real
+/// `VoiceServiceImpl`. Idempotent: skipped when any calls already
+/// exist on the demo profile.
+///
+/// The call is placed and then ended. Ending an `Initiated` call
+/// lands it in `Failed` ("call ended before connecting") — nothing
+/// drives `Initiated → Ringing` over the service surface yet (see
+/// `docs/operations/voice.md`), so a finished demo call is a failed
+/// one until the provider-status polling ships.
+async fn seed_voice(pool: &sqlx::PgPool) -> Result<bool, DomainError> {
+    let profile =
+        ClientProfileId::from(Uuid::parse_str(DEMO_PROFILE_ID).expect("demo profile id parses"));
+    let calls = PgCallRepository::new(pool.clone());
+    // Idempotency anchor: the profile's calls.
+    if !calls.list_by_profile(profile, 1).await?.is_empty() {
+        return Ok(false);
+    }
+
+    let service = VoiceServiceImpl::new(
+        calls,
+        StubVoiceProvider::new(),
+        PgAuditService::new(PgAuditRepository::new(pool.clone())),
+    );
+    let ctx = ActionContext {
+        actor_kind: ActorKind::System,
+        actor_id: ActorId::from(Uuid::nil()),
+        client_profile_id: Some(profile),
+        correlation_id: Uuid::new_v4(),
+    };
+
+    let call = service
+        .place_call(
+            NewCall {
+                client_profile_id: profile,
+                contact_id: None,
+                direction: CallDirection::Outbound,
+                from: PhoneNumber::new("+14155550100".to_string())
+                    .expect("demo from number parses"),
+                to: PhoneNumber::new("+14155550199".to_string()).expect("demo to number parses"),
+            },
+            &ctx,
+        )
+        .await?;
+    service.end_call(call.call_id, &ctx).await?;
+
+    Ok(true)
+}
+
 /// Env var gating writes: `CRM_SEED_DEV=1` is the explicit opt-in that
 /// lets this example write to the database.
 const SEED_DEV_ENV: &str = "CRM_SEED_DEV";
@@ -1116,6 +1167,28 @@ async fn seed_staff(pool: &sqlx::PgPool, agency_id: AgencyId) -> Result<bool, Do
             )
             .await?;
     }
+    // Grants for the calling slice (task 14-VOICE-02): calls on the
+    // demo profile, so the demo user can try the call endpoints
+    // after logging in.
+    for (resource, operation) in [
+        (Resource::Call, Operation::Read),
+        (Resource::Call, Operation::Create),
+        (Resource::Call, Operation::Update),
+    ] {
+        grant_repo
+            .assign(
+                user.staff_id,
+                Grant {
+                    grant_id: GrantId::new(),
+                    action: Action {
+                        resource,
+                        operation,
+                    },
+                    scope,
+                },
+            )
+            .await?;
+    }
     Ok(true)
 }
 
@@ -1154,6 +1227,7 @@ async fn run() -> Result<(), String> {
         println!("  11. seed demo feed items (pinned, normal, read, hidden) (idempotent)");
         println!("  12. seed demo invoice (issued, 2 lines, partial payment) (idempotent)");
         println!("  13. seed demo signing template + draft contract (idempotent)");
+        println!("  14. seed demo call (outbound, ended) (idempotent)");
         return Ok(());
     }
 
@@ -1243,6 +1317,14 @@ async fn run() -> Result<(), String> {
         println!("seed complete: demo signing template + draft contract created");
     } else {
         println!("seed complete: demo contract already present");
+    }
+    if seed_voice(&pool)
+        .await
+        .map_err(|error| format!("seed voice: {error}"))?
+    {
+        println!("seed complete: demo call (outbound, ended) created");
+    } else {
+        println!("seed complete: demo call already present");
     }
     println!("dev login: email {DEMO_STAFF_EMAIL}, password {DEMO_STAFF_PASSWORD} (local only)");
     Ok(())
