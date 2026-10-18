@@ -580,6 +580,126 @@ async fn seed_workflow(pool: &sqlx::PgPool) -> Result<bool, DomainError> {
     Ok(true)
 }
 
+/// Seeds one published demo form on the demo profile: a required
+/// text field ("Full name"), a required email field ("Work email")
+/// and an optional select field ("Plan"), plus one reviewed demo
+/// submission. Idempotent via the demo form name. The form is
+/// published at seed time (unlike the demo workflow, which stays
+/// draft) so the demo submission validates against a live form.
+async fn seed_form(pool: &sqlx::PgPool) -> Result<bool, DomainError> {
+    use crm_core::form::FormServiceImpl;
+    use crm_db::form::{PgFormFieldRepository, PgFormRepository, PgFormSubmissionRepository};
+    use crm_domain::form::{FormAnswer, FormFieldType};
+    use crm_domain::repositories::FormRepository;
+    use crm_domain::services::{FormService, NewForm, NewFormField, NewFormSubmission};
+
+    const DEMO_FORM_NAME: &str = "demo-seed-form";
+
+    let profile =
+        ClientProfileId::from(Uuid::parse_str(DEMO_PROFILE_ID).expect("demo profile id parses"));
+    let forms = PgFormRepository::new(pool.clone());
+    // Idempotency anchor: the demo form.
+    if forms
+        .list_by_profile(profile, 100)
+        .await?
+        .iter()
+        .any(|f| f.name == DEMO_FORM_NAME)
+    {
+        return Ok(false);
+    }
+
+    let ctx = ActionContext {
+        actor_kind: ActorKind::System,
+        actor_id: ActorId::from(Uuid::nil()),
+        client_profile_id: Some(profile),
+        correlation_id: Uuid::new_v4(),
+    };
+
+    let service = FormServiceImpl::new(
+        forms,
+        PgFormFieldRepository::new(pool.clone()),
+        PgFormSubmissionRepository::new(pool.clone()),
+        PgAuditService::new(PgAuditRepository::new(pool.clone())),
+    );
+
+    let form = service
+        .create_form(
+            NewForm {
+                client_profile_id: profile,
+                name: DEMO_FORM_NAME.to_string(),
+            },
+            &ctx,
+        )
+        .await?;
+
+    let name_field = service
+        .add_field(
+            NewFormField {
+                form_id: form.form_id,
+                field_type: FormFieldType::TextField,
+                label: "Full name".to_string(),
+                required: true,
+                position: 0,
+                config: serde_json::json!({}),
+            },
+            &ctx,
+        )
+        .await?;
+    let email_field = service
+        .add_field(
+            NewFormField {
+                form_id: form.form_id,
+                field_type: FormFieldType::EmailField,
+                label: "Work email".to_string(),
+                required: true,
+                position: 1,
+                config: serde_json::json!({}),
+            },
+            &ctx,
+        )
+        .await?;
+    service
+        .add_field(
+            NewFormField {
+                form_id: form.form_id,
+                field_type: FormFieldType::SelectField,
+                label: "Plan".to_string(),
+                required: false,
+                position: 2,
+                config: serde_json::json!({"options": ["basic", "pro"]}),
+            },
+            &ctx,
+        )
+        .await?;
+
+    service.publish_form(form.form_id, &ctx).await?;
+
+    let submission = service
+        .submit(
+            NewFormSubmission {
+                form_id: form.form_id,
+                submitted_by_contact: None,
+                submitted_by_label: "Demo User".to_string(),
+                answers: vec![
+                    FormAnswer {
+                        field_id: name_field.field_id,
+                        value: "Demo User".to_string(),
+                    },
+                    FormAnswer {
+                        field_id: email_field.field_id,
+                        value: "demo-user@example.com".to_string(),
+                    },
+                ],
+            },
+            &ctx,
+        )
+        .await?;
+    service
+        .review_submission(submission.submission_id, &ctx)
+        .await?;
+    Ok(true)
+}
+
 /// Env var gating writes: `CRM_SEED_DEV=1` is the explicit opt-in that
 /// lets this example write to the database.
 const SEED_DEV_ENV: &str = "CRM_SEED_DEV";
@@ -672,9 +792,9 @@ async fn seed_staff(pool: &sqlx::PgPool, agency_id: AgencyId) -> Result<bool, Do
             )
             .await?;
     }
-    // Grants for the workflow builder slice (task 10-WORK-02): full
-    // workflow lifecycle on the demo profile, so the demo user can
-    // try the workflow endpoints after logging in.
+    // Grants for the form builder slice (task 11-FORM-02): full
+    // form lifecycle on the demo profile, so the demo user can
+    // try the form endpoints after logging in.
     for operation in [
         Operation::Create,
         Operation::Read,
@@ -687,7 +807,7 @@ async fn seed_staff(pool: &sqlx::PgPool, agency_id: AgencyId) -> Result<bool, Do
                 Grant {
                     grant_id: GrantId::new(),
                     action: Action {
-                        resource: Resource::Workflow,
+                        resource: Resource::Form,
                         operation,
                     },
                     scope,
@@ -729,6 +849,7 @@ async fn run() -> Result<(), String> {
         );
         println!("  8. seed demo agent run (completed, chain [stub, local]) (idempotent)");
         println!("  9. seed demo workflow (draft, trigger → action → delay) (idempotent)");
+        println!("  10. seed demo form (published, 3 fields, 1 reviewed submission) (idempotent)");
         return Ok(());
     }
 
@@ -786,6 +907,14 @@ async fn run() -> Result<(), String> {
         println!("seed complete: demo workflow (draft, trigger → action → delay) created");
     } else {
         println!("seed complete: demo workflow already present");
+    }
+    if seed_form(&pool)
+        .await
+        .map_err(|error| format!("seed form: {error}"))?
+    {
+        println!("seed complete: demo form (published, 3 fields, 1 reviewed submission) created");
+    } else {
+        println!("seed complete: demo form already present");
     }
     println!("dev login: email {DEMO_STAFF_EMAIL}, password {DEMO_STAFF_PASSWORD} (local only)");
     Ok(())

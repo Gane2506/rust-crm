@@ -20,7 +20,7 @@
 
 use crm_domain::audit::{ActionResult, PermissionDecision};
 use crm_domain::error::DomainError;
-use crm_domain::form::{Form, FormField, FormSubmission};
+use crm_domain::form::{Form, FormField, FormStatus, FormSubmission};
 use crm_domain::ids::{ClientProfileId, FormFieldId, FormId, FormSubmissionId};
 use crm_domain::repositories::{FormFieldRepository, FormRepository, FormSubmissionRepository};
 use crm_domain::services::{
@@ -213,6 +213,13 @@ where
         ctx: &ActionContext,
     ) -> Result<FormSubmission, DomainError> {
         let form = self.load_scoped_form(input.form_id, ctx).await?;
+        // Intake gate: only published forms accept submissions (a draft
+        // is still being edited; archived forms are retired).
+        if form.status != FormStatus::Published {
+            return Err(DomainError::Validation(
+                "form is not published; submissions are not accepted".to_string(),
+            ));
+        }
         // Validate-then-persist: the submission must satisfy the
         // form's fields (required answers, per-type values) before
         // anything is stored. This also rejects answers whose fields
