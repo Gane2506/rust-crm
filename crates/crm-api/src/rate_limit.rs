@@ -302,11 +302,6 @@ impl WriteRateLimiter {
         }
     }
 
-    /// Returns the tuning configuration.
-    pub fn config(&self) -> WriteRateLimitConfig {
-        self.config
-    }
-
     /// Records a write request from `ip_key`.
     ///
     /// Returns `Ok(())` and records the request when the bucket has
