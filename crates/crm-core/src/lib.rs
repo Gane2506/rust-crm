@@ -65,6 +65,11 @@ pub mod workflow;
 /// [`form`](crm_domain::form) domain.
 pub mod form;
 
+/// Feed service: profile-scoped activity timeline reads and item
+/// annotations (pin, hide, mark read) over the
+/// [`feed`](crm_domain::feed) domain.
+pub mod feed;
+
 /// Errors raised by [`crm-core`](crate) utilities.
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum CoreError {

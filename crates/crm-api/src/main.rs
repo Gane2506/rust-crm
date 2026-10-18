@@ -33,6 +33,7 @@ mod auth;
 mod campaigns;
 mod contacts;
 mod emails;
+mod feed;
 mod forms;
 mod jev;
 mod observability;
@@ -452,6 +453,13 @@ where
             "/v1/forms/{id}/submissions/{submission_id}/review",
             post(forms::review_submission::<R, A, I>),
         )
+        .route("/v1/feed", get(feed::list_feed::<R, A, I>))
+        .route(
+            "/v1/feed/{id}/read",
+            post(feed::mark_feed_item_read::<R, A, I>),
+        )
+        .route("/v1/feed/{id}/pin", post(feed::pin_feed_item::<R, A, I>))
+        .route("/v1/feed/{id}/hide", post(feed::hide_feed_item::<R, A, I>))
         .fallback(not_found);
 
     // When authentication is configured (the Postgres-backed server), the

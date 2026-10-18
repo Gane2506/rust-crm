@@ -18,13 +18,12 @@
 //! service-level decision recorded in the audit log (a 12-FEED-02
 //! concern).
 //!
-//! ## Authorization (deferred)
+//! ## Authorization
 //!
-//! Feed operations will authorize against a `Resource::FeedItem`
-//! variant, profile-scoped — the variant and its `"feed_item"`
-//! database-string mapping land in task 12-FEED-02 together with the
-//! persistence layer (the `resource_as_str` match in `crates/crm-db`
-//! is exhaustive).
+//! Feed operations authorize against
+//! [`Resource::FeedItem`](crate::security::Resource::FeedItem),
+//! profile-scoped (landed in task 12-FEED-02 together with the
+//! persistence layer).
 //!
 //! ## Audit
 //!

@@ -58,6 +58,7 @@ use crm_db::core_crm::{PgAssetRepository, PgClientProfileRepository};
 use crm_db::email::{
     PgEmailAttachmentRepository, PgEmailMessageRepository, PgEmailThreadRepository,
 };
+use crm_db::feed::PgFeedItemRepository;
 use crm_db::form::{PgFormFieldRepository, PgFormRepository, PgFormSubmissionRepository};
 use crm_db::jev::{
     PgAgentRunRepository, PgHandoffRepository, PgRoleMembership, PgToolCallRepository,
@@ -136,6 +137,8 @@ pub struct ApiAuth {
     pub form_fields: PgFormFieldRepository,
     /// Form-submission repository for the form endpoints.
     pub form_submissions: PgFormSubmissionRepository,
+    /// Feed-item repository for the feed endpoints.
+    pub feed_items: PgFeedItemRepository,
 }
 
 impl ApiAuth {
@@ -184,6 +187,7 @@ impl ApiAuth {
             forms: PgFormRepository::new(pool.clone()),
             form_fields: PgFormFieldRepository::new(pool.clone()),
             form_submissions: PgFormSubmissionRepository::new(pool.clone()),
+            feed_items: PgFeedItemRepository::new(pool.clone()),
         }
     }
 }

@@ -423,6 +423,10 @@ pub enum Resource {
     /// Covers the form lifecycle (publish, archive), field management
     /// and submission intake (submit, review).
     Form,
+    /// Activity/notification stream inside a client profile (task
+    /// 12-FEED-02). Covers feed reads and item annotations
+    /// (pin, hide, mark read); item content is write-once.
+    FeedItem,
 }
 
 /// Operations on a resource.
