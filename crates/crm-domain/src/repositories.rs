@@ -980,3 +980,44 @@ pub trait FormSubmissionRepository {
         limit: u64,
     ) -> impl Future<Output = Result<Vec<crate::form::FormSubmission>, DomainError>> + Send + 'a;
 }
+
+/// Persistence port for feed items (task 12-FEED-01).
+///
+/// Feed items are produced by the other workstreams' services and
+/// are write-once facts: the repository persists visibility/read
+/// annotations, but the item's content never changes after creation.
+pub trait FeedItemRepository {
+    /// Persists a new feed item.
+    fn create<'a>(
+        &'a self,
+        item: crate::feed::FeedItem,
+    ) -> impl Future<Output = Result<crate::feed::FeedItem, DomainError>> + Send + 'a;
+
+    /// Fetches a feed item by id.
+    fn get<'a>(
+        &'a self,
+        feed_item_id: crate::ids::FeedItemId,
+    ) -> impl Future<Output = Result<crate::feed::FeedItem, DomainError>> + Send + 'a;
+
+    /// Lists feed items for one client profile, ordered pinned-first
+    /// then newest-first (see
+    /// [`compare_feed_items`](crate::feed::compare_feed_items)),
+    /// filtered per `query` and capped at `query.limit`.
+    fn list<'a>(
+        &'a self,
+        client_profile_id: crate::ids::ClientProfileId,
+        query: crate::feed::FeedQuery,
+    ) -> impl Future<Output = Result<Vec<crate::feed::FeedItem>, DomainError>> + Send + 'a;
+
+    /// Persists visibility changes (pin / unpin / hide).
+    fn set_visibility<'a>(
+        &'a self,
+        item: crate::feed::FeedItem,
+    ) -> impl Future<Output = Result<crate::feed::FeedItem, DomainError>> + Send + 'a;
+
+    /// Persists the read flag.
+    fn mark_read<'a>(
+        &'a self,
+        item: crate::feed::FeedItem,
+    ) -> impl Future<Output = Result<crate::feed::FeedItem, DomainError>> + Send + 'a;
+}

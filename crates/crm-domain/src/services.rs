@@ -1674,3 +1674,47 @@ pub trait FormService {
         ctx: &'a ActionContext,
     ) -> impl Future<Output = Result<crate::form::FormSubmission, DomainError>> + Send + 'a;
 }
+
+/// Feed operations: read and annotate the per-profile activity
+/// stream (task 12-FEED-01).
+///
+/// The feed never edits item content — items are write-once facts
+/// produced by the other workstreams. All methods take
+/// [`ActionContext`] for tenant scoping and audit.
+pub trait FeedService {
+    /// Lists feed items for the context's client profile, ordered
+    /// pinned-first then newest-first, filtered per `query`. Records
+    /// a [`FEED_LISTED`](crate::feed::FEED_LISTED) audit event.
+    fn list_feed<'a>(
+        &'a self,
+        query: crate::feed::FeedQuery,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<Vec<crate::feed::FeedItem>, DomainError>> + Send + 'a;
+
+    /// Marks a feed item as read. Idempotent. Records a
+    /// [`FEED_ITEM_READ`](crate::feed::FEED_ITEM_READ) audit event.
+    fn mark_read<'a>(
+        &'a self,
+        feed_item_id: crate::ids::FeedItemId,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<crate::feed::FeedItem, DomainError>> + Send + 'a;
+
+    /// Pins a feed item so it floats to the top of reads. Rejects
+    /// hidden items. Records a
+    /// [`FEED_ITEM_PINNED`](crate::feed::FEED_ITEM_PINNED) audit event.
+    fn pin_item<'a>(
+        &'a self,
+        feed_item_id: crate::ids::FeedItemId,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<crate::feed::FeedItem, DomainError>> + Send + 'a;
+
+    /// Hides a feed item. Sticky — there is no unhide here; restoring
+    /// a hidden item is a service-level decision for 12-FEED-02.
+    /// Records a [`FEED_ITEM_HIDDEN`](crate::feed::FEED_ITEM_HIDDEN)
+    /// audit event.
+    fn hide_item<'a>(
+        &'a self,
+        feed_item_id: crate::ids::FeedItemId,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<crate::feed::FeedItem, DomainError>> + Send + 'a;
+}

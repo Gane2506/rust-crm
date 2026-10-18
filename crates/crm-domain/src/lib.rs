@@ -49,6 +49,9 @@ pub mod contract;
 pub mod email;
 /// Domain error type with explicit, secret-free error semantics.
 pub mod error;
+/// Feed domain: per-profile activity stream, visibility rules and
+/// ordering (task 12-FEED-01).
+pub mod feed;
 /// Form builder domain: typed intake/lead forms, field validation and
 /// submissions (task 11-FORM-01).
 pub mod form;
@@ -85,6 +88,10 @@ pub use email::{
     ThreadStatus,
 };
 pub use error::DomainError;
+pub use feed::{
+    compare_feed_items, FeedItem, FeedQuery, FeedSource, FeedVisibility, FEED_ITEM_HIDDEN,
+    FEED_ITEM_PINNED, FEED_ITEM_READ, FEED_LISTED,
+};
 pub use form::{
     Form, FormAnswer, FormField, FormFieldType, FormStatus, FormSubmission, SubmissionStatus,
 };
