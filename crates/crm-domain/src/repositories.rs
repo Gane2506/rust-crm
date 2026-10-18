@@ -1082,3 +1082,27 @@ pub trait PaymentRepository {
         payment: crate::billing::Payment,
     ) -> impl Future<Output = Result<crate::billing::Payment, DomainError>> + Send + 'a;
 }
+
+/// Persistence port for signing templates (task 13-SIGN-01).
+///
+/// Templates are immutable and append-only: there is no update or
+/// delete. A new version is a new row.
+pub trait SigningTemplateRepository {
+    /// Persists a new template version.
+    fn create<'a>(
+        &'a self,
+        template: crate::signing::SigningTemplate,
+    ) -> impl Future<Output = Result<crate::signing::SigningTemplate, DomainError>> + Send + 'a;
+
+    /// Fetches a template version by id.
+    fn get<'a>(
+        &'a self,
+        template_id: crate::ids::SigningTemplateId,
+    ) -> impl Future<Output = Result<crate::signing::SigningTemplate, DomainError>> + Send + 'a;
+
+    /// Lists template versions, newest first.
+    fn list<'a>(
+        &'a self,
+        limit: u64,
+    ) -> impl Future<Output = Result<Vec<crate::signing::SigningTemplate>, DomainError>> + Send + 'a;
+}

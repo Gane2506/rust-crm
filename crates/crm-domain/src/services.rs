@@ -1838,3 +1838,134 @@ pub trait BillingService {
         ctx: &'a ActionContext,
     ) -> impl Future<Output = Result<crate::billing::Money, DomainError>> + Send + 'a;
 }
+
+/// Input for [`SigningService::create_contract`]: a new draft contract
+/// generated from a signing template.
+#[derive(Debug, Clone)]
+pub struct NewContract {
+    /// The client profile this contract belongs to.
+    pub client_profile_id: crate::ids::ClientProfileId,
+    /// Template version to render the contract document from.
+    pub template_id: crate::ids::SigningTemplateId,
+    /// Values for the template's `{{placeholder}}` variables.
+    pub variables: std::collections::HashMap<String, String>,
+    /// What must be paid before the contract becomes effective.
+    pub payment_requirement: crate::contract::PaymentRequirement,
+    /// Required signers as (name, email) pairs.
+    pub signers: Vec<(String, String)>,
+}
+
+/// Input for [`SigningService::sign_contract`]: one signature with its
+/// forensic evidence.
+#[derive(Debug, Clone)]
+pub struct NewSignature {
+    /// The contract being signed.
+    pub contract_id: crate::ids::ContractId,
+    /// Signer's display name.
+    pub signer_name: String,
+    /// Signer's email address.
+    pub signer_email: String,
+    /// Signer's IP address (hashed by the domain; never persisted raw).
+    pub ip_address: String,
+    /// Signer's user agent (hashed by the domain; never persisted raw).
+    pub user_agent: String,
+    /// How the signature was applied.
+    pub method: crate::signing::SignatureMethod,
+}
+
+/// Input for [`SigningService::create_template`]: a new template version.
+#[derive(Debug, Clone)]
+pub struct NewSigningTemplate {
+    /// Human-readable template name (validated non-blank).
+    pub name: String,
+    /// Template body with `{{placeholder}}` variables.
+    pub body: String,
+}
+
+/// Domain operations for contract signing (task 13-SIGN-01).
+///
+/// Operates on the [`Contract`](crate::contract::Contract) aggregate
+/// from 01-FND-01: `request_signature` moves `Draft → Sent`,
+/// `sign_contract` advances `Sent → PartiallySigned →
+/// SignedAwaitingPayment` as signers sign (recording
+/// [`SigningEvidence`](crate::signing::SigningEvidence) per signer),
+/// `satisfy_payment_gate` records the verified payment and moves
+/// `SignedAwaitingPayment → Effective`, and `void_contract` moves
+/// pre-effective contracts to `Cancelled`.
+///
+/// All mutations authorize against `Resource::Contract`
+/// (profile-scoped; the variant lands in task 13-SIGN-02 — see the
+/// [`crate::signing`] module docs) and record an [`AuditEvent`] with
+/// the pinned action name documented on each method.
+pub trait SigningService {
+    /// Creates a draft contract from a template version, rendering the
+    /// immutable document snapshot. Records a
+    /// [`SIGNING_CONTRACT_CREATED`](crate::signing::SIGNING_CONTRACT_CREATED)
+    /// audit event.
+    fn create_contract<'a>(
+        &'a self,
+        input: NewContract,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<crate::contract::Contract, DomainError>> + Send + 'a;
+
+    /// Sends a draft contract for signature (`Draft → Sent`). Records a
+    /// [`SIGNING_SIGNATURE_REQUESTED`](crate::signing::SIGNING_SIGNATURE_REQUESTED)
+    /// audit event.
+    fn request_signature<'a>(
+        &'a self,
+        contract_id: crate::ids::ContractId,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<crate::contract::Contract, DomainError>> + Send + 'a;
+
+    /// Records one signature with its evidence, advancing the signing
+    /// state machine. When all signers have signed, the contract moves
+    /// to `SignedAwaitingPayment`. Records a
+    /// [`SIGNING_CONTRACT_SIGNED`](crate::signing::SIGNING_CONTRACT_SIGNED)
+    /// audit event.
+    fn sign_contract<'a>(
+        &'a self,
+        input: NewSignature,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<crate::contract::Contract, DomainError>> + Send + 'a;
+
+    /// Records that the required payment was verified and moves the
+    /// contract to `Effective` (`SignedAwaitingPayment → Effective`).
+    /// Rejects contracts whose payment requirement is not satisfied.
+    /// Records a
+    /// [`SIGNING_PAYMENT_GATE_SATISFIED`](crate::signing::SIGNING_PAYMENT_GATE_SATISFIED)
+    /// audit event followed by
+    /// [`SIGNING_CONTRACT_EFFECTIVE`](crate::signing::SIGNING_CONTRACT_EFFECTIVE).
+    fn satisfy_payment_gate<'a>(
+        &'a self,
+        contract_id: crate::ids::ContractId,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<crate::contract::Contract, DomainError>> + Send + 'a;
+
+    /// Cancels a pre-effective contract (`Draft`/`Sent`/`PartiallySigned`/
+    /// `SignedAwaitingPayment → Cancelled`). Idempotent on `Cancelled`;
+    /// rejects `Effective` contracts. Records a
+    /// [`SIGNING_CONTRACT_VOIDED`](crate::signing::SIGNING_CONTRACT_VOIDED)
+    /// audit event.
+    fn void_contract<'a>(
+        &'a self,
+        contract_id: crate::ids::ContractId,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<crate::contract::Contract, DomainError>> + Send + 'a;
+
+    /// Lists contracts for the context's client profile, newest first.
+    fn list_contracts<'a>(
+        &'a self,
+        limit: u64,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<Vec<crate::contract::Contract>, DomainError>> + Send + 'a;
+
+    /// Creates a new template version (templates are immutable and
+    /// append-only). Records a
+    /// [`SIGNING_TEMPLATE_CREATED`](crate::signing::SIGNING_TEMPLATE_CREATED)
+    /// audit event.
+    fn create_template<'a>(
+        &'a self,
+        input: NewSigningTemplate,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<crate::signing::SigningTemplate, DomainError>> + Send + 'a;
+}
