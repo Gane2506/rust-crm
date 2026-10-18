@@ -13,6 +13,7 @@ use leptos::task::spawn_local;
 
 use crate::api::{login, ApiError};
 use crate::styles;
+use crate::ui::components::{Btn, BtnVariant};
 
 /// Outcome of a login attempt, shown under the form.
 #[derive(Debug, Clone)]
@@ -78,48 +79,66 @@ pub fn LoginForm(on_logged_in: impl Fn(String) + Clone + 'static) -> impl IntoVi
     };
 
     view! {
-        <section aria-label="Log in" style="max-width: 24rem; margin: 4rem auto;">
-            <h2 style=styles::H2>"Rust CRM"</h2>
-            <p style=styles::MUTED>"Log in to continue."</p>
-            <form on:submit=on_submit>
-                <div style="margin-bottom: 0.75rem;">
-                    <label for="login-email" style=styles::LABEL>"Email"</label>
-                    <input
-                        id="login-email"
-                        node_ref=email_ref
-                        type="email"
-                        autocomplete="username"
-                        autofocus
-                        style=styles::INPUT
-                    />
+        <div style=styles::LOGIN_PAGE>
+            <section aria-label="Log in" style=styles::LOGIN_CARD>
+                <div style="display: flex; align-items: center; gap: 0.75rem; margin-bottom: 1.5rem;">
+                    <span style=styles::SIDEBAR_MONOGRAM>{"R"}</span>
+                    <div>
+                        <h2 style="margin: 0; font-size: 1.125rem; font-weight: 600; color: #0f172a;">
+                            "Rust CRM"
+                        </h2>
+                        <p style="margin: 0; font-size: 0.8125rem; color: #64748b;">
+                            "Log in to continue."
+                        </p>
+                    </div>
                 </div>
-                <div style="margin-bottom: 0.75rem;">
-                    <label for="login-password" style=styles::LABEL>"Password"</label>
-                    <input
-                        id="login-password"
-                        node_ref=password_ref
-                        type="password"
-                        autocomplete="current-password"
-                        style=styles::INPUT
-                    />
-                </div>
-                <button
-                    type="submit"
-                    disabled=move || submitting.get()
-                    style=styles::BTN_PRIMARY
-                >
-                    {move || if submitting.get() { "Logging in…" } else { "Log in" }}
-                </button>
-            </form>
-            {move || match status.get() {
-                None => ().into_any(),
-                Some(LoginStatus::Error(message)) => {
-                    view! {
-                        <p role="alert" style=styles::ALERT_ERROR>{message}</p>
+                <form on:submit=on_submit>
+                    <div style="margin-bottom: 0.875rem;">
+                        <label for="login-email" style=styles::LABEL>"Email"</label>
+                        <input
+                            id="login-email"
+                            node_ref=email_ref
+                            type="email"
+                            autocomplete="username"
+                            autofocus
+                            style=styles::INPUT
+                        />
+                    </div>
+                    <div style="margin-bottom: 1.25rem;">
+                        <label for="login-password" style=styles::LABEL>"Password"</label>
+                        <input
+                            id="login-password"
+                            node_ref=password_ref
+                            type="password"
+                            autocomplete="current-password"
+                            style=styles::INPUT
+                        />
+                    </div>
+                    <div style="display: grid;">
+                        <Btn
+                            variant=BtnVariant::Primary
+                            btn_type="submit"
+                            disabled=leptos::prelude::Signal::derive(move || submitting.get())
+                        >
+                            {move || if submitting.get() { "Logging in…" } else { "Log in" }}
+                        </Btn>
+                    </div>
+                </form>
+                {move || match status.get() {
+                    None => ().into_any(),
+                    Some(LoginStatus::Error(message)) => {
+                        view! {
+                            <p role="alert" style=format!("{} margin-top: 1rem;", styles::ALERT_ERROR)>
+                                {message}
+                            </p>
+                        }
+                            .into_any()
                     }
-                        .into_any()
-                }
-            }}
-        </section>
+                }}
+                <p style="margin: 1.5rem 0 0; font-size: 0.75rem; color: #94a3b8; text-align: center;">
+                    "Staff access only — there is no client login."
+                </p>
+            </section>
+        </div>
     }
 }

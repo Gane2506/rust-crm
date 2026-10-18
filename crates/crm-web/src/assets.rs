@@ -18,8 +18,21 @@ use crate::api::{
     archive_asset, fetch_assets, fetch_profiles, register_asset, ApiError, AssetListResponse,
     RegisterAssetRequest,
 };
-use crate::components::{EmptyState, ErrorAlert, Loading, OkAlert, PageHeader};
+use crate::components::{EmptyState, ErrorAlert, Loading, OkAlert};
 use crate::styles;
+use crate::ui::components::{Badge, Btn, BtnVariant, Card, HoverTr, PageHeader, Tone};
+
+/// Maps an asset kind to its badge tone.
+fn asset_tone(kind: &crm_domain::asset::AssetKind) -> Tone {
+    use crm_domain::asset::AssetKind;
+    match kind {
+        AssetKind::Document => Tone::Blue,
+        AssetKind::Image => Tone::Green,
+        AssetKind::Audio => Tone::Amber,
+        AssetKind::Video => Tone::Blue,
+        AssetKind::Other => Tone::Gray,
+    }
+}
 
 /// Assets page: profile selector, asset list, register form.
 ///
@@ -50,8 +63,11 @@ pub fn AssetsPage(token: String) -> impl IntoView {
     // Asset list for the selected profile lives in [`AssetBrowser`] below.
 
     view! {
-        <section aria-label="Assets" style=styles::SECTION>
-            <PageHeader title="Assets" />
+        <section aria-label="Assets">
+            <PageHeader
+                title="Assets"
+                description="Content-addressed files, scoped to a client profile."
+            />
             {move || match profile_options.get() {
                 None => view! { <Loading label="profiles" /> }.into_any(),
                 Some(Err(error)) => {
@@ -62,7 +78,9 @@ pub fn AssetsPage(token: String) -> impl IntoView {
                 }
                 Some(Ok(options)) => {
                     view! {
-                        <ProfileSelect options=options selected=selected />
+                        <Card>
+                            <ProfileSelect options=options selected=selected />
+                        </Card>
                         <AssetBrowser token={token.clone()} selected=selected />
                     }
                         .into_any()
@@ -99,7 +117,7 @@ fn AssetBrowser(token: String, selected: RwSignal<String>) -> impl IntoView {
             if profile_id.is_empty() {
                 return;
             }
-            let my_generation = generation.get() + 1;
+            let my_generation = generation.get_untracked() + 1;
             generation.set(my_generation);
             let token = token.clone();
             spawn_local(async move {
@@ -150,19 +168,33 @@ fn AssetBrowser(token: String, selected: RwSignal<String>) -> impl IntoView {
                                         if total == 1 { "" } else { "s" }
                                     )}
                                 </p>
-                                <ul style="list-style: none; margin: 0; padding: 0; display: grid; gap: 0.75rem;">
-                                    <For
-                                        each=move || page.assets.clone()
-                                        key=|asset| asset.asset_id
-                                        let:asset
-                                    >
-                                        <AssetRow
-                                            asset=asset
-                                            token={row_token.clone()}
-                                            on_archived=retry
-                                        />
-                                    </For>
-                                </ul>
+                                <div style=styles::TABLE_WRAPPER>
+                                    <table style=styles::TABLE>
+                                        <thead>
+                                            <tr>
+                                                <th style=styles::TH>"File"</th>
+                                                <th style=styles::TH>"Kind"</th>
+                                                <th style=styles::TH>"MIME"</th>
+                                                <th style=styles::TH>"Size"</th>
+                                                <th style=styles::TH>"SHA-256"</th>
+                                                <th style=styles::TH>"Actions"</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            <For
+                                                each=move || page.assets.clone()
+                                                key=|asset| asset.asset_id
+                                                let:asset
+                                            >
+                                                <AssetRow
+                                                    asset=asset
+                                                    token={row_token.clone()}
+                                                    on_archived=retry
+                                                />
+                                            </For>
+                                        </tbody>
+                                    </table>
+                                </div>
                             }
                                 .into_any()
                         }
@@ -187,7 +219,7 @@ fn ProfileSelect(options: Vec<(String, String)>, selected: RwSignal<String>) -> 
         selected.set(value);
     };
     view! {
-        <div style="margin-bottom: 1rem; max-width: 32rem;">
+        <div style="max-width: 36rem;">
             <label for="asset-profile" style=styles::LABEL>"Client profile"</label>
             <select id="asset-profile" node_ref=select_ref on:change=on_change style=styles::INPUT>
                 <option value="">"— select —"</option>
@@ -210,7 +242,7 @@ fn ProfileSelect(options: Vec<(String, String)>, selected: RwSignal<String>) -> 
 fn AssetRegisterForm(
     token: String,
     profile_id: String,
-    on_registered: impl Fn() + Clone + 'static,
+    on_registered: impl Fn() + Clone + Send + 'static,
 ) -> impl IntoView {
     let name_ref = NodeRef::<Input>::new();
     let mime_ref = NodeRef::<Input>::new();
@@ -294,8 +326,9 @@ fn AssetRegisterForm(
     };
 
     view! {
-        <form on:submit=on_submit style=styles::CARD>
-            <h3 style="margin: 0 0 0.5rem;">"Register asset"</h3>
+        <Card>
+            <h3 style=styles::FORM_TITLE>"Register asset"</h3>
+            <form on:submit=on_submit>
             <div style=styles::FORM>
                 <div>
                     <label for="asset-name" style=styles::LABEL>"File name"</label>
@@ -343,9 +376,13 @@ fn AssetRegisterForm(
                     />
                 </div>
                 <div>
-                    <button type="submit" disabled=move || submitting.get() style=styles::BTN_PRIMARY>
+                    <Btn
+                        variant=BtnVariant::Primary
+                        btn_type="submit"
+                        disabled=Signal::derive(move || submitting.get())
+                    >
                         {move || if submitting.get() { "Registering…" } else { "Register asset" }}
-                    </button>
+                    </Btn>
                 </div>
                 {move || match status.get() {
                     None => ().into_any(),
@@ -353,7 +390,8 @@ fn AssetRegisterForm(
                     Some(Err(message)) => view! { <ErrorAlert message=message /> }.into_any(),
                 }}
             </div>
-        </form>
+            </form>
+        </Card>
     }
 }
 
@@ -366,7 +404,7 @@ fn AssetRegisterForm(
 fn AssetRow(
     asset: Asset,
     token: String,
-    on_archived: impl Fn() + Clone + 'static,
+    on_archived: impl Fn() + Clone + Send + 'static,
 ) -> impl IntoView {
     let working = RwSignal::new(false);
     let archive_error = RwSignal::new(None::<String>);
@@ -378,7 +416,8 @@ fn AssetRow(
         .map(|b| format!("{b:02x}"))
         .collect();
 
-    let on_archive = move |_| {
+    // 0-arg so it can plug straight into [`Btn`]'s `on_click`.
+    let on_archive = move || {
         if working.get() {
             return;
         }
@@ -397,34 +436,37 @@ fn AssetRow(
     };
 
     view! {
-        <li style=styles::CARD>
-            <div style="display: flex; justify-content: space-between; align-items: baseline; gap: 1rem;">
-                <strong>{asset.file_name.clone()}</strong>
-                <span style=styles::PILL>{format!("{:?}", asset.kind)}</span>
-            </div>
-            <dl style=styles::DL>
-                <dt style=styles::DT>"MIME"</dt>
-                <dd style="margin: 0;">{asset.mime_type.clone()}</dd>
-                <dt style=styles::DT>"Size"</dt>
-                <dd style="margin: 0;">{format!("{} bytes", asset.size_bytes)}</dd>
-                <dt style=styles::DT>"SHA-256"</dt>
-                <dd style=styles::MONO>{format!("{short_hash}…")}</dd>
-            </dl>
-            {move || {
-                archive_error
-                    .get()
-                    .map(|message| view! { <ErrorAlert message=message /> })
-            }}
-            <div style="margin-top: 0.75rem;">
-                <button
-                    type="button"
-                    on:click=on_archive
-                    disabled=move || working.get()
-                    style=styles::BTN_DANGER
+        <HoverTr>
+            <td style=styles::TD>
+                <strong style="font-weight: 600;">{asset.file_name.clone()}</strong>
+            </td>
+            <td style=styles::TD>
+                <Badge tone=asset_tone(&asset.kind)>{format!("{:?}", asset.kind)}</Badge>
+            </td>
+            <td style=styles::TD>
+                <span style=styles::MUTED>{asset.mime_type.clone()}</span>
+            </td>
+            <td style=styles::TD>{format!("{} bytes", asset.size_bytes)}</td>
+            <td style=styles::TD>
+                <span style=styles::MONO>{format!("{short_hash}…")}</span>
+            </td>
+            <td style=styles::TD>
+                {move || {
+                    archive_error
+                        .get()
+                        .map(|message| view! { <ErrorAlert message=message /> })
+                }}
+                <Btn
+                    variant=BtnVariant::Danger
+                    btn_type="button"
+                    disabled=Signal::derive(move || working.get())
+                    on_click={
+                        std::rc::Rc::new(on_archive) as std::rc::Rc<dyn Fn()>
+                    }
                 >
                     {move || if working.get() { "Archiving…" } else { "Archive" }}
-                </button>
-            </div>
-        </li>
+                </Btn>
+            </td>
+        </HoverTr>
     }
 }

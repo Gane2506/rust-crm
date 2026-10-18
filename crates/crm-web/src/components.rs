@@ -1,25 +1,15 @@
 // Copyright (C) 2026 Gane — SPDX-License-Identifier: GPL-3.0-only
-//! Shared presentational components for the CRM frontend.
+//! Shared state components for the CRM frontend: loading, empty, and
+//! error states, now in the Twenty-style design language.
 //!
-//! Small, prop-driven building blocks used across pages: page headers,
-//! loading / empty / error states, and labeled form fields. Every page
-//! renders the same loading → error-with-retry → empty → content ladder
-//! so the UI states stay predictable.
+//! Every page renders the same loading → error-with-retry → empty →
+//! content ladder so the UI states stay predictable. Structural pieces
+//! (shell, buttons, tables, headers) live in [`crate::ui::components`].
 
 use leptos::prelude::*;
 
 use crate::styles;
-
-/// Page title header.
-///
-/// # Props
-/// - `title`: the page heading text.
-#[component]
-pub fn PageHeader(title: &'static str) -> impl IntoView {
-    view! {
-        <h2 style=styles::H2>{title}</h2>
-    }
-}
+use crate::ui::components::{Btn, BtnVariant, Icon};
 
 /// Loading indicator.
 ///
@@ -32,14 +22,19 @@ pub fn Loading(label: &'static str) -> impl IntoView {
     }
 }
 
-/// Empty-list state.
+/// Empty-list state: dashed panel with an icon and message.
 ///
 /// # Props
 /// - `message`: e.g. `"No contacts yet."`.
 #[component]
 pub fn EmptyState(message: &'static str) -> impl IntoView {
     view! {
-        <p style=styles::MUTED>{message}</p>
+        <div style=styles::EMPTY_STATE>
+            <div style=styles::EMPTY_ICON aria-hidden="true">
+                <Icon glyph="◌" />
+            </div>
+            <p style="margin: 0.5rem 0 0; color: #64748b; font-size: 0.8125rem;">{message}</p>
+        </div>
     }
 }
 
@@ -63,9 +58,16 @@ pub fn ErrorAlert(
                     view! {
                         // `type="button"`: the alert can render inside a
                         // `<form>`; without this the button would submit it.
-                        <button type="button" on:click=move |_| retry() style=styles::BTN>
+                        <Btn
+                            variant=BtnVariant::Secondary
+                            btn_type="button"
+                            on_click={
+                                let retry = retry.clone();
+                                std::rc::Rc::new(move || retry()) as std::rc::Rc<dyn Fn()>
+                            }
+                        >
                             "Retry"
-                        </button>
+                        </Btn>
                     }
                 })}
         </div>

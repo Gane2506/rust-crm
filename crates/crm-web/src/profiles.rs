@@ -13,8 +13,18 @@ use leptos_router::components::A;
 use crm_domain::profile::{ClientProfile, ProfileStatus};
 
 use crate::api::{create_profile, fetch_profile, fetch_profiles, transition_profile, ApiError};
-use crate::components::{EmptyState, ErrorAlert, Loading, OkAlert, PageHeader};
+use crate::components::{EmptyState, ErrorAlert, Loading, OkAlert};
 use crate::styles;
+use crate::ui::components::{Badge, Btn, BtnVariant, Card, FieldRow, HoverTr, PageHeader, Tone};
+
+/// Maps a profile status to its badge tone.
+fn profile_tone(status: &ProfileStatus) -> Tone {
+    match status {
+        ProfileStatus::Active => Tone::Green,
+        ProfileStatus::Suspended => Tone::Amber,
+        ProfileStatus::Archived => Tone::Gray,
+    }
+}
 
 /// Profiles list page: fetch-on-mount list plus the create form.
 ///
@@ -38,8 +48,11 @@ pub fn ProfilesPage(token: String) -> impl IntoView {
     let retry = move || reload.update(|n| *n = n.wrapping_add(1));
 
     view! {
-        <section aria-label="Client profiles" style=styles::SECTION>
-            <PageHeader title="Client profiles" />
+        <section aria-label="Client profiles">
+            <PageHeader
+                title="Client profiles"
+                description="Agency-operated client workspaces."
+            />
             <ProfileForm token={token.clone()} on_created=retry />
             <h3 style=styles::H3>"Profiles"</h3>
             {move || match profiles.get() {
@@ -59,15 +72,26 @@ pub fn ProfilesPage(token: String) -> impl IntoView {
                                 if page.total == 1 { "" } else { "s" },
                             )}
                         </p>
-                        <ul style="list-style: none; margin: 0; padding: 0; display: grid; gap: 0.75rem;">
-                            <For
-                                each=move || page.profiles.clone()
-                                key=|profile| profile.profile_id
-                                let:profile
-                            >
-                                <ProfileRow profile=profile />
-                            </For>
-                        </ul>
+                        <div style=styles::TABLE_WRAPPER>
+                            <table style=styles::TABLE>
+                                <thead>
+                                    <tr>
+                                        <th style=styles::TH>"Profile"</th>
+                                        <th style=styles::TH>"Status"</th>
+                                        <th style=styles::TH>"Id"</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <For
+                                        each=move || page.profiles.clone()
+                                        key=|profile| profile.profile_id
+                                        let:profile
+                                    >
+                                        <ProfileRow profile=profile />
+                                    </For>
+                                </tbody>
+                            </table>
+                        </div>
                     }
                         .into_any()
                 }
@@ -81,7 +105,7 @@ pub fn ProfilesPage(token: String) -> impl IntoView {
 /// POSTs with a fresh `Idempotency-Key`, then asks the parent list to
 /// refresh through `on_created`.
 #[component]
-fn ProfileForm(token: String, on_created: impl Fn() + Clone + 'static) -> impl IntoView {
+fn ProfileForm(token: String, on_created: impl Fn() + Clone + Send + 'static) -> impl IntoView {
     let name_ref = NodeRef::<Input>::new();
     let status = RwSignal::new(None::<Result<String, String>>);
     let submitting = RwSignal::new(false);
@@ -119,8 +143,9 @@ fn ProfileForm(token: String, on_created: impl Fn() + Clone + 'static) -> impl I
     };
 
     view! {
-        <form on:submit=on_submit style=styles::CARD>
-            <h3 style="margin: 0 0 0.5rem;">"New profile"</h3>
+        <Card>
+            <h3 style=styles::FORM_TITLE>"New profile"</h3>
+            <form on:submit=on_submit>
             <div style=styles::FORM>
                 <div>
                     <label for="profile-name" style=styles::LABEL>"Name"</label>
@@ -134,9 +159,13 @@ fn ProfileForm(token: String, on_created: impl Fn() + Clone + 'static) -> impl I
                     />
                 </div>
                 <div>
-                    <button type="submit" disabled=move || submitting.get() style=styles::BTN_PRIMARY>
+                    <Btn
+                        variant=BtnVariant::Primary
+                        btn_type="submit"
+                        disabled=Signal::derive(move || submitting.get())
+                    >
                         {move || if submitting.get() { "Creating…" } else { "Create profile" }}
-                    </button>
+                    </Btn>
                 </div>
                 {move || match status.get() {
                     None => ().into_any(),
@@ -144,24 +173,32 @@ fn ProfileForm(token: String, on_created: impl Fn() + Clone + 'static) -> impl I
                     Some(Err(message)) => view! { <ErrorAlert message=message /> }.into_any(),
                 }}
             </div>
-        </form>
+            </form>
+        </Card>
     }
 }
 
-/// One profile in the list: name, status pill, link to detail.
+/// One profile as a table row: name link, status badge, short id.
 #[component]
 fn ProfileRow(profile: ClientProfile) -> impl IntoView {
     let id = profile.profile_id.to_string();
+    let short_id: String = id.chars().take(8).collect();
+    let tone = profile_tone(&profile.status);
+    let status_label = format!("{:?}", profile.status);
     view! {
-        <li style=styles::CARD>
-            <div style="display: flex; justify-content: space-between; align-items: baseline; gap: 1rem;">
-                <A href=format!("/profiles/{id}")>
-                    <strong>{profile.name.clone()}</strong>
+        <HoverTr>
+            <td style=styles::TD>
+                <A href=format!("/profiles/{id}") attr:style=styles::LINK>
+                    <strong style="font-weight: 600;">{profile.name.clone()}</strong>
                 </A>
-                <span style=styles::PILL>{format!("{:?}", profile.status)}</span>
-            </div>
-            <p style=styles::MUTED>{format!("id {}", &id[..8])}</p>
-        </li>
+            </td>
+            <td style=styles::TD>
+                <Badge tone=tone>{status_label}</Badge>
+            </td>
+            <td style=styles::TD>
+                <span style=styles::MONO>{format!("{short_id}…")}</span>
+            </td>
+        </HoverTr>
     }
 }
 
@@ -214,8 +251,10 @@ pub fn ProfileDetail(token: String, profile_id: String) -> impl IntoView {
     };
 
     view! {
-        <section aria-label="Profile detail" style=styles::SECTION>
-            <PageHeader title="Profile" />
+        <section aria-label="Profile detail">
+            <PageHeader title="Profile" description="Client workspace record and lifecycle.">
+                <A href="/profiles" attr:style=styles::BTN>"← Back to profiles"</A>
+            </PageHeader>
             {move || match profile.get() {
                 None => view! { <Loading label="profile" /> }.into_any(),
                 Some(Err(error)) => {
@@ -229,46 +268,61 @@ pub fn ProfileDetail(token: String, profile_id: String) -> impl IntoView {
                     let can_act = !working.get() && status != ProfileStatus::Archived;
                     let is_active = status == ProfileStatus::Active;
                     let is_suspended = status == ProfileStatus::Suspended;
+                    let tone = profile_tone(&status);
+                    let status_label = format!("{status:?}");
                     view! {
-                        <div style=styles::CARD>
-                            <h3 style="margin: 0;">{p.name.clone()}</h3>
-                            <p>
-                                <span style=styles::PILL>{format!("{:?}", p.status)}</span>
-                            </p>
+                        <Card>
+                            <div style="display: flex; align-items: center; gap: 0.75rem; margin-bottom: 1rem;">
+                                <h3 style="margin: 0; font-size: 1rem; font-weight: 600;">
+                                    {p.name.clone()}
+                                </h3>
+                                <Badge tone=tone>{status_label}</Badge>
+                            </div>
                             <dl style=styles::DL>
-                                <dt style=styles::DT>"Profile id"</dt>
-                                <dd style=styles::MONO>{p.profile_id.to_string()}</dd>
-                                <dt style=styles::DT>"Agency id"</dt>
-                                <dd style=styles::MONO>{p.agency_id.to_string()}</dd>
+                                <FieldRow label="Profile id">
+                                    <span style=styles::MONO>{p.profile_id.to_string()}</span>
+                                </FieldRow>
+                                <FieldRow label="Agency id">
+                                    <span style=styles::MONO>{p.agency_id.to_string()}</span>
+                                </FieldRow>
                             </dl>
-                            <div style="display: flex; gap: 0.5rem; margin-top: 1rem;">
-                                <button
-                                    type="button"
-                                    on:click=move |_| suspend("suspend")
-                                    disabled=move || !can_act || !is_active
-                                    style=styles::BTN
+                            <div style="display: flex; gap: 0.5rem; margin-top: 1.25rem;">
+                                <Btn
+                                    variant=BtnVariant::Secondary
+                                    btn_type="button"
+                                    disabled=Signal::derive(move || !can_act || !is_active)
+                                    on_click={
+                                        let suspend = suspend.clone();
+                                        std::rc::Rc::new(move || suspend("suspend")) as std::rc::Rc<dyn Fn()>
+                                    }
                                 >
                                     "Suspend"
-                                </button>
-                                <button
-                                    type="button"
-                                    on:click=move |_| reactivate("reactivate")
-                                    disabled=move || !can_act || !is_suspended
-                                    style=styles::BTN
+                                </Btn>
+                                <Btn
+                                    variant=BtnVariant::Secondary
+                                    btn_type="button"
+                                    disabled=Signal::derive(move || !can_act || !is_suspended)
+                                    on_click={
+                                        let reactivate = reactivate.clone();
+                                        std::rc::Rc::new(move || reactivate("reactivate")) as std::rc::Rc<dyn Fn()>
+                                    }
                                 >
                                     "Reactivate"
-                                </button>
-                                <button
-                                    type="button"
-                                    on:click=move |_| archive("archive")
-                                    disabled=move || !can_act
-                                    style=styles::BTN_DANGER
+                                </Btn>
+                                <Btn
+                                    variant=BtnVariant::Danger
+                                    btn_type="button"
+                                    disabled=Signal::derive(move || !can_act)
+                                    on_click={
+                                        let archive = archive.clone();
+                                        std::rc::Rc::new(move || archive("archive")) as std::rc::Rc<dyn Fn()>
+                                    }
                                 >
                                     "Archive"
-                                </button>
+                                </Btn>
                             </div>
                             <p style=styles::MUTED>"Archive is terminal."</p>
-                        </div>
+                        </Card>
                     }
                         .into_any()
                 }
