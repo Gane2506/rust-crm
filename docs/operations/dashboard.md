@@ -57,9 +57,10 @@ parameter values). Four layers:
   validated against those allowlists first, so no
   caller-controlled string ever reaches query text.
   Dates and the profile filter travel as bound
-  parameters. Every mutation records an audit event;
-  audit failures are swallowed (fail-loud at the HTTP
-  layer, never fail the operation).
+  parameters. Every mutation records an audit event; an
+  audit-recording failure is discarded in the service
+  (`let _ =`) and never fails the operation — the HTTP
+  handler returns success regardless.
 - **HTTP** (`crates/crm-api/src/dashboard.rs`): 9
   endpoints under `/api/v1` — dashboards CRUD plus
   widget run, and reports create / list / get.
@@ -193,10 +194,10 @@ action names (see `audit-log.md`):
 Reads (`list_dashboards`, `get_dashboard`,
 `list_reports`, `get_report`) and `run_widget` are
 not audited, matching the domain contract — a metric
-execution is a read. Audit is fail-loud at the HTTP
-layer and never fails the operation: a recording
-failure is swallowed in the service so analytics work
-is never blocked by the audit pipeline.
+execution is a read. An audit-recording failure is
+discarded in the service (`let _ =`) and never fails
+the operation: the HTTP handler returns success
+regardless.
 
 ## Seed data
 

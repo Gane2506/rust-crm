@@ -68,8 +68,8 @@ use crm_domain::ids::{ActorId, AgencyId, ClientProfileId, ContactId, GrantId, St
 use crm_domain::profile::{ClientProfile, ProfileStatus};
 use crm_domain::repositories::{
     AssetRepository, CallRepository, ClientProfileRepository, ContactRepository,
-    ContractRepository, DashboardRepository, EmailMessageRepository, EmailThreadRepository,
-    GrantRepository, InvoiceRepository, ProspectPoolRepository, StaffRepository,
+    ContractRepository, EmailMessageRepository, EmailThreadRepository, GrantRepository,
+    InvoiceRepository, ProspectPoolRepository, StaffRepository,
 };
 use crm_domain::security::{Action, Grant, Operation, PasswordCredential, Resource, Scope};
 use crm_domain::services::ActionContext;
@@ -986,14 +986,10 @@ async fn seed_voice(pool: &sqlx::PgPool) -> Result<bool, DomainError> {
 /// demo staff user.
 async fn seed_dashboard(pool: &sqlx::PgPool) -> Result<bool, DomainError> {
     let dashboards = PgDashboardRepository::new(pool.clone());
-    // Idempotency anchor: the agency-level dashboards.
-    if !dashboards.list(None, 1).await?.is_empty() {
-        return Ok(false);
-    }
-
+    let reports = PgReportRepository::new(pool.clone());
     let service = DashboardServiceImpl::new(
         dashboards,
-        PgReportRepository::new(pool.clone()),
+        reports,
         pool.clone(),
         PgAuditService::new(PgAuditRepository::new(pool.clone())),
     );
@@ -1004,15 +1000,30 @@ async fn seed_dashboard(pool: &sqlx::PgPool) -> Result<bool, DomainError> {
         correlation_id: Uuid::new_v4(),
     };
 
-    let dashboard = service
-        .create_dashboard(
-            NewDashboard {
-                name: "Agency overview".to_string(),
-                client_profile_id: None,
-            },
-            &ctx,
-        )
-        .await?;
+    // Idempotency anchor: the specific demo artifacts, not just any
+    // agency-level dashboard — so a retry after a mid-seed failure
+    // recreates the missing pieces instead of skipping them.
+    let mut created = false;
+    let dashboard = match service
+        .list_dashboards(100, &ctx)
+        .await?
+        .into_iter()
+        .find(|d| d.name() == "Agency overview")
+    {
+        Some(existing) => existing,
+        None => {
+            created = true;
+            service
+                .create_dashboard(
+                    NewDashboard {
+                        name: "Agency overview".to_string(),
+                        client_profile_id: None,
+                    },
+                    &ctx,
+                )
+                .await?
+        }
+    };
 
     let contacts_count = MetricDefinition::new(
         MetricEntity::Contact,
@@ -1029,56 +1040,76 @@ async fn seed_dashboard(pool: &sqlx::PgPool) -> Result<bool, DomainError> {
     )
     .expect("demo contacts breakdown metric is valid");
 
-    service
-        .update_dashboard(
-            dashboard.dashboard_id(),
-            UpdateDashboard {
-                name: None,
-                widgets_to_add: vec![
-                    DashboardWidget::new(
-                        "Contacts (30d)".to_string(),
-                        WidgetType::Count,
-                        contacts_count,
-                        WidgetPosition::new(0, 0),
-                    )
-                    .expect("demo count widget is valid"),
-                    DashboardWidget::new(
-                        "Contacts by lifecycle".to_string(),
-                        WidgetType::Breakdown,
-                        contacts_by_lifecycle,
-                        WidgetPosition::new(1, 0),
-                    )
-                    .expect("demo breakdown widget is valid"),
-                ],
-                widget_ids_to_remove: Vec::new(),
-            },
-            &ctx,
-        )
-        .await?;
+    let mut widgets_to_add = Vec::new();
+    for (title, widget_type, metric, position) in [
+        (
+            "Contacts (30d)",
+            WidgetType::Count,
+            contacts_count,
+            WidgetPosition::new(0, 0),
+        ),
+        (
+            "Contacts by lifecycle",
+            WidgetType::Breakdown,
+            contacts_by_lifecycle,
+            WidgetPosition::new(1, 0),
+        ),
+    ] {
+        if !dashboard.widgets().iter().any(|w| w.title() == title) {
+            widgets_to_add.push(
+                DashboardWidget::new(title.to_string(), widget_type, metric, position)
+                    .expect("demo widget is valid"),
+            );
+        }
+    }
+    if !widgets_to_add.is_empty() {
+        service
+            .update_dashboard(
+                dashboard.dashboard_id(),
+                UpdateDashboard {
+                    name: None,
+                    widgets_to_add,
+                    widget_ids_to_remove: Vec::new(),
+                },
+                &ctx,
+            )
+            .await?;
+        created = true;
+    }
 
     let staff = PgStaffRepository::new(pool.clone())
         .find_by_email(DEMO_STAFF_EMAIL)
         .await?
         .expect("demo staff user exists (seed_staff runs first)");
-    service
-        .create_report(
-            NewReport {
-                name: "New contacts by lifecycle".to_string(),
-                owner: staff.staff_id,
-                metric: MetricDefinition::new(
-                    MetricEntity::Contact,
-                    MetricAggregation::count(),
-                    Some("lifecycle".to_string()),
-                    DateRange::Last30Days,
-                )
-                .expect("demo report metric is valid"),
-                parameters: Vec::new(),
-            },
-            &ctx,
-        )
-        .await?;
+    if !service
+        .list_reports(100, &ctx)
+        .await?
+        .iter()
+        .any(|r| r.name() == "New contacts by lifecycle")
+    {
+        service
+            .create_report(
+                NewReport {
+                    name: "New contacts by lifecycle".to_string(),
+                    owner: staff.staff_id,
+                    metric: MetricDefinition::new(
+                        MetricEntity::Contact,
+                        MetricAggregation::count(),
+                        Some("lifecycle".to_string()),
+                        DateRange::Last30Days,
+                    )
+                    .expect("demo report metric is valid"),
+                    parameters: Vec::new(),
+                },
+                &ctx,
+            )
+            .await?;
+        created = true;
+    }
 
-    Ok(true)
+    // The demo dashboard was pre-existing only to make the anchor check
+    // above meaningful; fall through to the return below.
+    Ok(created)
 }
 
 /// Env var gating writes: `CRM_SEED_DEV=1` is the explicit opt-in that
