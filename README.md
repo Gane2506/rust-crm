@@ -11,6 +11,23 @@ backend and a Leptos/WASM frontend. The full product spec is the 38-document
 AI handoff under [`docs/handoff/`](docs/handoff/) (start with `README.md`,
 `TASKS.md` and `RUST_CI_REFERENCE.md` there).
 
+## Screenshots
+
+Real renders of the running app (Leptos/WASM frontend, seeded demo data):
+
+![Login gate](docs/images/screenshots/login.png)
+*Login gate — staff sign in; there is no client login by design.*
+
+![Dashboard shell](docs/images/screenshots/dashboard.png)
+*Dashboard shell — the analytics workstream is still being built, so this
+shows the current placeholder.*
+
+![Contacts](docs/images/screenshots/contacts.png)
+*Contacts — new-contact form and the seeded contact list.*
+
+![Contact detail](docs/images/screenshots/contact-detail.png)
+*Contact detail — lifecycle, sources, and merge history.*
+
 ## Architecture map
 
 ```text
