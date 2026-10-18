@@ -1751,11 +1751,11 @@ pub struct NewPayment {
     pub amount: crate::billing::Money,
 }
 
-/// Domain operations for billing (task 13-BILL-01): invoice lifecycle
+/// Domain operations for billing (task 12-BILL-01): invoice lifecycle
 /// and payment record-keeping.
 ///
 /// All mutations authorize against `Resource::Invoice`
-/// (profile-scoped; the variant lands in task 13-BILL-02 — see the
+/// (profile-scoped; the variant lands in task 12-BILL-02 — see the
 /// [`crate::billing`] module docs) and record an [`AuditEvent`] with
 /// the pinned action name documented on each method.
 pub trait BillingService {
@@ -1811,7 +1811,10 @@ pub trait BillingService {
         ctx: &'a ActionContext,
     ) -> impl Future<Output = Result<crate::billing::Payment, DomainError>> + Send + 'a;
 
-    /// Reverses a recorded payment (idempotent). Records a
+    /// Reverses a recorded payment (idempotent). If the reversal leaves a
+    /// `Paid` invoice with a positive balance, the service reopens it to
+    /// `Issued` via [`Invoice::reopen`](crate::billing::Invoice::reopen).
+    /// Records a
     /// [`BILLING_PAYMENT_REVERSED`](crate::billing::BILLING_PAYMENT_REVERSED)
     /// audit event.
     fn reverse_payment<'a>(

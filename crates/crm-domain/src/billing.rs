@@ -35,9 +35,8 @@
 //!
 //! ## Authorization
 //!
-//! Billing operations authorize against
-//! [`Resource::Invoice`](crate::security::Resource::Invoice),
-//! profile-scoped (the variant lands in task 13-BILL-02 together with
+//! Billing operations authorize against `Resource::Invoice`
+//! (profile-scoped; the variant lands in task 12-BILL-02 together with
 //! the persistence layer).
 //!
 //! ## Audit
@@ -79,12 +78,30 @@ pub const BILLING_PAYMENT_REVERSED: &str = "billing.payment_reversed";
 ///
 /// Minor units keep arithmetic exact (cents, paise, …). Currency is
 /// part of the value: mixing currencies is a [`DomainError::Validation`].
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// `Deserialize` is implemented manually through [`Money::new`] so the
+/// amount/currency invariants hold for deserialized values too.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Money {
     /// Amount in minor units. Never negative.
     amount: i64,
     /// ISO 4217 code: exactly three uppercase ASCII letters.
     currency: String,
+}
+
+impl<'de> serde::Deserialize<'de> for Money {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(serde::Deserialize)]
+        struct RawMoney {
+            amount: i64,
+            currency: String,
+        }
+        let raw = RawMoney::deserialize(deserializer)?;
+        Money::new(raw.amount, raw.currency).map_err(serde::de::Error::custom)
+    }
 }
 
 impl Money {
@@ -458,6 +475,24 @@ impl Invoice {
         Ok(())
     }
 
+    /// Reopens a paid invoice: `Paid → Issued`.
+    ///
+    /// This is the reversal path: when a payment that completed the
+    /// coverage is reversed, the invoice is no longer fully paid, so
+    /// it returns to `Issued` rather than sitting in `Paid` with a
+    /// positive balance. The service calls this from `reverse_payment`
+    /// when `remaining_due` becomes positive after the reversal.
+    pub fn reopen(&mut self) -> Result<(), DomainError> {
+        if self.status != InvoiceStatus::Paid {
+            return Err(DomainError::Validation(
+                "only a paid invoice can be reopened".to_string(),
+            ));
+        }
+        self.status = InvoiceStatus::Issued;
+        self.updated_at = Utc::now();
+        Ok(())
+    }
+
     /// Amount still owed: total minus non-reversed payments.
     ///
     /// Rejects: payments for another invoice; payments in another
@@ -474,7 +509,7 @@ impl Invoice {
     ///     .add_line(
     ///         "Retainer".to_string(),
     ///         1,
-    ///         Money::new(1_0000, "USD".to_string()).expect("valid"),
+    ///         Money::new(10_000, "USD".to_string()).expect("valid"),
     ///     )
     ///     .expect("valid line");
     /// invoice.issue().expect("issue");
@@ -610,7 +645,7 @@ mod tests {
     fn issued_invoice() -> Invoice {
         let mut invoice = draft_invoice();
         invoice
-            .add_line("Retainer".to_string(), 1, usd(1_0000))
+            .add_line("Retainer".to_string(), 1, usd(10_000))
             .expect("valid line");
         invoice.issue().expect("issue");
         invoice
@@ -620,6 +655,34 @@ mod tests {
     fn money_rejects_negative_amount() {
         let err = Money::new(-1, "USD".to_string()).expect_err("negative must be rejected");
         assert!(matches!(err, DomainError::Validation(_)));
+    }
+
+    #[test]
+    fn money_deserialize_rejects_invalid() {
+        // Negative amount via JSON bypasses `Money::new` unless
+        // Deserialize is routed through it.
+        let bad_amount: Result<Money, _> =
+            serde_json::from_str(r#"{"amount": -5000, "currency": "USD"}"#);
+        assert!(bad_amount.is_err());
+        // Lowercase currency is rejected too.
+        let bad_ccy: Result<Money, _> =
+            serde_json::from_str(r#"{"amount": 5000, "currency": "usd"}"#);
+        assert!(bad_ccy.is_err());
+        // Valid JSON round-trips.
+        let ok: Money = serde_json::from_str(r#"{"amount": 5000, "currency": "USD"}"#)
+            .expect("valid money JSON");
+        assert_eq!(ok, usd(5000));
+    }
+
+    #[test]
+    fn invoice_reopen_returns_paid_to_issued() {
+        let mut invoice = issued_invoice();
+        invoice.mark_paid().expect("mark paid");
+        assert_eq!(invoice.status, InvoiceStatus::Paid);
+        invoice.reopen().expect("reopen");
+        assert_eq!(invoice.status, InvoiceStatus::Issued);
+        // Reopening a non-paid invoice is rejected.
+        assert!(invoice.reopen().is_err());
     }
 
     #[test]
@@ -768,8 +831,8 @@ mod tests {
 
     #[test]
     fn remaining_due_tracks_coverage() {
-        let invoice = issued_invoice(); // total 1_0000
-        assert_eq!(invoice.remaining_due(&[]).expect("valid").amount(), 1_0000);
+        let invoice = issued_invoice(); // total 10_000
+        assert_eq!(invoice.remaining_due(&[]).expect("valid").amount(), 10_000);
 
         let p1 = Payment::record(invoice.invoice_id, usd(4_000)).expect("valid");
         assert_eq!(invoice.remaining_due(&[p1]).expect("valid").amount(), 6_000);
@@ -786,7 +849,7 @@ mod tests {
 
     #[test]
     fn remaining_due_rejects_overpayment() {
-        let invoice = issued_invoice(); // total 1_0000
+        let invoice = issued_invoice(); // total 10_000
         let too_much = Payment::record(invoice.invoice_id, usd(1_0001)).expect("valid");
         let err = invoice
             .remaining_due(&[too_much])
@@ -811,8 +874,8 @@ mod tests {
 
     #[test]
     fn full_payment_flow_marks_paid() {
-        let mut invoice = issued_invoice(); // total 1_0000
-        let full = Payment::record(invoice.invoice_id, usd(1_0000)).expect("valid");
+        let mut invoice = issued_invoice(); // total 10_000
+        let full = Payment::record(invoice.invoice_id, usd(10_000)).expect("valid");
         let payments = [full];
         assert_eq!(invoice.remaining_due(&payments).expect("valid").amount(), 0);
         // Service-side flow: coverage confirmed, then transition.

@@ -1022,7 +1022,7 @@ pub trait FeedItemRepository {
     ) -> impl Future<Output = Result<crate::feed::FeedItem, DomainError>> + Send + 'a;
 }
 
-/// Persistence port for invoices (task 13-BILL-01).
+/// Persistence port for invoices (task 12-BILL-01).
 ///
 /// Invoices are updated in place (status transitions, line additions
 /// on drafts); lines and payments have their own ports below.
@@ -1053,7 +1053,7 @@ pub trait InvoiceRepository {
     ) -> impl Future<Output = Result<Vec<crate::billing::Invoice>, DomainError>> + Send + 'a;
 }
 
-/// Persistence port for payments (task 13-BILL-01).
+/// Persistence port for payments (task 12-BILL-01).
 ///
 /// Payments are append-only: `record` inserts, `reverse` flips the
 /// status. There is no delete.

@@ -240,7 +240,6 @@ and merge happens on green CI plus review. Follow along via
 | Form builder | 11-FORM-01… | ✅ 11-FORM-03 done ([#63](https://github.com/Gane2506/rust-crm/issues/63), [#64](https://github.com/Gane2506/rust-crm/pull/64)); **workstream COMPLETE** |
 | Feed | 12-FEED-01… | ✅ 12-FEED-03 done ([#69](https://github.com/Gane2506/rust-crm/issues/69), [#70](https://github.com/Gane2506/rust-crm/pull/70)); **workstream COMPLETE** |
 | Billing | 12-BILL-01… | 🔨 12-BILL-01 in progress |
-| Billing | 12-BILL-01…03 | ⬜ Not started |
 | Contract signing | 13-SIGN-01…03 | ⬜ Not started |
 | Calling | 14-VOICE-01…03 | ⬜ Not started |
 | Analytics and staff | 15-DASH-01…03 | ⬜ Not started |

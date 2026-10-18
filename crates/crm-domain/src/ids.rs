@@ -205,15 +205,15 @@ define_id!(
     FeedItemId
 );
 define_id!(
-    /// Identifies one invoice (task 13-BILL-01).
+    /// Identifies one invoice (task 12-BILL-01).
     InvoiceId
 );
 define_id!(
-    /// Identifies one line on an invoice (task 13-BILL-01).
+    /// Identifies one line on an invoice (task 12-BILL-01).
     InvoiceLineId
 );
 define_id!(
-    /// Identifies one payment record (task 13-BILL-01).
+    /// Identifies one payment record (task 12-BILL-01).
     PaymentId
 );
 

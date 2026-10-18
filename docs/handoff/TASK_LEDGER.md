@@ -66,7 +66,6 @@ Statuses: TODO / IN_PROGRESS / BLOCKED / DONE. Never mark DONE without linked co
 | 11-FORM-01 | TODO | | | |
 | 11-FORM-02 | TODO | | | |
 | 11-FORM-03 | TODO | | | |
-| 12-BILL-01 | TODO | | | |
 | 12-BILL-02 | TODO | | | |
 | 12-BILL-03 | TODO | | | |
 | 13-SIGN-01 | TODO | | | |

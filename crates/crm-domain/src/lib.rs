@@ -39,7 +39,7 @@ pub mod asset;
 /// Tamper-evident audit events and the hash-chain helpers.
 pub mod audit;
 /// Billing domain: invoices and payment records for agency clients
-/// (task 13-BILL-01).
+/// (task 12-BILL-01).
 pub mod billing;
 /// Campaign aggregate: owner context, channel, schedule, delivery state,
 /// steps, prospect pools, opt-outs, attribution and conversions.
