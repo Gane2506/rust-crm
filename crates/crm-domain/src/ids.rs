@@ -216,6 +216,10 @@ define_id!(
     /// Identifies one payment record (task 12-BILL-01).
     PaymentId
 );
+define_id!(
+    /// Identifies one signing template version (task 13-SIGN-01).
+    SigningTemplateId
+);
 
 impl From<StaffId> for ActorId {
     /// Renders a staff member as the actor of an audit event.

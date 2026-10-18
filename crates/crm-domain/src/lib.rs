@@ -73,6 +73,10 @@ pub mod repositories;
 pub mod security;
 /// Service traits (domain operations with authorization and audit).
 pub mod services;
+/// Contract signing domain: Rust-native templates, signing evidence
+/// and the signing service/repository ports (task 13-SIGN-01; extends
+/// the `contract` aggregate from 01-FND-01).
+pub mod signing;
 /// Workflow builder domain: typed visual workflows, triggers,
 /// versioning and the pure simulator (task 10-WORK-01).
 pub mod workflow;

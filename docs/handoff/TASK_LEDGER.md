@@ -42,7 +42,8 @@ Statuses: TODO / IN_PROGRESS / BLOCKED / DONE. Never mark DONE without linked co
 | 12-FEED-03 | DONE | issue #69 / PR #70 (merge `16f45e8`) | | Feed: verify + operationalize (325 tests) |
 | 12-BILL-01 | DONE | issue #71 / PR #73 (merge `d5c9b3a`) | | Billing: define domain and interfaces (353 tests) |
 | 12-BILL-02 | DONE | issue #74 / PR #75 (merge `73bab29`) | | Billing: vertical slice (360 tests) |
-| 12-BILL-03 | IN_PROGRESS | issue #76 / branch `task/12-BILL-03` | | Billing: verify + operationalize |
+| 12-BILL-03 | DONE | issue #76 / PR #77 (merge `52596d4`) | | Billing: verify + operationalize (360 tests) |
+| 13-SIGN-01 | IN_PROGRESS | issue #78 / branch `task/13-SIGN-01` | | Contract signing: define domain and interfaces |
 | 02-DB-02 | TODO | | | |
 | 02-DB-03 | TODO | | | |
 | 03-SEC-01 | TODO | | | |
