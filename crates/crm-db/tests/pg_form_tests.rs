@@ -427,6 +427,16 @@ async fn submit_rejects_answers_for_other_forms() {
         .await
         .expect("add field B");
 
+    // Publish both forms: submissions are only accepted on published forms.
+    service
+        .publish_form(form_a.form_id, &ctx)
+        .await
+        .expect("publish form A");
+    service
+        .publish_form(form_b.form_id, &ctx)
+        .await
+        .expect("publish form B");
+
     // Submitting to form B with form A's required field answered →
     // form B's validation must not leak across forms.
     let cross = service
@@ -559,6 +569,12 @@ async fn submission_contact_attribution_persists() {
         )
         .await
         .expect("create form");
+
+    // Publish the form: submissions are only accepted on published forms.
+    service
+        .publish_form(form.form_id, &ctx)
+        .await
+        .expect("publish form");
 
     // Insert a contact to attribute the submission to.
     let contact_id = sqlx::query_scalar::<_, uuid::Uuid>(

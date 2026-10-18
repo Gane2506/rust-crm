@@ -345,6 +345,78 @@ task ships, not after:
   sees every workflow definition, same as contacts and
   email. No field-level encryption is planned.
 
+## Form builder surface
+
+The form builder (tasks 11-FORM-01 through 11-FORM-03)
+collects end-client data through staff-composed typed forms.
+The distinguishing trait: unlike workflows (definitions),
+forms ingest *untrusted input* — answers authored by
+outsiders — so the submission path is the surface that
+matters:
+
+- **Submission intake abuse / spam.** Today's intake is
+  staff-authenticated (bearer <redacted> + `form/create` grant),
+  so a spammer must first be an authenticated staffer —
+  abuse collapses to insider threat, which grants and the
+  audit log cover. If a public intake endpoint ships later
+  (anonymous link the public can fill), that endpoint needs
+  its own posture *before* it ships: per-form secrets or
+  CAPTCHA, rate limiting on the login pattern (per-IP +
+  per-form buckets), and abuse alerting. Do not let
+  staff-authenticated intake imply the public surface is
+  free.
+- **Answer injection.** Validate-then-persist means invalid
+  answers never reach storage: unknown fields, cross-form
+  fields, missing required answers, and wrongly-typed
+  values are all `422` before any write. But per-type
+  validation is a *structural* check, not sanitization:
+  `TextField` accepts arbitrary text, so answers can carry
+  HTML, script payloads, or control characters into
+  storage. Anything that renders answers (a future form
+  UI, exports, email templates) must escape them at
+  render time — the API returns raw values. Treat stored
+  answers as untrusted input forever, not as validated-safe
+  just because they passed `validate_value`.
+- **Select-option bypass.** Option membership is checked
+  against the form's *current* field set at submit time, in
+  the service — not trusted from the client's copy of the
+  options. Editing a published form's options changes what
+  future submissions accept; old submissions keep their
+  historical answers. The ordering matters: the service
+  loads fields fresh per submission, so a tampered
+  client-side option list cannot widen what is accepted.
+- **Field config injection.** Field `config` JSONB is
+  operator-controlled (options, labels, future per-type
+  settings). The domain validates shape (non-null; select
+  requires a non-empty `options` string array) but the
+  payload is otherwise opaque. Today the only consumers
+  are the field constructor and submit-time validation —
+  neither evaluates config as code. Any future execution
+  consumer (conditional logic, webhooks on submit, dynamic
+  rendering) must treat config as untrusted at the
+  consumption boundary.
+- **PII in answers at rest.** Answers JSONB holds
+  end-client PII (names, emails, phones) in plaintext,
+  keyed by field id. Access is gated by profile-scoped
+  `Form` grants — but anyone with database read access
+  sees every answer, same as contacts and email. There
+  is no retention policy yet: submissions persist
+  indefinitely. Operators handling GDPR-style erasure
+  requests must delete at the submission row level
+  (`form_submissions`), since answers live inside the
+  row, not in a separate table. Field removal does not
+  rewrite old submissions — historical answers survive
+  the field, which is correct for auditability but must
+  be accounted for in any erasure flow.
+- **Cross-tenant answer leakage.** A submission's
+  `client_profile_id` is inherited from its form, never
+  from the request body; the service enforces the
+  caller's scope on the form before validating. The
+  remaining leakage vector is *operator error*: a staffer
+  with grants on two profiles could read both profiles'
+  submissions. Grants are per-profile by design; keep
+  them least-privilege.
+
 ## Frontend (SPA) security posture
 
 The Leptos frontend (`crates/crm-web`, task 06-UI) is a thin client:
