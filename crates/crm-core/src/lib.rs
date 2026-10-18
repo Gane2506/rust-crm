@@ -90,6 +90,12 @@ pub mod dashboard;
 /// the provider port over the [`voice`](crm_domain::voice) domain.
 pub mod voice;
 
+/// Admin and operations service: staff invitations and lifecycle,
+/// role assignments, versioned agency settings, maintenance mode,
+/// system health, backups, data exports, upgrades and the first-run
+/// installer over the [`admin`](crm_domain::admin) domain.
+pub mod admin;
+
 /// Errors raised by [`crm-core`](crate) utilities.
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum CoreError {

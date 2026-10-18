@@ -24,6 +24,7 @@
 //! [`email`] holds the SQLx repositories for the Email vertical slice:
 //! messages, threads and attachments.
 
+pub mod admin;
 pub mod audit_log;
 pub mod auth;
 pub mod billing;
