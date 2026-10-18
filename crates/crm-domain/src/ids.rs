@@ -220,6 +220,10 @@ define_id!(
     /// Identifies one signing template version (task 13-SIGN-01).
     SigningTemplateId
 );
+define_id!(
+    /// Identifies one call (task 14-VOICE-01).
+    CallId
+);
 
 impl From<StaffId> for ActorId {
     /// Renders a staff member as the actor of an audit event.

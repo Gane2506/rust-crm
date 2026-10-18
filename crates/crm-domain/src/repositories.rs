@@ -1140,3 +1140,44 @@ pub trait SigningTemplateRepository {
         limit: u64,
     ) -> impl Future<Output = Result<Vec<crate::signing::SigningTemplate>, DomainError>> + Send + 'a;
 }
+
+/// Persistence port for calls (task 14-VOICE-01).
+///
+/// Calls are updated in place as the lifecycle advances
+/// (`Initiated → Ringing → InProgress → Completed`); state
+/// transitions themselves are validated by the domain before the
+/// update is stored.
+pub trait CallRepository {
+    /// Persists a newly initiated call.
+    fn create<'a>(
+        &'a self,
+        call: crate::voice::Call,
+    ) -> impl Future<Output = Result<crate::voice::Call, DomainError>> + Send + 'a;
+
+    /// Fetches a call by id.
+    fn get<'a>(
+        &'a self,
+        call_id: crate::ids::CallId,
+    ) -> impl Future<Output = Result<crate::voice::Call, DomainError>> + Send + 'a;
+
+    /// Persists call changes (status transitions, recording state,
+    /// provider reference).
+    fn update<'a>(
+        &'a self,
+        call: crate::voice::Call,
+    ) -> impl Future<Output = Result<crate::voice::Call, DomainError>> + Send + 'a;
+
+    /// Lists calls for one client profile, newest first.
+    fn list_by_profile<'a>(
+        &'a self,
+        client_profile_id: crate::ids::ClientProfileId,
+        limit: u64,
+    ) -> impl Future<Output = Result<Vec<crate::voice::Call>, DomainError>> + Send + 'a;
+
+    /// Lists calls for one contact, newest first.
+    fn list_by_contact<'a>(
+        &'a self,
+        contact_id: crate::ids::ContactId,
+        limit: u64,
+    ) -> impl Future<Output = Result<Vec<crate::voice::Call>, DomainError>> + Send + 'a;
+}
