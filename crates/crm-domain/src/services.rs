@@ -2199,6 +2199,7 @@ pub trait DashboardService {
 /// * system operations (maintenance, backups, upgrades, exports,
 ///   installation) require [`crate::security::Resource::System`]
 ///   with [`crate::security::Operation::Manage`] at agency scope.
+///
 /// Reads require the matching
 /// [`crate::security::Operation::Read`]. Client-profile
 /// scopes never authorize admin operations — admin is agency-wide by
