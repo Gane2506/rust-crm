@@ -299,29 +299,72 @@ pub fn compare_feed_items(a: &FeedItem, b: &FeedItem) -> Ordering {
 }
 
 /// Read parameters for a feed listing.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// Construct via [`FeedQuery::new`] — the fields are private so the
+/// `limit` invariant (positive, capped) holds for deserialized values
+/// too: `Deserialize` is implemented manually through [`FeedQuery::new`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct FeedQuery {
-    /// Maximum number of items to return. Must be positive.
-    pub limit: u64,
+    /// Maximum number of items to return. Positive, at most
+    /// [`MAX_FEED_LIMIT`].
+    limit: u64,
     /// Whether hidden items are included (default reads exclude them).
-    pub include_hidden: bool,
+    include_hidden: bool,
     /// Whether only unread items are returned.
-    pub unread_only: bool,
+    unread_only: bool,
+}
+
+/// Upper bound on a feed page, so a caller cannot request an unbounded
+/// result set.
+pub const MAX_FEED_LIMIT: u64 = 10_000;
+
+impl<'de> serde::Deserialize<'de> for FeedQuery {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(serde::Deserialize)]
+        struct RawQuery {
+            limit: u64,
+            #[serde(default)]
+            include_hidden: bool,
+            #[serde(default)]
+            unread_only: bool,
+        }
+        let raw = RawQuery::deserialize(deserializer)?;
+        FeedQuery::new(raw.limit, raw.include_hidden, raw.unread_only)
+            .map_err(serde::de::Error::custom)
+    }
 }
 
 impl FeedQuery {
-    /// Creates a query, rejecting a zero `limit`.
+    /// Creates a query, rejecting a zero or over-large `limit`.
     pub fn new(limit: u64, include_hidden: bool, unread_only: bool) -> Result<Self, DomainError> {
-        if limit == 0 {
-            return Err(DomainError::Validation(
-                "feed query limit must be positive".to_string(),
-            ));
+        if limit == 0 || limit > MAX_FEED_LIMIT {
+            return Err(DomainError::Validation(format!(
+                "feed query limit must be between 1 and {MAX_FEED_LIMIT}"
+            )));
         }
         Ok(Self {
             limit,
             include_hidden,
             unread_only,
         })
+    }
+
+    /// Maximum number of items to return.
+    pub fn limit(&self) -> u64 {
+        self.limit
+    }
+
+    /// Whether hidden items are included.
+    pub fn include_hidden(&self) -> bool {
+        self.include_hidden
+    }
+
+    /// Whether only unread items are returned.
+    pub fn unread_only(&self) -> bool {
+        self.unread_only
     }
 
     /// Pure predicate: whether `item` survives this query's filters.
