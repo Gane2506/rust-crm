@@ -28,10 +28,13 @@
 
 use uuid::Uuid;
 
+use std::collections::HashMap;
+
 use crm_core::billing::BillingServiceImpl;
 use crm_core::campaign::CampaignServiceImpl;
 use crm_core::email::{EmailServiceImpl, StubEmailProvider};
 use crm_core::memory::ContactServiceImpl;
+use crm_core::signing::SigningServiceImpl;
 use crm_db::auth::hash_password;
 use crm_db::billing::{PgInvoiceRepository, PgPaymentRepository};
 use crm_db::campaign::{
@@ -44,25 +47,28 @@ use crm_db::email::{
 use crm_db::postgres::{
     PgAuditRepository, PgAuditService, PgContactRepository, PgGrantRepository, PgStaffRepository,
 };
+use crm_db::signing::{PgContractRepository, PgSigningTemplateRepository};
 use crm_db::{run_migrations, DATABASE_URL_ENV, DATABASE_URL_EXAMPLE};
 use crm_domain::asset::Asset;
 use crm_domain::audit::ActorKind;
 use crm_domain::billing::Money;
 use crm_domain::campaign::{Channel as CampaignChannel, OptOutChannel, OwnerContext, StepKind};
+use crm_domain::contract::PaymentRequirement;
 use crm_domain::email::InboundThreadHints;
 use crm_domain::error::DomainError;
 use crm_domain::ids::{ActorId, AgencyId, ClientProfileId, ContactId, GrantId, StaffId};
 use crm_domain::profile::{ClientProfile, ProfileStatus};
 use crm_domain::repositories::{
-    AssetRepository, ClientProfileRepository, ContactRepository, EmailMessageRepository,
-    EmailThreadRepository, GrantRepository, InvoiceRepository, ProspectPoolRepository,
-    StaffRepository,
+    AssetRepository, ClientProfileRepository, ContactRepository, ContractRepository,
+    EmailMessageRepository, EmailThreadRepository, GrantRepository, InvoiceRepository,
+    ProspectPoolRepository, StaffRepository,
 };
 use crm_domain::security::{Action, Grant, Operation, PasswordCredential, Resource, Scope};
 use crm_domain::services::ActionContext;
 use crm_domain::services::{
     BillingService, CampaignService, ContactService, EmailService, InboundEmail, NewCampaign,
-    NewCampaignStep, NewContact, NewEmailMessage, NewInvoice, NewInvoiceLine, NewPayment,
+    NewCampaignStep, NewContact, NewContract, NewEmailMessage, NewInvoice, NewInvoiceLine,
+    NewPayment, NewSigningTemplate, SigningService,
 };
 
 /// Demo tenant also used by the `crm-web` vertical slice until real
@@ -857,6 +863,61 @@ async fn seed_billing(pool: &sqlx::PgPool) -> Result<bool, DomainError> {
     Ok(true)
 }
 
+/// Seeds a demo signing template and a draft contract on the demo
+/// profile through the real `SigningServiceImpl`. Idempotent: skipped
+/// when any contracts already exist on the demo profile.
+async fn seed_signing(pool: &sqlx::PgPool) -> Result<bool, DomainError> {
+    let profile =
+        ClientProfileId::from(Uuid::parse_str(DEMO_PROFILE_ID).expect("demo profile id parses"));
+    let contracts = PgContractRepository::new(pool.clone());
+    // Idempotency anchor: the profile's contracts.
+    if !contracts.list_for_client(profile, 1).await?.is_empty() {
+        return Ok(false);
+    }
+
+    let service = SigningServiceImpl::new(
+        contracts,
+        PgSigningTemplateRepository::new(pool.clone()),
+        PgAuditService::new(PgAuditRepository::new(pool.clone())),
+    );
+    let ctx = ActionContext {
+        actor_kind: ActorKind::System,
+        actor_id: ActorId::from(Uuid::nil()),
+        client_profile_id: Some(profile),
+        correlation_id: Uuid::new_v4(),
+    };
+
+    let template = service
+        .create_template(
+            NewSigningTemplate {
+                name: "MSA".to_string(),
+                body: "Master Services Agreement between {{agency_name}} and {{client_name}}.\
+                       \n\nServices begin {{start_date}}."
+                    .to_string(),
+            },
+            &ctx,
+        )
+        .await?;
+    let mut variables = HashMap::new();
+    variables.insert("agency_name".to_string(), "Acme Agency".to_string());
+    variables.insert("client_name".to_string(), "Demo Client".to_string());
+    variables.insert("start_date".to_string(), "2026-11-01".to_string());
+    service
+        .create_contract(
+            NewContract {
+                client_profile_id: profile,
+                template_id: template.template_id,
+                variables,
+                payment_requirement: PaymentRequirement::None,
+                signers: vec![("Demo Signer".to_string(), "signer@example.com".to_string())],
+            },
+            &ctx,
+        )
+        .await?;
+
+    Ok(true)
+}
+
 /// Env var gating writes: `CRM_SEED_DEV=1` is the explicit opt-in that
 /// lets this example write to the database.
 const SEED_DEV_ENV: &str = "CRM_SEED_DEV";
@@ -1015,6 +1076,46 @@ async fn seed_staff(pool: &sqlx::PgPool, agency_id: AgencyId) -> Result<bool, Do
             )
             .await?;
     }
+    // Grants for the contract signing slice (task 13-SIGN-02):
+    // contracts on the demo profile, so the demo user can try the
+    // signing endpoints after logging in.
+    for (resource, operation) in [
+        (Resource::Contract, Operation::Read),
+        (Resource::Contract, Operation::Create),
+        (Resource::Contract, Operation::Update),
+    ] {
+        grant_repo
+            .assign(
+                user.staff_id,
+                Grant {
+                    grant_id: GrantId::new(),
+                    action: Action {
+                        resource,
+                        operation,
+                    },
+                    scope,
+                },
+            )
+            .await?;
+    }
+    // Templates are agency-scoped, so the demo user also gets
+    // agency-level contract grants to manage signing templates.
+    let agency_scope = Scope::Agency { agency_id };
+    for operation in [Operation::Read, Operation::Create] {
+        grant_repo
+            .assign(
+                user.staff_id,
+                Grant {
+                    grant_id: GrantId::new(),
+                    action: Action {
+                        resource: Resource::Contract,
+                        operation,
+                    },
+                    scope: agency_scope,
+                },
+            )
+            .await?;
+    }
     Ok(true)
 }
 
@@ -1052,6 +1153,7 @@ async fn run() -> Result<(), String> {
         println!("  10. seed demo form (published, 3 fields, 1 reviewed submission) (idempotent)");
         println!("  11. seed demo feed items (pinned, normal, read, hidden) (idempotent)");
         println!("  12. seed demo invoice (issued, 2 lines, partial payment) (idempotent)");
+        println!("  13. seed demo signing template + draft contract (idempotent)");
         return Ok(());
     }
 
@@ -1133,6 +1235,14 @@ async fn run() -> Result<(), String> {
         println!("seed complete: demo invoice (issued, 2 lines, partial payment) created");
     } else {
         println!("seed complete: demo invoice already present");
+    }
+    if seed_signing(&pool)
+        .await
+        .map_err(|error| format!("seed signing: {error}"))?
+    {
+        println!("seed complete: demo signing template + draft contract created");
+    } else {
+        println!("seed complete: demo contract already present");
     }
     println!("dev login: email {DEMO_STAFF_EMAIL}, password {DEMO_STAFF_PASSWORD} (local only)");
     Ok(())
