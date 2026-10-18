@@ -236,6 +236,26 @@ define_id!(
     /// Identifies one saved report (task 15-DASH-01).
     ReportId
 );
+define_id!(
+    /// Identifies one staff invitation (task 16-ADMIN-01).
+    InvitationId
+);
+define_id!(
+    /// Identifies one role assignment to a staff member (task 16-ADMIN-01).
+    RoleAssignmentId
+);
+define_id!(
+    /// Identifies one backup record (task 16-ADMIN-01).
+    BackupId
+);
+define_id!(
+    /// Identifies one data export (task 16-ADMIN-01).
+    ExportId
+);
+define_id!(
+    /// Identifies one system upgrade (task 16-ADMIN-01).
+    UpgradeId
+);
 
 impl From<StaffId> for ActorId {
     /// Renders a staff member as the actor of an audit event.
@@ -306,6 +326,11 @@ mod tests {
         assert_id_round_trip(InvoiceId::new());
         assert_id_round_trip(InvoiceLineId::new());
         assert_id_round_trip(PaymentId::new());
+        assert_id_round_trip(InvitationId::new());
+        assert_id_round_trip(RoleAssignmentId::new());
+        assert_id_round_trip(BackupId::new());
+        assert_id_round_trip(ExportId::new());
+        assert_id_round_trip(UpgradeId::new());
     }
 
     #[test]

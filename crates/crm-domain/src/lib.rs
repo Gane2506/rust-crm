@@ -32,6 +32,10 @@
 #![warn(missing_docs)]
 #![deny(unsafe_code)]
 
+/// Admin and operations domain: staff administration, agency settings,
+/// maintenance, backups, upgrades, exports, installation and the
+/// health summary (task 16-ADMIN-01).
+pub mod admin;
 /// Agent action records: delegated authority, authorization and outcome.
 pub mod agent;
 /// Asset aggregate: file/media attachments owned by a client profile.
@@ -87,6 +91,18 @@ pub mod voice;
 /// versioning and the pure simulator (task 10-WORK-01).
 pub mod workflow;
 
+pub use admin::{
+    summarize_health, AgencySettings, AssignmentStatus, BackupRecord, BackupStatus, DataExport,
+    ExportFormat, ExportStatus, Installation, InstallationState, InvitationStatus, MaintenanceMode,
+    RoleAssignment, StaffInvitation, SystemHealthSummary, SystemUpgrade, UpgradeStatus,
+    ADMIN_BACKUP_COMPLETED, ADMIN_BACKUP_FAILED, ADMIN_BACKUP_STARTED, ADMIN_EXPORT_FAILED,
+    ADMIN_EXPORT_READY, ADMIN_EXPORT_REQUESTED, ADMIN_INSTALLATION_COMPLETED,
+    ADMIN_INVITATION_ACCEPTED, ADMIN_INVITATION_EXPIRED, ADMIN_INVITATION_REVOKED,
+    ADMIN_MAINTENANCE_DISABLED, ADMIN_MAINTENANCE_ENABLED, ADMIN_ROLE_ASSIGNED, ADMIN_ROLE_REVOKED,
+    ADMIN_SETTINGS_UPDATED, ADMIN_STAFF_DISABLED, ADMIN_STAFF_INVITED, ADMIN_STAFF_REACTIVATED,
+    ADMIN_UPGRADE_COMPLETED, ADMIN_UPGRADE_FAILED, ADMIN_UPGRADE_ROLLED_BACK,
+    ADMIN_UPGRADE_STARTED, MAX_AGENCY_NAME_LEN, MAX_MAINTENANCE_REASON_LEN,
+};
 pub use agent::AgentAction;
 pub use asset::{Asset, AssetKind, AssetStatus};
 pub use audit::{AuditEvent, SecurityEvent};

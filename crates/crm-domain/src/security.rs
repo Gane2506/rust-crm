@@ -443,6 +443,14 @@ pub enum Resource {
     /// Saved, parameterized metric queries (task 15-DASH-02).
     /// Immutable once created; covers create, read, and list.
     Report,
+    /// Agency-level configuration (task 16-ADMIN-01). Covers read and
+    /// update; every update is versioned and audited. Always
+    /// agency-scoped, never client-profile-scoped.
+    AgencySettings,
+    /// System-level operations (task 16-ADMIN-01): maintenance mode,
+    /// backups, upgrades, data exports and installation state. Always
+    /// agency-scoped, never client-profile-scoped.
+    System,
 }
 
 /// Operations on a resource.
