@@ -746,6 +746,8 @@ fn resource_as_str(resource: Resource) -> &'static str {
         Resource::FeedItem => "feed_item",
         Resource::Invoice => "invoice",
         Resource::Call => "call",
+        Resource::Dashboard => "dashboard",
+        Resource::Report => "report",
     }
 }
 
@@ -769,6 +771,8 @@ fn resource_from_str(raw: &str) -> Result<Resource, DomainError> {
         "feed_item" => Ok(Resource::FeedItem),
         "invoice" => Ok(Resource::Invoice),
         "call" => Ok(Resource::Call),
+        "dashboard" => Ok(Resource::Dashboard),
+        "report" => Ok(Resource::Report),
         other => Err(DomainError::Validation(format!(
             "storage error: unknown resource '{other}'"
         ))),

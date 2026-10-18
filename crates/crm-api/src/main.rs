@@ -33,6 +33,7 @@ mod auth;
 mod billing;
 mod campaigns;
 mod contacts;
+mod dashboard;
 mod emails;
 mod feed;
 mod forms;
@@ -540,6 +541,25 @@ where
             "/v1/calls/{id}/recordings/stop",
             post(voice::stop_recording::<R, A, I>),
         )
+        .route(
+            "/v1/dashboards",
+            post(dashboard::create_dashboard::<R, A, I>).get(dashboard::list_dashboards::<R, A, I>),
+        )
+        .route(
+            "/v1/dashboards/{id}",
+            get(dashboard::get_dashboard::<R, A, I>)
+                .patch(dashboard::update_dashboard::<R, A, I>)
+                .delete(dashboard::delete_dashboard::<R, A, I>),
+        )
+        .route(
+            "/v1/dashboards/{id}/widgets/{widget_id}/run",
+            post(dashboard::run_widget::<R, A, I>),
+        )
+        .route(
+            "/v1/reports",
+            post(dashboard::create_report::<R, A, I>).get(dashboard::list_reports::<R, A, I>),
+        )
+        .route("/v1/reports/{id}", get(dashboard::get_report::<R, A, I>))
         .fallback(not_found);
 
     // When authentication is configured (the Postgres-backed server), the

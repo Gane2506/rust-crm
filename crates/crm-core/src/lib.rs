@@ -81,6 +81,11 @@ pub mod billing;
 /// [`contract`](crm_domain::contract) aggregate.
 pub mod signing;
 
+/// Analytics service: saved dashboards, metric widgets executed
+/// against the entity tables, and saved reports over the
+/// [`dashboard`](crm_domain::dashboard) domain.
+pub mod dashboard;
+
 /// Calling service: call lifecycle, consent-gated recordings, and
 /// the provider port over the [`voice`](crm_domain::voice) domain.
 pub mod voice;

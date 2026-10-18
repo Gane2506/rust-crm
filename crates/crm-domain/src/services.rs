@@ -2138,6 +2138,16 @@ pub trait DashboardService {
         ctx: &'a ActionContext,
     ) -> impl Future<Output = Result<crate::dashboard::Dashboard, DomainError>> + Send + 'a;
 
+    /// Deletes a dashboard (and its widgets). Records a
+    /// [`DASHBOARD_DASHBOARD_DELETED`](crate::dashboard::DASHBOARD_DASHBOARD_DELETED)
+    /// audit event. (Added in task 15-DASH-02: the 15-DASH-01 trait
+    /// omitted dashboard deletion, which the CRUD surface needs.)
+    fn delete_dashboard<'a>(
+        &'a self,
+        dashboard_id: crate::ids::DashboardId,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<(), DomainError>> + Send + 'a;
+
     /// Lists dashboards for the context's scope, newest first.
     fn list_dashboards<'a>(
         &'a self,
