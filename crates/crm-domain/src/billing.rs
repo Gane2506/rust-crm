@@ -35,9 +35,10 @@
 //!
 //! ## Authorization
 //!
-//! Billing operations authorize against `Resource::Invoice`
-//! (profile-scoped; the variant lands in task 12-BILL-02 together with
-//! the persistence layer).
+//! Billing operations authorize against
+//! [`Resource::Invoice`](crate::security::Resource::Invoice)
+//! (profile-scoped; landed in task 12-BILL-02 together with the
+//! persistence layer).
 //!
 //! ## Audit
 //!

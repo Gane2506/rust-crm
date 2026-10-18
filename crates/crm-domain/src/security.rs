@@ -427,6 +427,10 @@ pub enum Resource {
     /// 12-FEED-02). Covers feed reads and item annotations
     /// (pin, hide, mark read); item content is write-once.
     FeedItem,
+    /// Invoices and payment records inside a client profile (task
+    /// 12-BILL-02). Covers the invoice lifecycle (issue, void),
+    /// draft-only line items, and payment coverage (record, reverse).
+    Invoice,
 }
 
 /// Operations on a resource.

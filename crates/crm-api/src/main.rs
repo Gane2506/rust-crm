@@ -30,6 +30,7 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 mod assets;
 mod audit;
 mod auth;
+mod billing;
 mod campaigns;
 mod contacts;
 mod emails;
@@ -460,6 +461,35 @@ where
         )
         .route("/v1/feed/{id}/pin", post(feed::pin_feed_item::<R, A, I>))
         .route("/v1/feed/{id}/hide", post(feed::hide_feed_item::<R, A, I>))
+        .route(
+            "/v1/invoices",
+            post(billing::create_invoice::<R, A, I>).get(billing::list_invoices::<R, A, I>),
+        )
+        .route("/v1/invoices/{id}", get(billing::get_invoice::<R, A, I>))
+        .route(
+            "/v1/invoices/{id}/lines",
+            post(billing::add_invoice_line::<R, A, I>),
+        )
+        .route(
+            "/v1/invoices/{id}/issue",
+            post(billing::issue_invoice::<R, A, I>),
+        )
+        .route(
+            "/v1/invoices/{id}/void",
+            post(billing::void_invoice::<R, A, I>),
+        )
+        .route(
+            "/v1/invoices/{id}/balance",
+            get(billing::invoice_balance::<R, A, I>),
+        )
+        .route(
+            "/v1/invoices/{id}/payments",
+            post(billing::record_payment::<R, A, I>).get(billing::list_payments::<R, A, I>),
+        )
+        .route(
+            "/v1/payments/{id}/reverse",
+            post(billing::reverse_payment::<R, A, I>),
+        )
         .fallback(not_found);
 
     // When authentication is configured (the Postgres-backed server), the
