@@ -77,6 +77,9 @@ pub mod services;
 /// and the signing service/repository ports (task 13-SIGN-01; extends
 /// the `contract` aggregate from 01-FND-01).
 pub mod signing;
+/// Calling domain: calls, consent-gated recordings, the provider
+/// port and the voice service/repository ports (task 14-VOICE-01).
+pub mod voice;
 /// Workflow builder domain: typed visual workflows, triggers,
 /// versioning and the pure simulator (task 10-WORK-01).
 pub mod workflow;
@@ -114,6 +117,11 @@ pub use jev::{
 pub use profile::{ClientProfile, ProfileStatus};
 pub use security::{
     Action, Delegation, Grant, Operation, Resource, Role, Scope, Session, SessionToken, StaffUser,
+};
+pub use voice::{
+    Call, CallDirection, CallLog, CallRecording, CallStatus, PhoneNumber, RecordingConsent,
+    VoiceProvider, VOICE_CALL_ANSWERED, VOICE_CALL_ENDED, VOICE_CALL_PLACED,
+    VOICE_RECORDING_STARTED, VOICE_RECORDING_STOPPED,
 };
 pub use workflow::{
     SimulationStep, SimulationStepStatus, SimulationTrace, Simulator, Trigger, TriggerType,

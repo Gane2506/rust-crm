@@ -1969,3 +1969,94 @@ pub trait SigningService {
         ctx: &'a ActionContext,
     ) -> impl Future<Output = Result<crate::signing::SigningTemplate, DomainError>> + Send + 'a;
 }
+
+/// Input for [`VoiceService::place_call`]: dialing a contact.
+#[derive(Debug, Clone)]
+pub struct NewCall {
+    /// The client profile this call belongs to.
+    pub client_profile_id: crate::ids::ClientProfileId,
+    /// The contact on the other end, when known.
+    pub contact_id: Option<crate::ids::ContactId>,
+    /// Which way the call goes.
+    pub direction: crate::voice::CallDirection,
+    /// The dialing party.
+    pub from: crate::voice::PhoneNumber,
+    /// The dialed party.
+    pub to: crate::voice::PhoneNumber,
+}
+
+/// Input for [`VoiceService::start_recording`]: consent for recording.
+#[derive(Debug, Clone)]
+pub struct NewRecording {
+    /// The call to record.
+    pub call_id: crate::ids::CallId,
+    /// The called party's consent decision.
+    pub consent: crate::voice::RecordingConsent,
+}
+
+/// Domain operations for calling (task 14-VOICE-01).
+///
+/// `place_call` dials via the injected
+/// [`VoiceProvider`](crate::voice::VoiceProvider); the rest of the
+/// methods advance the [`Call`](crate::voice::Call) lifecycle. All
+/// mutations authorize against `Resource::Call` (profile-scoped; the
+/// variant lands in task 14-VOICE-02 — see the
+/// [`crate::voice`] module docs) and record an [`AuditEvent`] with
+/// a pinned action name.
+pub trait VoiceService {
+    /// Places an outbound call (`→ Initiated`). Records a
+    /// [`VOICE_CALL_PLACED`](crate::voice::VOICE_CALL_PLACED)
+    /// audit event.
+    fn place_call<'a>(
+        &'a self,
+        input: NewCall,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<crate::voice::Call, DomainError>> + Send + 'a;
+
+    /// Answers a ringing call (`Ringing → InProgress`). Records a
+    /// [`VOICE_CALL_ANSWERED`](crate::voice::VOICE_CALL_ANSWERED)
+    /// audit event.
+    fn answer_call<'a>(
+        &'a self,
+        call_id: crate::ids::CallId,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<crate::voice::Call, DomainError>> + Send + 'a;
+
+    /// Ends a call, moving it to any terminal status the domain
+    /// allows from its current state. Records a
+    /// [`VOICE_CALL_ENDED`](crate::voice::VOICE_CALL_ENDED)
+    /// audit event.
+    fn end_call<'a>(
+        &'a self,
+        call_id: crate::ids::CallId,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<crate::voice::Call, DomainError>> + Send + 'a;
+
+    /// Captures recording consent and starts recording. Rejects
+    /// anything but [`RecordingConsent::Granted`](crate::voice::RecordingConsent::Granted).
+    /// Records a
+    /// [`VOICE_RECORDING_STARTED`](crate::voice::VOICE_RECORDING_STARTED)
+    /// audit event.
+    fn start_recording<'a>(
+        &'a self,
+        input: NewRecording,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<crate::voice::Call, DomainError>> + Send + 'a;
+
+    /// Stops recording, attaching the audio asset. Records a
+    /// [`VOICE_RECORDING_STOPPED`](crate::voice::VOICE_RECORDING_STOPPED)
+    /// audit event.
+    fn stop_recording<'a>(
+        &'a self,
+        call_id: crate::ids::CallId,
+        asset_id: crate::ids::AssetId,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<crate::voice::Call, DomainError>> + Send + 'a;
+
+    /// Lists calls for the context's client profile, newest first.
+    fn list_calls<'a>(
+        &'a self,
+        limit: u64,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<Vec<crate::voice::Call>, DomainError>> + Send + 'a;
+}
