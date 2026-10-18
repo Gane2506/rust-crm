@@ -17,8 +17,20 @@ use crate::api::{
     create_contact, demo_profile_id, fetch_contact, fetch_contacts, merge_contacts, ApiError,
     ContactListResponse, CreateContactRequest, MergeContactsRequest,
 };
-use crate::components::{EmptyState, ErrorAlert, Loading, OkAlert, PageHeader};
+use crate::components::{EmptyState, ErrorAlert, Loading, OkAlert};
 use crate::styles;
+use crate::ui::components::{Badge, Btn, BtnVariant, Card, FieldRow, HoverTr, PageHeader, Tone};
+
+/// Maps a contact lifecycle to its badge tone.
+fn lifecycle_tone(lifecycle: &crm_domain::contact::Lifecycle) -> Tone {
+    use crm_domain::contact::Lifecycle;
+    match lifecycle {
+        Lifecycle::Prospect => Tone::Amber,
+        Lifecycle::Qualified => Tone::Blue,
+        Lifecycle::Customer => Tone::Green,
+        Lifecycle::Archived => Tone::Gray,
+    }
+}
 
 /// Contacts list page: fetch-on-mount list plus the create form.
 ///
@@ -45,11 +57,13 @@ pub fn ContactsPage(token: String) -> impl IntoView {
     let retry = move || reload.update(|n| *n = n.wrapping_add(1));
 
     view! {
-        <section aria-label="Contacts" style=styles::SECTION>
-            <PageHeader title="Contacts" />
-            <p>
-                <A href="/contacts/merge">"Merge duplicate contacts"</A>
-            </p>
+        <section aria-label="Contacts">
+            <PageHeader
+                title="Contacts"
+                description="People and companies the agency works with."
+            >
+                <A href="/contacts/merge" attr:style=styles::BTN>"Merge duplicates"</A>
+            </PageHeader>
             <ContactForm token={token.clone()} on_created=move || reload.update(|n| *n = n.wrapping_add(1)) />
             <h3 style=styles::H3>"Contact list"</h3>
             {move || match contacts.get() {
@@ -67,11 +81,24 @@ pub fn ContactsPage(token: String) -> impl IntoView {
                         <p style=styles::MUTED>
                             {format!("{} contact{} total", page.total, if page.total == 1 { "" } else { "s" })}
                         </p>
-                        <ul style="list-style: none; margin: 0; padding: 0; display: grid; gap: 0.75rem;">
-                            <For each=move || page.contacts.clone() key=|contact| contact.contact_id let:contact>
-                                <ContactRow contact=contact />
-                            </For>
-                        </ul>
+                        <div style=styles::TABLE_WRAPPER>
+                            <table style=styles::TABLE>
+                                <thead>
+                                    <tr>
+                                        <th style=styles::TH>"Contact"</th>
+                                        <th style=styles::TH>"Lifecycle"</th>
+                                        <th style=styles::TH>"Emails"</th>
+                                        <th style=styles::TH>"Phones"</th>
+                                        <th style=styles::TH>"Source"</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <For each=move || page.contacts.clone() key=|contact| contact.contact_id let:contact>
+                                        <ContactRow contact=contact />
+                                    </For>
+                                </tbody>
+                            </table>
+                        </div>
                     }
                         .into_any()
                 }
@@ -114,7 +141,7 @@ fn clear_field(input: &NodeRef<Input>) {
 /// a fresh `Idempotency-Key`, then clears itself, shows a confirmation and
 /// asks the parent list to refresh through `on_created`.
 #[component]
-fn ContactForm(token: String, on_created: impl Fn() + Clone + 'static) -> impl IntoView {
+fn ContactForm(token: String, on_created: impl Fn() + Clone + Send + 'static) -> impl IntoView {
     let emails_ref = NodeRef::<Input>::new();
     let phones_ref = NodeRef::<Input>::new();
     let source_ref = NodeRef::<Input>::new();
@@ -189,8 +216,9 @@ fn ContactForm(token: String, on_created: impl Fn() + Clone + 'static) -> impl I
     };
 
     view! {
-        <form on:submit=on_submit style=styles::CARD>
-            <h3 style="margin: 0 0 0.5rem;">"New contact"</h3>
+        <Card>
+            <h3 style=styles::FORM_TITLE>"New contact"</h3>
+            <form on:submit=on_submit>
             <div style=styles::FORM>
                 <div>
                     <label for="contact-emails" style=styles::LABEL>"Emails (comma-separated)"</label>
@@ -226,9 +254,13 @@ fn ContactForm(token: String, on_created: impl Fn() + Clone + 'static) -> impl I
                     />
                 </div>
                 <div>
-                    <button type="submit" disabled=move || submitting.get() style=styles::BTN_PRIMARY>
+                    <Btn
+                        variant=BtnVariant::Primary
+                        btn_type="submit"
+                        disabled=Signal::derive(move || submitting.get())
+                    >
                         {move || if submitting.get() { "Creating…" } else { "Create contact" }}
-                    </button>
+                    </Btn>
                 </div>
                 {move || {
                     status
@@ -247,7 +279,7 @@ fn ContactForm(token: String, on_created: impl Fn() + Clone + 'static) -> impl I
                                     <div role="alert" style=styles::ALERT_ERROR>
                                         <p style="margin: 0 0 0.5rem;">
                                             "A contact with these details already exists. "
-                                            <A href="/contacts/merge">"Merge duplicates →"</A>
+                                            <A href="/contacts/merge" attr:style=styles::LINK>"Merge duplicates →"</A>
                                         </p>
                                     </div>
                                 }
@@ -261,12 +293,14 @@ fn ContactForm(token: String, on_created: impl Fn() + Clone + 'static) -> impl I
                             }
                         })
                 }}
-            </div>
-        </form>
+                </div>
+            </form>
+        </Card>
     }
 }
 
-/// One contact in the list: short id, lifecycle, emails, phones and source.
+/// One contact as a table row: id link, lifecycle badge, emails, phones,
+/// source.
 ///
 /// Renders what the domain model carries — contacts have no display name in
 /// this slice. The id links to the detail page.
@@ -294,24 +328,25 @@ fn ContactRow(contact: Contact) -> impl IntoView {
     } else {
         phones
     };
+    let tone = lifecycle_tone(&lifecycle);
+    let lifecycle_label = format!("{lifecycle:?}");
 
     view! {
-        <li style=styles::CARD>
-            <div style="display: flex; justify-content: space-between; align-items: baseline; gap: 1rem;">
-                <A href=format!("/contacts/{id}")>
-                    <strong>{format!("Contact {short_id}…")}</strong>
+        <HoverTr>
+            <td style=styles::TD>
+                <A href=format!("/contacts/{id}") attr:style=styles::LINK>
+                    <span style=styles::MONO>{format!("{short_id}…")}</span>
                 </A>
-                <span style=styles::MUTED>{format!("{lifecycle:?}")}</span>
-            </div>
-            <dl style=styles::DL>
-                <dt style=styles::DT>"Emails"</dt>
-                <dd style="margin: 0;">{emails}</dd>
-                <dt style=styles::DT>"Phones"</dt>
-                <dd style="margin: 0;">{phones}</dd>
-                <dt style=styles::DT>"Source"</dt>
-                <dd style="margin: 0;">{latest_source}</dd>
-            </dl>
-        </li>
+            </td>
+            <td style=styles::TD>
+                <Badge tone=tone>{lifecycle_label}</Badge>
+            </td>
+            <td style=styles::TD>{emails}</td>
+            <td style=styles::TD>{phones}</td>
+            <td style=styles::TD>
+                <span style=styles::MUTED>{latest_source}</span>
+            </td>
+        </HoverTr>
     }
 }
 
@@ -359,44 +394,70 @@ pub fn ContactDetail(token: String, id: String) -> impl IntoView {
     }
 
     view! {
-        <section aria-label="Contact detail" style=styles::SECTION>
-            <PageHeader title="Contact" />
-            <p>
-                <A href="/contacts">"← Back to contacts"</A>
-            </p>
+        <section aria-label="Contact detail">
+            <PageHeader title="Contact" description="Full record for one contact.">
+                <A href="/contacts" attr:style=styles::BTN>"← Back to contacts"</A>
+            </PageHeader>
             {move || match contact.get() {
                 None => view! { <Loading label="contact" /> }.into_any(),
                 Some(Err(error)) => {
                     view! { <ErrorAlert message=error.to_string() /> }.into_any()
                 }
                 Some(Ok(c)) => {
+                    let tone = lifecycle_tone(&c.lifecycle);
+                    let lifecycle_label = format!("{:?}", c.lifecycle);
+                    let touches = c.source_touches.clone();
                     view! {
-                        <div style=styles::CARD>
-                            <dl style=styles::DL>
-                                <dt style=styles::DT>"Contact id"</dt>
-                                <dd style=styles::MONO>{c.contact_id.to_string()}</dd>
-                                <dt style=styles::DT>"Profile id"</dt>
-                                <dd style=styles::MONO>{c.client_profile_id.to_string()}</dd>
-                                <dt style=styles::DT>"Lifecycle"</dt>
-                                <dd style="margin: 0;">{format!("{:?}", c.lifecycle)}</dd>
-                                <dt style=styles::DT>"Emails"</dt>
-                                <dd style="margin: 0;">{c.normalized_emails.join(", ")}</dd>
-                                <dt style=styles::DT>"Phones"</dt>
-                                <dd style="margin: 0;">{c.normalized_phones.join(", ")}</dd>
-                                <dt style=styles::DT>"First source"</dt>
-                                <dd style="margin: 0;">{c.first_source.clone()}</dd>
-                                <dt style=styles::DT>"Latest source"</dt>
-                                <dd style="margin: 0;">{c.latest_source.clone()}</dd>
-                                <dt style=styles::DT>"Source touches"</dt>
-                                <dd style="margin: 0;">{c.source_touches.join(", ")}</dd>
-                                <dt style=styles::DT>"Merged into"</dt>
-                                <dd style="margin: 0;">
-                                    {c
-                                        .merged_into
-                                        .map(|id| id.to_string())
-                                        .unwrap_or_else(|| "—".to_string())}
-                                </dd>
-                            </dl>
+                        <div style=styles::RECORD_GRID>
+                            <Card>
+                                <div style="display: flex; align-items: center; gap: 0.75rem; margin-bottom: 1rem;">
+                                    <h3 style="margin: 0; font-size: 1rem; font-weight: 600;">
+                                        {format!("Contact {}", c.contact_id.to_string().chars().take(8).collect::<String>())}
+                                    </h3>
+                                    <Badge tone=tone>{lifecycle_label}</Badge>
+                                </div>
+                                <dl style=styles::DL>
+                                    <FieldRow label="Contact id">
+                                        <span style=styles::MONO>{c.contact_id.to_string()}</span>
+                                    </FieldRow>
+                                    <FieldRow label="Profile id">
+                                        <span style=styles::MONO>{c.client_profile_id.to_string()}</span>
+                                    </FieldRow>
+                                    <FieldRow label="Emails">{c.normalized_emails.join(", ")}</FieldRow>
+                                    <FieldRow label="Phones">{c.normalized_phones.join(", ")}</FieldRow>
+                                    <FieldRow label="First source">{c.first_source.clone()}</FieldRow>
+                                    <FieldRow label="Latest source">{c.latest_source.clone()}</FieldRow>
+                                    <FieldRow label="Merged into">
+                                        {c
+                                            .merged_into
+                                            .map(|id| id.to_string())
+                                            .unwrap_or_else(|| "—".to_string())}
+                                    </FieldRow>
+                                </dl>
+                            </Card>
+                            <Card>
+                                <h3 style=styles::FORM_TITLE>"Activity"</h3>
+                                {if touches.is_empty() {
+                                    view! { <p style=styles::MUTED>"No source touches recorded."</p> }.into_any()
+                                } else {
+                                    view! {
+                                        <div>
+                                            {touches
+                                                .into_iter()
+                                                .map(|touch| {
+                                                    view! {
+                                                        <div style=styles::TIMELINE_ITEM>
+                                                            <span style=styles::TIMELINE_DOT aria-hidden="true"></span>
+                                                            <span>{touch}</span>
+                                                        </div>
+                                                    }
+                                                })
+                                                .collect::<Vec<_>>()}
+                                        </div>
+                                    }
+                                        .into_any()
+                                }}
+                            </Card>
                         </div>
                     }
                         .into_any()
@@ -476,12 +537,13 @@ pub fn MergePage(token: String) -> impl IntoView {
     };
 
     view! {
-        <section aria-label="Merge duplicates" style=styles::SECTION>
-            <PageHeader title="Merge duplicates" />
-            <p style=styles::MUTED>
-                "Fold a duplicate contact into its survivor. The survivor keeps the union of identity, sources and consents; the duplicate is archived (never deleted)."
-            </p>
-            <form on:submit=on_submit style=styles::CARD>
+        <section aria-label="Merge duplicates">
+            <PageHeader
+                title="Merge duplicates"
+                description="Fold a duplicate contact into its survivor. The survivor keeps the union of identity, sources and consents; the duplicate is archived (never deleted)."
+            />
+            <Card>
+            <form on:submit=on_submit>
                 <div style=styles::FORM>
                     <div>
                         <label for="merge-survivor" style=styles::LABEL>"Survivor contact id"</label>
@@ -506,9 +568,13 @@ pub fn MergePage(token: String) -> impl IntoView {
                         />
                     </div>
                     <div>
-                        <button type="submit" disabled=move || submitting.get() style=styles::BTN_PRIMARY>
+                        <Btn
+                            variant=BtnVariant::Primary
+                            btn_type="submit"
+                            disabled=Signal::derive(move || submitting.get())
+                        >
                             {move || if submitting.get() { "Merging…" } else { "Merge contacts" }}
-                        </button>
+                        </Btn>
                     </div>
                     {move || match status.get() {
                         None => ().into_any(),
@@ -517,6 +583,7 @@ pub fn MergePage(token: String) -> impl IntoView {
                     }}
                 </div>
             </form>
+            </Card>
         </section>
     }
 }

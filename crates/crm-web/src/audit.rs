@@ -14,8 +14,9 @@ use crate::api::{
     fetch_audit_events, verify_audit_chain, ApiError, AuditEventsResponse, AuditQuery,
     VerifyResponse,
 };
-use crate::components::{EmptyState, ErrorAlert, Loading, PageHeader};
+use crate::components::{EmptyState, ErrorAlert, Loading};
 use crate::styles;
+use crate::ui::components::{Btn, BtnVariant, Card, HoverTr, PageHeader};
 use leptos::html::Input;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
@@ -53,7 +54,7 @@ pub fn AuditPage(token: String) -> impl IntoView {
                 },
                 limit: Some(50),
             };
-            let my_generation = generation.get() + 1;
+            let my_generation = generation.get_untracked() + 1;
             generation.set(my_generation);
             let token = token.clone();
             spawn_local(async move {
@@ -66,7 +67,8 @@ pub fn AuditPage(token: String) -> impl IntoView {
     }
     let retry = move || reload.update(|n| *n = n.wrapping_add(1));
 
-    let on_verify = move |_| {
+    // 0-arg so it plugs straight into [`Btn`]'s `on_click`.
+    let on_verify = move || {
         if verifying.get() {
             return;
         }
@@ -80,33 +82,49 @@ pub fn AuditPage(token: String) -> impl IntoView {
     };
 
     view! {
-        <section aria-label="Audit log" style=styles::SECTION>
-            <PageHeader title="Audit log" />
-            <div style="display: flex; gap: 0.5rem; align-items: end; margin-bottom: 1rem; flex-wrap: wrap;">
-                <div>
-                    <label for="audit-action" style=styles::LABEL>"Action filter"</label>
-                    <input
-                        id="audit-action"
-                        type="text"
-                        node_ref=action_ref
-                        placeholder="auth.login_failed"
-                        autocomplete="off"
-                        style=styles::INPUT
-                    />
+        <section aria-label="Audit log">
+            <PageHeader
+                title="Audit log"
+                description="Tamper-evident security event history."
+            />
+            <Card>
+                <div style="display: flex; gap: 0.75rem; align-items: end; flex-wrap: wrap;">
+                    <div style="flex: 1; min-width: 12rem;">
+                        <label for="audit-action" style=styles::LABEL>"Action filter"</label>
+                        <input
+                            id="audit-action"
+                            type="text"
+                            node_ref=action_ref
+                            placeholder="auth.login_failed"
+                            autocomplete="off"
+                            style=styles::INPUT
+                        />
+                    </div>
+                    <Btn
+                        variant=BtnVariant::Primary
+                        btn_type="button"
+                        on_click={std::rc::Rc::new(retry) as std::rc::Rc<dyn Fn()>}
+                    >
+                        "Query"
+                    </Btn>
+                    <Btn
+                        variant=BtnVariant::Secondary
+                        btn_type="button"
+                        disabled=Signal::derive(move || verifying.get())
+                        on_click={std::rc::Rc::new(on_verify) as std::rc::Rc<dyn Fn()>}
+                    >
+                        {move || if verifying.get() { "Verifying…" } else { "Verify chain" }}
+                    </Btn>
+                    <label style="display: flex; gap: 0.375rem; align-items: center; font-size: 0.8125rem; color: #475569;" title="Reorders the fetched page only — the API returns chain order (oldest first) with no descending option.">
+                        <input
+                            type="checkbox"
+                            checked=move || newest_first.get()
+                            on:change=move |ev| newest_first.set(leptos::leptos_dom::helpers::event_target_checked(&ev))
+                        />
+                        "Newest first"
+                    </label>
                 </div>
-                <button type="button" on:click=move |_| retry() style=styles::BTN_PRIMARY>"Query"</button>
-                <button type="button" on:click=on_verify disabled=move || verifying.get() style=styles::BTN>
-                    {move || if verifying.get() { "Verifying…" } else { "Verify chain" }}
-                </button>
-                <label style="display: flex; gap: 0.375rem; align-items: center; font-size: 0.875rem;" title="Reorders the fetched page only — the API returns chain order (oldest first) with no descending option.">
-                    <input
-                        type="checkbox"
-                        checked=move || newest_first.get()
-                        on:change=move |ev| newest_first.set(leptos::leptos_dom::helpers::event_target_checked(&ev))
-                    />
-                    "Newest first"
-                </label>
-            </div>
+            </Card>
             {move || match verification.get() {
                 None => ().into_any(),
                 Some(Ok(v)) => {
@@ -156,23 +174,25 @@ pub fn AuditPage(token: String) -> impl IntoView {
                         rows.reverse();
                     }
                     view! {
-                        <table style=styles::TABLE>
-                            <thead>
-                                <tr>
-                                    <th style=styles::TH>"Time"</th>
-                                    <th style=styles::TH>"Action"</th>
-                                    <th style=styles::TH>"Actor"</th>
-                                    <th style=styles::TH>"Target"</th>
-                                    <th style=styles::TH>"Decision"</th>
-                                    <th style=styles::TH>"Payload"</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                <For each=move || rows.clone() key=|item| item.event.event_id.to_string() let:item>
-                                    <AuditRow item=item />
-                                </For>
-                            </tbody>
-                        </table>
+                        <div style=styles::TABLE_WRAPPER>
+                            <table style=styles::TABLE>
+                                <thead>
+                                    <tr>
+                                        <th style=styles::TH>"Time"</th>
+                                        <th style=styles::TH>"Action"</th>
+                                        <th style=styles::TH>"Actor"</th>
+                                        <th style=styles::TH>"Target"</th>
+                                        <th style=styles::TH>"Decision"</th>
+                                        <th style=styles::TH>"Payload"</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <For each=move || rows.clone() key=|item| item.event.event_id.to_string() let:item>
+                                        <AuditRow item=item />
+                                    </For>
+                                </tbody>
+                            </table>
+                        </div>
                         {page
                             .has_more
                             .then(|| {
@@ -204,7 +224,7 @@ fn AuditRow(item: crate::api::AuditEventItem) -> impl IntoView {
         .map(|v| v.to_string())
         .unwrap_or_else(|| "—".to_string());
     view! {
-        <tr>
+        <HoverTr>
             <td style=styles::TD>{time}</td>
             <td style=styles::MONO>{event.action.clone()}</td>
             <td style=styles::MONO>{actor}</td>
@@ -213,6 +233,6 @@ fn AuditRow(item: crate::api::AuditEventItem) -> impl IntoView {
             </td>
             <td style=styles::TD>{decision}</td>
             <td style=styles::MONO>{payload}</td>
-        </tr>
+        </HoverTr>
     }
 }

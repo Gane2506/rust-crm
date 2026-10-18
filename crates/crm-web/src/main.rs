@@ -10,16 +10,16 @@
 use leptos::mount::mount_to_body;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
-use leptos_router::components::{Route, Router, Routes, A};
+use leptos_router::components::{Route, Router, Routes};
 use leptos_router::path;
 
 use api::logout;
 use assets::AssetsPage;
 use audit::AuditPage;
-use components::PageHeader;
 use contacts::{ContactDetail, ContactsPage, MergePage};
 use login::LoginForm;
 use profiles::{ProfileDetail, ProfilesPage};
+use ui::components::{AppShell, PageHeader, Tile};
 
 mod api;
 mod assets;
@@ -29,6 +29,7 @@ mod contacts;
 mod login;
 mod profiles;
 mod styles;
+mod ui;
 
 /// Root application shell: login gate plus nav header and routed content.
 ///
@@ -60,7 +61,7 @@ fn App() -> impl IntoView {
     }
 }
 
-/// Authenticated shell: nav header plus the route table.
+/// Authenticated shell: Twenty-style sidebar + utility bar + route table.
 ///
 /// # Props
 /// - `token`: the in-memory bearer token, cloned per route view.
@@ -69,100 +70,112 @@ fn App() -> impl IntoView {
 fn Shell(token: String, on_logout: impl Fn() + Clone + Send + 'static) -> impl IntoView {
     view! {
         <Router>
-            <div style="font-family: system-ui, sans-serif; max-width: 960px; margin: 0 auto; padding: 1rem;">
-                <header style="display: flex; align-items: center; gap: 1.5rem; border-bottom: 1px solid #e5e7eb; padding-bottom: 0.75rem; margin-bottom: 1rem; flex-wrap: wrap;">
-                    <h1 style="font-size: 1.25rem; margin: 0;">"Rust CRM"</h1>
-                    <nav style="display: flex; gap: 1rem; flex-wrap: wrap;">
-                        <A href="/">"Dashboard"</A>
-                        <A href="/contacts">"Contacts"</A>
-                        <A href="/profiles">"Profiles"</A>
-                        <A href="/assets">"Assets"</A>
-                        <A href="/audit">"Audit"</A>
-                    </nav>
-                    <button
-                        type="button"
-                        on:click=move |_| on_logout()
-                        style=format!("{} margin-left: auto;", styles::BTN)
-                    >
-                        "Log out"
-                    </button>
-                </header>
-                <main>
-                    <Routes fallback=|| view! { <p>"Page not found."</p> }>
-                        <Route path=path!("/") view=Dashboard />
-                        <Route
-                            path=path!("/contacts")
-                            view={
+            <AppShell on_logout=on_logout>
+                <Routes fallback=|| view! { <p>"Page not found."</p> }>
+                    <Route path=path!("/") view=Dashboard />
+                    <Route
+                        path=path!("/contacts")
+                        view={
+                            let token = token.clone();
+                            move || view! { <ContactsPage token=token.clone() /> }
+                        }
+                    />
+                    <Route
+                        path=path!("/contacts/merge")
+                        view={
+                            let token = token.clone();
+                            move || view! { <MergePage token=token.clone() /> }
+                        }
+                    />
+                    <Route
+                        path=path!("/contacts/:id")
+                        view={
+                            let token = token.clone();
+                            move || {
+                                let params = leptos_router::hooks::use_params_map();
+                                let id = params.get().get("id").unwrap_or_default();
                                 let token = token.clone();
-                                move || view! { <ContactsPage token=token.clone() /> }
+                                view! { <ContactDetail token=token id=id /> }
                             }
-                        />
-                        <Route
-                            path=path!("/contacts/merge")
-                            view={
+                        }
+                    />
+                    <Route
+                        path=path!("/profiles")
+                        view={
+                            let token = token.clone();
+                            move || view! { <ProfilesPage token=token.clone() /> }
+                        }
+                    />
+                    <Route
+                        path=path!("/profiles/:id")
+                        view={
+                            let token = token.clone();
+                            move || {
+                                let params = leptos_router::hooks::use_params_map();
+                                let id = params.get().get("id").unwrap_or_default();
                                 let token = token.clone();
-                                move || view! { <MergePage token=token.clone() /> }
+                                view! { <ProfileDetail token=token profile_id=id /> }
                             }
-                        />
-                        <Route
-                            path=path!("/contacts/:id")
-                            view={
-                                let token = token.clone();
-                                move || {
-                                    let params = leptos_router::hooks::use_params_map();
-                                    let id = params.get().get("id").unwrap_or_default();
-                                    let token = token.clone();
-                                    view! { <ContactDetail token=token id=id /> }
-                                }
-                            }
-                        />
-                        <Route
-                            path=path!("/profiles")
-                            view={
-                                let token = token.clone();
-                                move || view! { <ProfilesPage token=token.clone() /> }
-                            }
-                        />
-                        <Route
-                            path=path!("/profiles/:id")
-                            view={
-                                let token = token.clone();
-                                move || {
-                                    let params = leptos_router::hooks::use_params_map();
-                                    let id = params.get().get("id").unwrap_or_default();
-                                    let token = token.clone();
-                                    view! { <ProfileDetail token=token profile_id=id /> }
-                                }
-                            }
-                        />
-                        <Route
-                            path=path!("/assets")
-                            view={
-                                let token = token.clone();
-                                move || view! { <AssetsPage token=token.clone() /> }
-                            }
-                        />
-                        <Route
-                            path=path!("/audit")
-                            view={
-                                let token = token.clone();
-                                move || view! { <AuditPage token=token.clone() /> }
-                            }
-                        />
-                    </Routes>
-                </main>
-            </div>
+                        }
+                    />
+                    <Route
+                        path=path!("/assets")
+                        view={
+                            let token = token.clone();
+                            move || view! { <AssetsPage token=token.clone() /> }
+                        }
+                    />
+                    <Route
+                        path=path!("/audit")
+                        view={
+                            let token = token.clone();
+                            move || view! { <AuditPage token=token.clone() /> }
+                        }
+                    />
+                </Routes>
+            </AppShell>
         </Router>
     }
 }
 
-/// Agency overview placeholder (full dashboards land in task 15-DASH-01).
+/// Agency overview: quick-link tiles into each workspace area.
+///
+/// Full metric dashboards land in the 15-DASH workstream; until then this
+/// page is an intentional launchpad rather than a bare placeholder.
 #[component]
 fn Dashboard() -> impl IntoView {
     view! {
-        <section>
-            <PageHeader title="Dashboard" />
-            <p style=styles::MUTED>"Agency overview placeholder."</p>
+        <section aria-label="Dashboard">
+            <PageHeader
+                title="Dashboard"
+                description="Agency overview — jump into a workspace area."
+            />
+            <div style=styles::TILE_GRID>
+                <Tile
+                    href="/contacts"
+                    glyph="◉"
+                    title="Contacts"
+                    description="People and companies the agency works with."
+                />
+                <Tile
+                    href="/profiles"
+                    glyph="◈"
+                    title="Client profiles"
+                    description="Agency-operated client workspaces."
+                />
+                <Tile
+                    href="/assets"
+                    glyph="▤"
+                    title="Assets"
+                    description="Content-addressed files and documents."
+                />
+                <Tile
+                    href="/audit"
+                    glyph="⌗"
+                    title="Audit log"
+                    description="Tamper-evident security event history."
+                />
+            </div>
         </section>
     }
 }
