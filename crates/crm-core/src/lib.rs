@@ -70,6 +70,11 @@ pub mod form;
 /// [`feed`](crm_domain::feed) domain.
 pub mod feed;
 
+/// Billing service: invoice lifecycle, draft-only line items and
+/// payment coverage (record, reverse) over the
+/// [`billing`](crm_domain::billing) domain.
+pub mod billing;
+
 /// Errors raised by [`crm-core`](crate) utilities.
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum CoreError {

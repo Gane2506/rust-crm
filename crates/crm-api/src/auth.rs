@@ -51,6 +51,7 @@ use crate::problem_response;
 use crate::rate_limit::{LoginRateLimitConfig, LoginRateLimiter};
 use crm_core::memory::{ContactReadModel, ContactServiceImpl};
 use crm_db::audit_log::PgAuditLogService;
+use crm_db::billing::{PgInvoiceRepository, PgPaymentRepository};
 use crm_db::campaign::{
     PgCampaignRepository, PgConversionRepository, PgOptOutRepository, PgProspectPoolRepository,
 };
@@ -139,6 +140,10 @@ pub struct ApiAuth {
     pub form_submissions: PgFormSubmissionRepository,
     /// Feed-item repository for the feed endpoints.
     pub feed_items: PgFeedItemRepository,
+    /// Invoice repository for the billing endpoints.
+    pub invoices: PgInvoiceRepository,
+    /// Payment repository for the billing endpoints.
+    pub payments: PgPaymentRepository,
 }
 
 impl ApiAuth {
@@ -188,6 +193,8 @@ impl ApiAuth {
             form_fields: PgFormFieldRepository::new(pool.clone()),
             form_submissions: PgFormSubmissionRepository::new(pool.clone()),
             feed_items: PgFeedItemRepository::new(pool.clone()),
+            invoices: PgInvoiceRepository::new(pool.clone()),
+            payments: PgPaymentRepository::new(pool.clone()),
         }
     }
 }
