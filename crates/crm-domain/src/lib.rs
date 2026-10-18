@@ -38,6 +38,9 @@ pub mod agent;
 pub mod asset;
 /// Tamper-evident audit events and the hash-chain helpers.
 pub mod audit;
+/// Billing domain: invoices and payment records for agency clients
+/// (task 13-BILL-01).
+pub mod billing;
 /// Campaign aggregate: owner context, channel, schedule, delivery state,
 /// steps, prospect pools, opt-outs, attribution and conversions.
 pub mod campaign;
@@ -77,6 +80,11 @@ pub mod workflow;
 pub use agent::AgentAction;
 pub use asset::{Asset, AssetKind, AssetStatus};
 pub use audit::{AuditEvent, SecurityEvent};
+pub use billing::{
+    Invoice, InvoiceLine, InvoiceStatus, Money, Payment, PaymentStatus, BILLING_INVOICE_CREATED,
+    BILLING_INVOICE_ISSUED, BILLING_INVOICE_VOIDED, BILLING_LINE_ADDED, BILLING_PAYMENT_RECORDED,
+    BILLING_PAYMENT_REVERSED,
+};
 pub use campaign::{
     attribute_conversion, AttributionModel, Campaign, CampaignStep, Channel, Conversion,
     DeliveryState, OptOut, OptOutChannel, OwnerContext, ProspectPool, StepKind, Touchpoint,

@@ -1021,3 +1021,64 @@ pub trait FeedItemRepository {
         item: crate::feed::FeedItem,
     ) -> impl Future<Output = Result<crate::feed::FeedItem, DomainError>> + Send + 'a;
 }
+
+/// Persistence port for invoices (task 13-BILL-01).
+///
+/// Invoices are updated in place (status transitions, line additions
+/// on drafts); lines and payments have their own ports below.
+pub trait InvoiceRepository {
+    /// Persists a new draft invoice.
+    fn create<'a>(
+        &'a self,
+        invoice: crate::billing::Invoice,
+    ) -> impl Future<Output = Result<crate::billing::Invoice, DomainError>> + Send + 'a;
+
+    /// Fetches an invoice by id.
+    fn get<'a>(
+        &'a self,
+        invoice_id: crate::ids::InvoiceId,
+    ) -> impl Future<Output = Result<crate::billing::Invoice, DomainError>> + Send + 'a;
+
+    /// Persists invoice changes (status transitions, added lines).
+    fn update<'a>(
+        &'a self,
+        invoice: crate::billing::Invoice,
+    ) -> impl Future<Output = Result<crate::billing::Invoice, DomainError>> + Send + 'a;
+
+    /// Lists invoices for one client profile, newest first.
+    fn list_by_profile<'a>(
+        &'a self,
+        client_profile_id: crate::ids::ClientProfileId,
+        limit: u64,
+    ) -> impl Future<Output = Result<Vec<crate::billing::Invoice>, DomainError>> + Send + 'a;
+}
+
+/// Persistence port for payments (task 13-BILL-01).
+///
+/// Payments are append-only: `record` inserts, `reverse` flips the
+/// status. There is no delete.
+pub trait PaymentRepository {
+    /// Records a new payment.
+    fn record<'a>(
+        &'a self,
+        payment: crate::billing::Payment,
+    ) -> impl Future<Output = Result<crate::billing::Payment, DomainError>> + Send + 'a;
+
+    /// Fetches a payment by id.
+    fn get<'a>(
+        &'a self,
+        payment_id: crate::ids::PaymentId,
+    ) -> impl Future<Output = Result<crate::billing::Payment, DomainError>> + Send + 'a;
+
+    /// Lists payments recorded against one invoice, oldest first.
+    fn list_by_invoice<'a>(
+        &'a self,
+        invoice_id: crate::ids::InvoiceId,
+    ) -> impl Future<Output = Result<Vec<crate::billing::Payment>, DomainError>> + Send + 'a;
+
+    /// Persists a reversal (status flip to `Reversed`).
+    fn reverse<'a>(
+        &'a self,
+        payment: crate::billing::Payment,
+    ) -> impl Future<Output = Result<crate::billing::Payment, DomainError>> + Send + 'a;
+}

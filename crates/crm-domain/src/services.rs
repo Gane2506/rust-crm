@@ -1718,3 +1718,120 @@ pub trait FeedService {
         ctx: &'a ActionContext,
     ) -> impl Future<Output = Result<crate::feed::FeedItem, DomainError>> + Send + 'a;
 }
+
+/// Input for [`BillingService::create_invoice`]: a new draft invoice.
+#[derive(Debug, Clone)]
+pub struct NewInvoice {
+    /// Owning client profile (tenant boundary).
+    pub client_profile_id: ClientProfileId,
+    /// ISO 4217 currency code for every line and the total.
+    pub currency: String,
+}
+
+/// Input for [`BillingService::add_line`]: a new line on a draft invoice.
+#[derive(Debug, Clone)]
+pub struct NewInvoiceLine {
+    /// The invoice the line belongs to.
+    pub invoice_id: crate::ids::InvoiceId,
+    /// Human-readable description (validated non-blank).
+    pub description: String,
+    /// Quantity billed (positive).
+    pub quantity: u32,
+    /// Price per unit (must match the invoice's currency).
+    pub unit_price: crate::billing::Money,
+}
+
+/// Input for [`BillingService::record_payment`]: a payment against an
+/// issued invoice.
+#[derive(Debug, Clone)]
+pub struct NewPayment {
+    /// The invoice the payment is recorded against.
+    pub invoice_id: crate::ids::InvoiceId,
+    /// Amount paid (positive; must match the invoice's currency).
+    pub amount: crate::billing::Money,
+}
+
+/// Domain operations for billing (task 13-BILL-01): invoice lifecycle
+/// and payment record-keeping.
+///
+/// All mutations authorize against `Resource::Invoice`
+/// (profile-scoped; the variant lands in task 13-BILL-02 — see the
+/// [`crate::billing`] module docs) and record an [`AuditEvent`] with
+/// the pinned action name documented on each method.
+pub trait BillingService {
+    /// Creates a draft invoice. Records a
+    /// [`BILLING_INVOICE_CREATED`](crate::billing::BILLING_INVOICE_CREATED)
+    /// audit event.
+    fn create_invoice<'a>(
+        &'a self,
+        input: NewInvoice,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<crate::billing::Invoice, DomainError>> + Send + 'a;
+
+    /// Adds a line to a draft invoice. Rejects non-draft invoices,
+    /// currency mismatches and overflow. Records a
+    /// [`BILLING_LINE_ADDED`](crate::billing::BILLING_LINE_ADDED)
+    /// audit event.
+    fn add_line<'a>(
+        &'a self,
+        input: NewInvoiceLine,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<crate::billing::InvoiceLine, DomainError>> + Send + 'a;
+
+    /// Issues a draft invoice (`Draft → Issued`). Rejects invoices
+    /// with no lines. Records a
+    /// [`BILLING_INVOICE_ISSUED`](crate::billing::BILLING_INVOICE_ISSUED)
+    /// audit event.
+    fn issue_invoice<'a>(
+        &'a self,
+        invoice_id: crate::ids::InvoiceId,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<crate::billing::Invoice, DomainError>> + Send + 'a;
+
+    /// Voids a draft or issued invoice. Idempotent on `Void`; rejects
+    /// `Paid` invoices. Records a
+    /// [`BILLING_INVOICE_VOIDED`](crate::billing::BILLING_INVOICE_VOIDED)
+    /// audit event.
+    fn void_invoice<'a>(
+        &'a self,
+        invoice_id: crate::ids::InvoiceId,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<crate::billing::Invoice, DomainError>> + Send + 'a;
+
+    /// Records a payment against an issued invoice. Rejects payments
+    /// that would exceed the invoice total. When the payment covers
+    /// the remaining balance, the service transitions the invoice to
+    /// `Paid` via [`Invoice::mark_paid`](crate::billing::Invoice::mark_paid).
+    /// Records a
+    /// [`BILLING_PAYMENT_RECORDED`](crate::billing::BILLING_PAYMENT_RECORDED)
+    /// audit event.
+    fn record_payment<'a>(
+        &'a self,
+        input: NewPayment,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<crate::billing::Payment, DomainError>> + Send + 'a;
+
+    /// Reverses a recorded payment (idempotent). Records a
+    /// [`BILLING_PAYMENT_REVERSED`](crate::billing::BILLING_PAYMENT_REVERSED)
+    /// audit event.
+    fn reverse_payment<'a>(
+        &'a self,
+        payment_id: crate::ids::PaymentId,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<crate::billing::Payment, DomainError>> + Send + 'a;
+
+    /// Lists invoices for the context's client profile, newest first.
+    fn list_invoices<'a>(
+        &'a self,
+        limit: u64,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<Vec<crate::billing::Invoice>, DomainError>> + Send + 'a;
+
+    /// Amount still owed on an invoice: total minus non-reversed
+    /// payments.
+    fn invoice_balance<'a>(
+        &'a self,
+        invoice_id: crate::ids::InvoiceId,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<crate::billing::Money, DomainError>> + Send + 'a;
+}
