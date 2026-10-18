@@ -88,6 +88,32 @@ LIMIT`, then hydrate in memory).
 | Admin | 1–2 queries per op | all agency-scoped; health folds `DbHealthReporter` (`SELECT 1`) |
 | Audit reads | 1 query + `LIMIT` | chain verification is O(n) over the returned page only |
 
+## Load benchmark (17-PERF-03)
+
+Measured 2026-10-18 against a release build on the 1/2-core VM with a
+local Postgres 16 and seeded demo data (5 contacts). Sequential
+requests via curl; times are client-measured end-to-end.
+
+| Endpoint | n | p50 | p95 | Throughput |
+|---|---|---|---|---|
+| `GET /healthz` | 200 | 0.6 ms | 1.3 ms | 46 req/s |
+| `GET /readyz` | 200 | 0.9 ms | 1.3 ms | 45 req/s |
+| `GET /api/v1/contacts` (auth + DB) | 200 | 3.4 ms | 11.3 ms | 36 req/s |
+| `POST /api/v1/auth/login` (Argon2id) | 8 | ~40 ms | ~90 ms | — |
+
+Notes:
+
+- Throughput is sequential-request throughput, not concurrent; the
+  server was idle and the numbers reflect per-request latency, not
+  saturation.
+- Login is dominated by Argon2id verification by design (~35–90 ms);
+  the endpoint is rate-limited (30/min/IP), so only 8 samples were
+  taken. A 20-request burst earlier tripped the limiter with `429` +
+  `Retry-After`, confirming the 17-PERF-02 write limiter works under
+  load.
+- No `oha`/`k6`/`wrk`/`ab` was available on the VM; these are
+  honest curl-measured numbers, not a synthetic load-generator pass.
+
 ## Hardening checklist (17-PERF-01)
 
 - [x] List `limit` capped at 100 on every HTTP list endpoint
@@ -107,15 +133,16 @@ LIMIT`, then hydrate in memory).
 - [x] Admin endpoints verified behind the auth middleware (they
       merge into the authenticated `api` router; the email ingest
       webhook is the only deliberate exception).
-- [ ] No load benchmarks have been run; the numbers above are
-      reasoned from the query shapes, not measured. A `k6` or
-      `oha` pass against a seeded database is the natural
-      17-PERF-03 follow-up.
+- [x] Load benchmark run (task 17-PERF-03): curl-measured p50/p95
+      against a seeded database — see "Load benchmark" above. No
+      `k6`/`oha` was available on the VM; numbers are honest
+      sequential-request measurements.
 
 ## Known limitations
 
-- `cargo` benchmarks (`criterion`) are not wired up; performance
-  claims are architectural, not measured.
+- `cargo` benchmarks (`criterion`) are not wired up; the numbers in
+  "Load benchmark" above are curl-measured sequential requests, not
+  a concurrent saturation pass.
 - The in-memory vertical slice (tests) does not apply the timeout
   or pool settings — production-only hardening.
 - Rate limiters are per-process and in-memory (exact for the

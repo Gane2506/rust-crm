@@ -259,12 +259,12 @@ and merge happens on green CI plus review. Follow along via
 | Billing | 12-BILL-01… | ✅ 12-BILL-03 done ([#76](https://github.com/Gane2506/rust-crm/issues/76), [#77](https://github.com/Gane2506/rust-crm/pull/77)); **workstream COMPLETE** |
 | Contract signing | 13-SIGN-01… | ✅ 13-SIGN-03 done ([#82](https://github.com/Gane2506/rust-crm/issues/82), [#83](https://github.com/Gane2506/rust-crm/pull/83)); **workstream COMPLETE** |
 | Calling | 14-VOICE-01… | ✅ 14-VOICE-03 done ([#88](https://github.com/Gane2506/rust-crm/issues/88), [#89](https://github.com/Gane2506/rust-crm/pull/89)); **workstream COMPLETE** |
-| Analytics and staff | 15-DASH-01… | ✅ 15-DASH-01 done ([#90](https://github.com/Gane2506/rust-crm/issues/90), [#91](https://github.com/Gane2506/rust-crm/pull/91)); 🔨 15-DASH-02 in progress |
+| Analytics and staff | 15-DASH-01… | ✅ 15-DASH-03 done ([#99](https://github.com/Gane2506/rust-crm/issues/99), [#100](https://github.com/Gane2506/rust-crm/pull/100)); **workstream COMPLETE** |
 | Contract signing | 13-SIGN-01…03 | ⬜ Not started |
 | Calling | 14-VOICE-01…03 | ⬜ Not started |
-| Analytics and staff | 15-DASH-01…03 | ⬜ Not started |
-| Admin and operations | 16-ADMIN-01…03 | ⬜ Not started |
-| Hardening and release | 17-PERF-01…03 | ⬜ Not started |
+| Analytics and staff | 15-DASH-01…03 | ✅ Complete |
+| Admin and operations | 16-ADMIN-01…03 | ✅ 16-ADMIN-03 done ([#105](https://github.com/Gane2506/rust-crm/issues/105), [#106](https://github.com/Gane2506/rust-crm/pull/106)); **workstream COMPLETE** |
+| Hardening and release | 17-PERF-01…03 | ✅ 17-PERF-02 done ([#109](https://github.com/Gane2506/rust-crm/issues/109), [#110](https://github.com/Gane2506/rust-crm/pull/110)); 🔨 17-PERF-03 in progress ([#111](https://github.com/Gane2506/rust-crm/issues/111)) |
 
 ## CI gates (summary)
 
