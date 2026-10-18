@@ -81,6 +81,10 @@ pub mod billing;
 /// [`contract`](crm_domain::contract) aggregate.
 pub mod signing;
 
+/// Calling service: call lifecycle, consent-gated recordings, and
+/// the provider port over the [`voice`](crm_domain::voice) domain.
+pub mod voice;
+
 /// Errors raised by [`crm-core`](crate) utilities.
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum CoreError {

@@ -431,6 +431,10 @@ pub enum Resource {
     /// 12-BILL-02). Covers the invoice lifecycle (issue, void),
     /// draft-only line items, and payment coverage (record, reverse).
     Invoice,
+    /// Calls inside a client profile (task 14-VOICE-02). Covers the
+    /// call lifecycle (place, answer, end), consent-gated recordings,
+    /// and the provider port.
+    Call,
 }
 
 /// Operations on a resource.

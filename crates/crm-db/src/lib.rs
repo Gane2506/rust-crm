@@ -35,6 +35,7 @@ pub mod form;
 pub mod jev;
 pub mod postgres;
 pub mod signing;
+pub mod voice;
 pub mod workflow;
 
 use thiserror::Error;

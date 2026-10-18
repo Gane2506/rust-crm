@@ -66,6 +66,7 @@ use crm_db::jev::{
 };
 use crm_db::postgres::{PgAuditService, PgContactRepository};
 use crm_db::signing::{PgContractRepository, PgSigningTemplateRepository};
+use crm_db::voice::PgCallRepository;
 use crm_db::workflow::{
     PgTriggerRepository, PgWorkflowEdgeRepository, PgWorkflowNodeRepository, PgWorkflowRepository,
     PgWorkflowVersionRepository,
@@ -149,6 +150,11 @@ pub struct ApiAuth {
     pub contracts: PgContractRepository,
     /// Signing-template repository for the signing endpoints.
     pub signing_templates: PgSigningTemplateRepository,
+    /// Call repository for the calling endpoints.
+    pub calls: PgCallRepository,
+    /// Voice provider for the calling endpoints (stub until the
+    /// Telnyx adapter lands).
+    pub voice_provider: crm_core::voice::StubVoiceProvider,
 }
 
 impl ApiAuth {
@@ -202,6 +208,8 @@ impl ApiAuth {
             payments: PgPaymentRepository::new(pool.clone()),
             contracts: PgContractRepository::new(pool.clone()),
             signing_templates: PgSigningTemplateRepository::new(pool.clone()),
+            calls: PgCallRepository::new(pool.clone()),
+            voice_provider: crm_core::voice::StubVoiceProvider::new(),
         }
     }
 }
