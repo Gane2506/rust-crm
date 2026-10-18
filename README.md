@@ -241,7 +241,7 @@ and merge happens on green CI plus review. Follow along via
 | Feed | 12-FEED-01… | ✅ 12-FEED-03 done ([#69](https://github.com/Gane2506/rust-crm/issues/69), [#70](https://github.com/Gane2506/rust-crm/pull/70)); **workstream COMPLETE** |
 | Billing | 12-BILL-01… | ✅ 12-BILL-03 done ([#76](https://github.com/Gane2506/rust-crm/issues/76), [#77](https://github.com/Gane2506/rust-crm/pull/77)); **workstream COMPLETE** |
 | Contract signing | 13-SIGN-01… | ✅ 13-SIGN-03 done ([#82](https://github.com/Gane2506/rust-crm/issues/82), [#83](https://github.com/Gane2506/rust-crm/pull/83)); **workstream COMPLETE** |
-| Calling | 14-VOICE-01… | 🔨 14-VOICE-01 in progress |
+| Calling | 14-VOICE-01… | ✅ 14-VOICE-01 done ([#84](https://github.com/Gane2506/rust-crm/issues/84), [#85](https://github.com/Gane2506/rust-crm/pull/85)); 🔨 14-VOICE-02 in progress |
 | Contract signing | 13-SIGN-01…03 | ⬜ Not started |
 | Calling | 14-VOICE-01…03 | ⬜ Not started |
 | Analytics and staff | 15-DASH-01…03 | ⬜ Not started |
