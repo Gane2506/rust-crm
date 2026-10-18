@@ -567,6 +567,101 @@ surface:
   financial visibility and the ability to mutate
   financial facts.
 
+## Contract signing surface
+
+The signing slice (tasks 13-SIGN-01 through
+13-SIGN-03) turns templates into contracts,
+collects signatures with forensic evidence, and
+gates effectiveness on verified payment. It does
+not execute payments itself. The signature-relevant
+attack surface:
+
+- **Signature forgery.** The question "did this
+  person really sign?" is answered by the evidence
+  model, not by a stored image: each signature
+  records signer name + email, `signed_at`,
+  `SignatureMethod` (typed / drawn / click-to-sign
+  — a closed enum, never free text), and SHA-256
+  fingerprints of the IP and user agent. The raw
+  identifiers never persist, but the fingerprints
+  are deterministic, so an operator can correlate
+  repeat signers and a dispute can compare the
+  recorded hashes against a claimed network.
+  Forgery here means impersonating a signer: the
+  service rejects signatures from emails that are
+  not signer slots on the contract, but it does
+  **not** verify identity — there is no OTP,
+  no SSO, no knowledge factor. The signature proves
+  "someone with this email clicked sign from this
+  network," not "this is legally Ada Lovelace."
+  Treat the evidence as an audit trail, not as
+  identity proof, until a verification factor is
+  added (a later task).
+- **Evidence tampering.** Evidence rows are
+  append-only (`UNIQUE(contract_id, signer_email)`
+  with `ON CONFLICT DO NOTHING` — a re-sign keeps
+  the *first* forensic record while refreshing the
+  signer's `signed_at` slot). The rendered document
+  is pinned by its SHA-256 content hash at creation;
+  a later template edit produces a new template
+  version and cannot rewrite what the signer saw.
+  The vector is a writer with direct database
+  access — the app layer never mutates evidence,
+  but nothing in the schema stops a privileged
+  operator from rewriting rows. That is the same
+  trust model as the audit log (the hash chain
+  there is tamper-*evident*; evidence rows are
+  merely append-only). Backups and access controls
+  are the control.
+- **Template injection.** Templates are Rust-native
+  string substitution, not a template engine: the
+  only syntax is `{{placeholder}}`, placeholder
+  names are restricted to non-empty alphanumeric +
+  underscore, and `render()` does literal string
+  replacement — there is no code execution, no
+  conditionals, no includes. The injection to watch
+  is *content* injection through variables: a
+  variable value is inserted verbatim, so a
+  malicious variable (e.g. from a compromised
+  upstream) can put arbitrary text into the
+  rendered document. Variables must be treated as
+  untrusted input at the call site; the renderer
+  does not sanitize. Missing variables are a
+  hard `Validation` error (fail closed), so a
+  contract can never render with a silently dropped
+  clause.
+- **Payment-gate bypass.** The gate is the one
+  thing standing between "signed" and "effective":
+  `transition_to(Effective, _)` requires
+  `payment_verified = true`, and the service only
+  calls it from `satisfy_payment_gate`. Today that
+  method is a **manual reconciliation hook** —
+  invoking it asserts the operator verified payment.
+  Anyone with `contract/update` can therefore make
+  a contract effective without any money moving.
+  This is by design for now (the billing wiring is
+  a later task), but it means the gate is currently
+  an *honor* gate, not a *verified* gate. The
+  control is the double audit record:
+  `satisfy_payment_gate` writes both
+  `signing.payment_gate_satisfied` and
+  `signing.contract_effective`, so every manual
+  gate assertion is attributable. Review who
+  called the gate, not just the contract state.
+- **Cross-profile leakage.** Every contract endpoint
+  is fetch-then-authorize against
+  `Resource::Contract` with profile-scoped grants;
+  `list_contracts` fails closed when the context
+  names no profile. Templates are deliberately
+  agency-scoped (shared legal language), so a
+  template name/body is visible to any staffer with
+  the agency grant — do not put client-specific
+  terms in a template body; they belong in
+  variables, which live on the profile-scoped
+  contract. The remaining vector is operator error,
+  as elsewhere: keep `contract/*` grants
+  least-privilege.
+
 ## Frontend (SPA) security posture
 
 The Leptos frontend (`crates/crm-web`, task 06-UI) is a thin client:
