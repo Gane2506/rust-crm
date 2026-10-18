@@ -50,46 +50,47 @@ Statuses: TODO / IN_PROGRESS / BLOCKED / DONE. Never mark DONE without linked co
 | 14-VOICE-02 | DONE | issue #86 / PR #87 (merge `8c5bd67`) | | Calling: vertical slice (403 tests) |
 | 14-VOICE-03 | DONE | issue #88 / PR #89 (merge `73bf073`) | | Calling: verify + operationalize (403 tests) |
 | 15-DASH-01 | DONE | issue #90 / PR #91 (merge `7eab8f7`) | | Analytics: domain and interfaces (425 tests) |
-| 15-DASH-02 | IN_PROGRESS | issue #92 / branch `task/15-DASH-02` | | Analytics: implement vertical slice |
-| 02-DB-02 | TODO | | | |
-| 02-DB-03 | TODO | | | |
-| 03-SEC-01 | TODO | | | |
-| 03-SEC-02 | TODO | | | |
-| 03-SEC-03 | TODO | | | |
-| 04-AUD-01 | TODO | | | |
-| 04-AUD-02 | TODO | | | |
-| 04-AUD-03 | TODO | | | |
-| 05-CRM-01 | TODO | | | |
-| 05-CRM-02 | TODO | | | |
-| 06-UI-02 | TODO | | | |
-| 06-UI-03 | TODO | | | |
-| 07-MAIL-01 | TODO | | | |
-| 07-MAIL-02 | TODO | | | |
-| 07-MAIL-03 | TODO | | | |
-| 08-CAMP-01 | TODO | | | |
-| 08-CAMP-02 | TODO | | | |
-| 09-JEV-02 | TODO | | | |
-| 09-JEV-03 | TODO | | | |
-| 10-WORK-01 | TODO | | | |
-| 10-WORK-02 | TODO | | | |
-| 10-WORK-03 | TODO | | | |
-| 11-FORM-01 | TODO | | | |
-| 11-FORM-02 | TODO | | | |
-| 11-FORM-03 | TODO | | | |
-| 12-BILL-02 | TODO | | | |
-| 12-BILL-03 | TODO | | | |
-| 13-SIGN-01 | TODO | | | |
-| 13-SIGN-02 | TODO | | | |
-| 13-SIGN-03 | TODO | | | |
-| 14-VOICE-01 | TODO | | | |
-| 14-VOICE-02 | TODO | | | |
-| 14-VOICE-03 | TODO | | | |
-| 15-DASH-01 | TODO | | | |
-| 15-DASH-02 | TODO | | | |
-| 15-DASH-03 | TODO | | | |
-| 16-ADMIN-01 | TODO | | | |
-| 16-ADMIN-02 | TODO | | | |
-| 16-ADMIN-03 | TODO | | | |
-| 17-PERF-01 | TODO | | | |
-| 17-PERF-02 | TODO | | | |
-| 17-PERF-03 | TODO | | | |
+| 15-DASH-02 | DONE | issue #92 / PR #93 (merge `6c20c8d`) | | Analytics: implement vertical slice (431 tests; real bug fixed: sqlx dep + id imports + trait imports) |
+| 02-DB-02 | TODO |
+| 02-DB-03 | TODO |
+| 03-SEC-01 | TODO |
+| 03-SEC-02 | TODO |
+| 03-SEC-03 | TODO |
+| 04-AUD-01 | TODO |
+| 04-AUD-02 | TODO |
+| 04-AUD-03 | TODO |
+| 05-CRM-01 | TODO |
+| 05-CRM-02 | TODO |
+| 06-UI-02 | TODO |
+| 06-UI-03 | TODO |
+| 07-MAIL-01 | TODO |
+| 07-MAIL-02 | TODO |
+| 07-MAIL-03 | TODO |
+| 08-CAMP-01 | TODO |
+| 08-CAMP-02 | TODO |
+| 09-JEV-02 | TODO |
+| 09-JEV-03 | TODO |
+| 10-WORK-01 | TODO |
+| 10-WORK-02 | TODO |
+| 10-WORK-03 | TODO |
+| 11-FORM-01 | TODO |
+| 11-FORM-02 | TODO |
+| 11-FORM-03 | TODO |
+| 12-BILL-02 | TODO |
+| 12-BILL-03 | TODO |
+| 13-SIGN-01 | TODO |
+| 13-SIGN-02 | TODO |
+| 13-SIGN-03 | TODO |
+| 14-VOICE-01 | TODO |
+| 14-VOICE-02 | TODO |
+| 14-VOICE-03 | TODO |
+| 15-DASH-01 | TODO |
+| 15-DASH-02 | DONE | issue #92 / PR #93 | | |
+| 15-DASH-03 | DONE | issue #99 / PR #100 (merge `1c0df69`) | | Analytics: runbook, threat model, seed demo dashboard (real bug fixed: LIMIT $2 bind mismatch; CodeRabbit 5 items addressed) |
+| UI-RESTYLE | DONE | issue #95 / PR #96 (merge `c648f10`) | | Twenty-style UI rebuilt in Rust (Leptos component library, every view reskinned, 10 screenshots) |
+| 16-ADMIN-01 | DONE | issue #101 / PR #102 (merge `96d5f1b`) | | Admin: domain and interfaces (464 tests) |
+| 16-ADMIN-02 | DONE | issue #103 / PR #104 (merge `5cb9ce5`) | | Admin: vertical slice (476 tests; 38 handlers, 8 Pg repos, 12 integration tests) |
+| 16-ADMIN-03 | DONE | issue #105 / PR #106 (merge `843e86e`) | | Admin: verify + operationalize (security review clean; admin runbook; seed step 16; CodeRabbit 2 items fixed) |
+| 17-PERF-01 | DONE | issue #107 / PR #108 (merge `c5e296b`) | | Hardening: limit capping (13 endpoints), pool timeouts, performance.md (476 tests) |
+| 17-PERF-02 | DONE | issue #109 / PR #110 (merge `23691e1`) | | Request timeouts (30s, 504) + write rate limiting (429 + Retry-After); 482 tests; CodeRabbit 2 items fixed |
+| 17-PERF-03 | IN_PROGRESS | issue #111 / branch `task/17-PERF-03` | | Hardening: load benchmarks and final release pass |
