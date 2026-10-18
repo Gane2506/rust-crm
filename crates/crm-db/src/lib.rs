@@ -29,6 +29,7 @@ pub mod auth;
 pub mod campaign;
 pub mod core_crm;
 pub mod email;
+pub mod feed;
 pub mod form;
 pub mod jev;
 pub mod postgres;
