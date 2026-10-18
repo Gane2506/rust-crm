@@ -1112,6 +1112,68 @@ async fn seed_dashboard(pool: &sqlx::PgPool) -> Result<bool, DomainError> {
     Ok(created)
 }
 
+/// Seeds demo admin data: agency settings v1 for the demo agency and
+/// the maintenance singleton in the disabled state. Idempotent: skips
+/// when a settings v1 already exists.
+async fn seed_admin(pool: &sqlx::PgPool) -> Result<bool, DomainError> {
+    use crm_core::admin::AdminServiceImpl;
+    use crm_db::admin::{
+        PgAgencySettingsRepository, PgBackupRepository, PgExportRepository,
+        PgInstallationRepository, PgMaintenanceRepository, PgRoleAssignmentRepository,
+        PgStaffInvitationRepository, PgUpgradeRepository,
+    };
+    use crm_domain::repositories::AgencySettingsRepository;
+    use crm_domain::services::{AdminService, UpdateAgencySettings};
+
+    let staff_repo = PgStaffRepository::new(pool.clone());
+    let staff_user = staff_repo
+        .find_by_email(DEMO_STAFF_EMAIL)
+        .await?
+        .expect("demo staff user exists before admin seeding");
+    let settings = PgAgencySettingsRepository::new(pool.clone());
+
+    // Idempotency anchor: the specific demo settings version 1.
+    if settings.get_current(staff_user.agency_id).await.is_ok() {
+        return Ok(false);
+    }
+
+    let service = AdminServiceImpl::new(
+        PgStaffInvitationRepository::new(pool.clone()),
+        PgRoleAssignmentRepository::new(pool.clone()),
+        settings,
+        PgMaintenanceRepository::new(pool.clone()),
+        staff_repo,
+        PgBackupRepository::new(pool.clone()),
+        PgExportRepository::new(pool.clone()),
+        PgUpgradeRepository::new(pool.clone()),
+        PgInstallationRepository::new(pool.clone()),
+        PgAuditService::new(PgAuditRepository::new(pool.clone())),
+        vec![crm_db::admin::DbHealthReporter::new(pool.clone())],
+    );
+    let ctx = ActionContext {
+        actor_kind: ActorKind::Human,
+        actor_id: ActorId::from(staff_user.staff_id),
+        client_profile_id: None,
+        correlation_id: Uuid::new_v4(),
+    };
+
+    service
+        .update_settings(
+            UpdateAgencySettings {
+                display_name: Some("Demo Agency".to_string()),
+                support_email: Some(Some("support@example.com".to_string())),
+                session_ttl_secs: Some(3600),
+            },
+            &ctx,
+        )
+        .await?;
+    // Ensures the maintenance singleton row exists in the disabled
+    // state (the service defaults a missing row to disabled and
+    // persists it here).
+    service.disable_maintenance(&ctx).await?;
+    Ok(true)
+}
+
 /// Env var gating writes: `CRM_SEED_DEV=1` is the explicit opt-in that
 /// lets this example write to the database.
 const SEED_DEV_ENV: &str = "CRM_SEED_DEV";
@@ -1374,6 +1436,7 @@ async fn run() -> Result<(), String> {
         println!(
             "  15. seed demo dashboard (agency overview, 2 widgets) + demo report (idempotent)"
         );
+        println!("  16. seed demo agency settings v1 + maintenance disabled (idempotent)");
         return Ok(());
     }
 
@@ -1481,6 +1544,14 @@ async fn run() -> Result<(), String> {
         );
     } else {
         println!("seed complete: demo dashboard already present");
+    }
+    if seed_admin(&pool)
+        .await
+        .map_err(|error| format!("seed admin: {error}"))?
+    {
+        println!("seed complete: demo agency settings v1 + maintenance disabled created");
+    } else {
+        println!("seed complete: demo agency settings already present");
     }
     println!("dev login: email {DEMO_STAFF_EMAIL}, password {DEMO_STAFF_PASSWORD} (local only)");
     Ok(())

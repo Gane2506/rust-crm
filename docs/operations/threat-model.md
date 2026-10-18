@@ -853,3 +853,89 @@ caller-controlled string ever reaches query text**:
   requires `group_by`, `Count` rejects it, unique grid
   positions) are enforced server-side on every write, so a
   client cannot smuggle an invalid widget past the API.
+
+## Admin surface
+
+Admin (tasks 16-ADMIN-01 through 16-ADMIN-03) is the
+privilege-management plane: staff invitations, role
+assignments, agency settings, maintenance mode, and the
+operational lifecycles (backups, exports, upgrades,
+installation). The security-critical property is that
+**admin is agency-wide by construction and never
+profile-scoped**:
+
+- **Double agency-scope enforcement.** The HTTP layer's
+  `authorize_admin` resolves the action context with no
+  client profile — a profile-scoped session can never
+  satisfy an admin grant — and the service independently
+  rejects any profile-scoped context with
+  `require_agency_scope`. A bug in one layer does not
+  silently widen the other.
+- **Invitation handling.** There is no invitation token
+  and no public accept endpoint in this slice:
+  acceptance is staff-mediated by an operator who
+  already holds `staff_user/manage`. The domain records
+  the invitation and its forward-only transitions and
+  explicitly defers token verification to a future
+  service layer (the 03-SEC-02 password-verification
+  precedent). Expiry is enforced at the domain level —
+  an expired invitation cannot be accepted, only marked
+  expired, so the terminal state is recorded accurately.
+  The created account joins the *inviter's* agency and
+  starts with no credential: it cannot authenticate
+  until a credential is set, which also bounds the blast
+  radius if staff creation succeeds but the invitation
+  update is lost.
+- **Privilege-escalation paths.** Self-assignment is
+  rejected at the domain level (`RoleAssignment::new`),
+  and self-disable is rejected with a validation error,
+  so an operator cannot grant themselves roles or lock
+  out every other operator through these endpoints.
+  Role revocation is idempotent in the domain — a
+  retried revoke cannot flip a revoked assignment back
+  to active.
+- **Settings integrity.** Settings are immutable
+  versioned snapshots; every update creates version+1
+  and the full history is retained, so a malicious or
+  mistaken settings change is always recoverable and
+  attributable (each version records the acting staff
+  member). The agency is taken from the actor's staff
+  record, never from the request body — settings cannot
+  be written for another agency. Session TTL can only
+  tighten the platform maximum, never loosen it.
+- **Maintenance-mode abuse.** Toggling maintenance
+  requires `system/manage` and a non-blank reason and
+  emits an audit event, but maintenance mode is
+  **advisory only** in this slice — no middleware
+  rejects traffic while it is enabled. It must not be
+  relied on as an access control or a kill switch; a
+  compromised `system/manage` grant cannot use it to
+  DoS the service, but neither can a legitimate
+  operator use it to shed load.
+- **Health information disclosure.** `GET /admin/health`
+  requires the `system/read` grant at agency scope; it
+  is not a public probe. Health reasons are secret-free
+  by domain rule (the same privacy rule as
+  `observability.rs`: names and reasons must never
+  contain PII or secrets). The public liveness and
+  readiness probes stay on `/healthz` and `/readyz`.
+- **Audit and idempotency gaps.** Audit-recording
+  failure is discarded in the service (`let _ =`) and
+  never fails the operation — the same convention as
+  billing and analytics — so a saturated audit sink
+  cannot block admin operations, at the cost of
+  potentially missing audit rows under failure. There
+  are no idempotency keys on admin writes (the same
+  known limitation as 12-BILL-03): a retried
+  invitation, backup, export, or upgrade request can
+  create duplicates. Lifecycle *transitions* stay safe
+  because the domain rejects invalid ones and
+  revocation is idempotent.
+- **Lifecycle trackers, not executors.** Backups,
+  exports, upgrades, and installation record state
+  transitions for work performed externally. The API
+  cannot trigger an actual backup, export data, or run
+  an upgrade — it only tracks them. A compromised
+  `system/manage` grant therefore cannot exfiltrate
+  data through the export lifecycle; the exfiltration
+  path would have to live in the external tooling.
