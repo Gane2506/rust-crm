@@ -28,10 +28,12 @@
 
 use uuid::Uuid;
 
+use crm_core::billing::BillingServiceImpl;
 use crm_core::campaign::CampaignServiceImpl;
 use crm_core::email::{EmailServiceImpl, StubEmailProvider};
 use crm_core::memory::ContactServiceImpl;
 use crm_db::auth::hash_password;
+use crm_db::billing::{PgInvoiceRepository, PgPaymentRepository};
 use crm_db::campaign::{
     PgCampaignRepository, PgConversionRepository, PgOptOutRepository, PgProspectPoolRepository,
 };
@@ -45,6 +47,7 @@ use crm_db::postgres::{
 use crm_db::{run_migrations, DATABASE_URL_ENV, DATABASE_URL_EXAMPLE};
 use crm_domain::asset::Asset;
 use crm_domain::audit::ActorKind;
+use crm_domain::billing::Money;
 use crm_domain::campaign::{Channel as CampaignChannel, OptOutChannel, OwnerContext, StepKind};
 use crm_domain::email::InboundThreadHints;
 use crm_domain::error::DomainError;
@@ -52,13 +55,14 @@ use crm_domain::ids::{ActorId, AgencyId, ClientProfileId, ContactId, GrantId, St
 use crm_domain::profile::{ClientProfile, ProfileStatus};
 use crm_domain::repositories::{
     AssetRepository, ClientProfileRepository, ContactRepository, EmailMessageRepository,
-    EmailThreadRepository, GrantRepository, ProspectPoolRepository, StaffRepository,
+    EmailThreadRepository, GrantRepository, InvoiceRepository, ProspectPoolRepository,
+    StaffRepository,
 };
 use crm_domain::security::{Action, Grant, Operation, PasswordCredential, Resource, Scope};
 use crm_domain::services::ActionContext;
 use crm_domain::services::{
-    CampaignService, ContactService, EmailService, InboundEmail, NewCampaign, NewCampaignStep,
-    NewContact, NewEmailMessage,
+    BillingService, CampaignService, ContactService, EmailService, InboundEmail, NewCampaign,
+    NewCampaignStep, NewContact, NewEmailMessage, NewInvoice, NewInvoiceLine, NewPayment,
 };
 
 /// Demo tenant also used by the `crm-web` vertical slice until real
@@ -778,6 +782,81 @@ async fn seed_feed(pool: &sqlx::PgPool) -> Result<bool, DomainError> {
     Ok(true)
 }
 
+/// Seeds a demo invoice through the real `BillingServiceImpl` (task
+/// 12-BILL-03): a USD draft invoice with two lines, issued, with a
+/// partial payment recorded (balance remains, so it stays `Issued`).
+/// Written through the service — never raw SQL — so lifecycle,
+/// coverage, and audit behavior match production. Idempotent: skipped
+/// when any invoices already exist on the demo profile.
+async fn seed_billing(pool: &sqlx::PgPool) -> Result<bool, DomainError> {
+    let profile =
+        ClientProfileId::from(Uuid::parse_str(DEMO_PROFILE_ID).expect("demo profile id parses"));
+    let invoices = PgInvoiceRepository::new(pool.clone());
+    // Idempotency anchor: the profile's invoices.
+    if !invoices.list_by_profile(profile, 1).await?.is_empty() {
+        return Ok(false);
+    }
+
+    let service = BillingServiceImpl::new(
+        invoices,
+        PgPaymentRepository::new(pool.clone()),
+        PgAuditService::new(PgAuditRepository::new(pool.clone())),
+    );
+    let ctx = ActionContext {
+        actor_kind: ActorKind::System,
+        actor_id: ActorId::from(Uuid::nil()),
+        client_profile_id: Some(profile),
+        correlation_id: Uuid::new_v4(),
+    };
+
+    let usd = |amount: i64| Money::new(amount, "USD".to_string()).expect("valid money");
+    let invoice = service
+        .create_invoice(
+            NewInvoice {
+                client_profile_id: profile,
+                currency: "USD".to_string(),
+            },
+            &ctx,
+        )
+        .await?;
+    service
+        .add_line(
+            NewInvoiceLine {
+                invoice_id: invoice.invoice_id,
+                description: "Monthly retainer".to_string(),
+                quantity: 1,
+                unit_price: usd(25_000),
+            },
+            &ctx,
+        )
+        .await?;
+    service
+        .add_line(
+            NewInvoiceLine {
+                invoice_id: invoice.invoice_id,
+                description: "Onboarding".to_string(),
+                quantity: 1,
+                unit_price: usd(15_000),
+            },
+            &ctx,
+        )
+        .await?;
+    service.issue_invoice(invoice.invoice_id, &ctx).await?;
+    // Partial payment: $200 of the $400 total, so the invoice stays
+    // `Issued` with a $200 balance.
+    service
+        .record_payment(
+            NewPayment {
+                invoice_id: invoice.invoice_id,
+                amount: usd(20_000),
+            },
+            &ctx,
+        )
+        .await?;
+
+    Ok(true)
+}
+
 /// Env var gating writes: `CRM_SEED_DEV=1` is the explicit opt-in that
 /// lets this example write to the database.
 const SEED_DEV_ENV: &str = "CRM_SEED_DEV";
@@ -914,6 +993,28 @@ async fn seed_staff(pool: &sqlx::PgPool, agency_id: AgencyId) -> Result<bool, Do
             )
             .await?;
     }
+    // Grants for the billing slice (task 12-BILL-02): invoices and
+    // payments on the demo profile, so the demo user can try the
+    // billing endpoints after logging in.
+    for (resource, operation) in [
+        (Resource::Invoice, Operation::Read),
+        (Resource::Invoice, Operation::Create),
+        (Resource::Invoice, Operation::Update),
+    ] {
+        grant_repo
+            .assign(
+                user.staff_id,
+                Grant {
+                    grant_id: GrantId::new(),
+                    action: Action {
+                        resource,
+                        operation,
+                    },
+                    scope,
+                },
+            )
+            .await?;
+    }
     Ok(true)
 }
 
@@ -950,6 +1051,7 @@ async fn run() -> Result<(), String> {
         println!("  9. seed demo workflow (draft, trigger → action → delay) (idempotent)");
         println!("  10. seed demo form (published, 3 fields, 1 reviewed submission) (idempotent)");
         println!("  11. seed demo feed items (pinned, normal, read, hidden) (idempotent)");
+        println!("  12. seed demo invoice (issued, 2 lines, partial payment) (idempotent)");
         return Ok(());
     }
 
@@ -1023,6 +1125,14 @@ async fn run() -> Result<(), String> {
         println!("seed complete: demo feed items (pinned, normal, read, hidden) created");
     } else {
         println!("seed complete: demo feed items already present");
+    }
+    if seed_billing(&pool)
+        .await
+        .map_err(|error| format!("seed billing: {error}"))?
+    {
+        println!("seed complete: demo invoice (issued, 2 lines, partial payment) created");
+    } else {
+        println!("seed complete: demo invoice already present");
     }
     println!("dev login: email {DEMO_STAFF_EMAIL}, password {DEMO_STAFF_PASSWORD} (local only)");
     Ok(())

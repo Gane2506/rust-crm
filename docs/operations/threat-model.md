@@ -478,6 +478,95 @@ vectors matter:
   rows and their own privacy questions; the shared
   flag deliberately avoids storing them.
 
+## Billing surface
+
+The billing slice (tasks 12-BILL-01 through 12-BILL-03)
+is financial record-keeping: invoices with a strict
+status machine, line items frozen at issue, and
+append-only payment records with coverage tracking. It
+does not execute charges. The money-relevant attack
+surface:
+
+- **Invoice tampering.** The dangerous mutation is a
+  moving total: an attacker (or a buggy client) that
+  can add lines to an issued invoice rewrites a
+  financial fact — inflating what the client "owes"
+  or shrinking it to hide theft. The domain rejects
+  `add_line()` on anything but a draft invoice, and
+  `total()` is infallible because overflow is rejected
+  at line-add time. Status transitions go only
+  through domain methods (`issue()`, `void()`,
+  `mark_paid()`, `reopen()`), each with explicit
+  preconditions; there is no "set status" endpoint.
+  The residual vector is the `Invoice` struct's `pub`
+  fields (a 12-BILL-01-era design choice, matching
+  the rest of the codebase): the domain methods are
+  the enforcement point only if callers use them. The
+  service layer is the sole mutator today and goes
+  through the methods; any future direct writer must
+  be audited against the same rule.
+- **Payment fraud vectors.** The classic attacks are
+  overpayment (record a payment larger than the
+  balance to manufacture credit), zero/negative
+  payments (move the balance without moving money),
+  and double-processing (retry a payment POST). The
+  slice defends in depth: `Payment::record()` rejects
+  zero amounts; `Money` rejects negatives at
+  construction and on deserialization (manual
+  `Deserialize` through `Money::new` — a JSON body
+  with `"amount": -5000` is a `422`, not a negative
+  payment); `record_payment` checks coverage
+  **before persisting** — an overpayment is a
+  `Validation` error with zero DB writes, so there
+  is no window where a payment exists but the
+  invoice does not reflect it. Double-processing is
+  **not** defended: billing endpoints take no
+  `Idempotency-Key` (see the runbook), so a retried
+  `POST /payments` records twice. Operators must
+  reconcile via the list endpoints; idempotent
+  payment intake is a later task.
+- **Currency confusion.** Amounts are currency-tagged
+  (`Money` = amount + ISO 4217 code); mixed-currency
+  arithmetic is a `Validation` error at every
+  boundary — `Money::add`/`sub`, `add_line`, and
+  `remaining_due()` all reject mismatches, and the
+  currency code itself is validated (exactly three
+  uppercase ASCII letters) at construction and on
+  deserialization. A USD payment against a EUR
+  invoice is a `422`, never a silent conversion.
+  There is no FX anywhere in the slice: cross-currency
+  billing must be handled by the operator as separate
+  invoices.
+- **The `Paid → Issued` reopen as an audit-visible
+  event.** Reversing a payment that completed coverage
+  reopens the invoice to `Issued` — the state change
+  is real (the invoice is no longer fully paid) and
+  it is recorded as `billing.payment_reversed`.
+  Because reversals are explicit and append-only
+  (no deletion of payment records), the full history
+  survives: an auditor can replay every payment and
+  reversal to reconstruct any past balance. The
+  vector to watch is *reversal without cause*: anyone
+  with `invoice/update` can reverse a payment and
+  reopen a paid invoice, which is legitimate for
+  bounced payments but is also how an insider
+  manufactures an "unpaid" invoice. The audit trail
+  is the control — review `billing.payment_reversed`
+  events, not just the current status.
+- **Cross-profile leakage.** Every endpoint is
+  fetch-then-authorize against `Resource::Invoice`
+  with profile-scoped grants: a missing invoice is
+  `404` before any grant check, and the service
+  enforces the caller's profile scope on each
+  operation (`Forbidden` on mismatch). `list_invoices`
+  fails closed on an agency-scoped context that
+  names no profile. The remaining vector is operator
+  error, as with the feed: a staffer with grants on
+  two profiles sees both profiles' invoices. Keep
+  invoice grants least-privilege — they gate both
+  financial visibility and the ability to mutate
+  financial facts.
+
 ## Frontend (SPA) security posture
 
 The Leptos frontend (`crates/crm-web`, task 06-UI) is a thin client:
