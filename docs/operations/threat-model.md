@@ -417,6 +417,67 @@ matters:
   submissions. Grants are per-profile by design; keep
   them least-privilege.
 
+## Feed surface
+
+The feed (tasks 12-FEED-01 through 12-FEED-03) is a
+read-mostly activity timeline: write-once items,
+ordered pinned → newest, annotated with read / pin /
+hide. The surface is narrow (list + three annotation
+endpoints), but it aggregates PII-adjacent facts from
+*every* workstream into one place, so the leakage
+vectors matter:
+
+- **Cross-profile information leakage.** Every item
+  carries a `client_profile_id`, and every endpoint is
+  fetch-then-authorize against `Resource::FeedItem` with
+  profile-scoped grants: a missing item is `404` before
+  any grant check, and the service enforces the
+  caller's scope on each item. `list_feed` goes further —
+  it fails closed (`Forbidden`) on an agency-scoped
+  context that names no profile, so a caller cannot
+  enumerate the whole feed corpus. The remaining
+  vector is *operator error*: a staffer with grants on
+  two profiles sees both profiles' timelines. Grants
+  are per-profile by design; keep them least-privilege,
+  and remember the feed concentrates what would
+  otherwise require several separate reads.
+- **Hidden-item bypass.** Hiding is sticky at the
+  domain level (no `unhide()`), and hidden items are
+  excluded from reads unless the query passes
+  `include_hidden: true`. Reading hidden items goes
+  through the same `feed_item/read` grant as normal
+  reads — there is no separate "see hidden" grant, so
+  anyone who can read the feed can opt hidden items
+  back in. If hidden must mean *invisible to some
+  staff* (e.g. moderation), that needs a distinct
+  grant and is a later task. Treat `include_hidden`
+  as an operator visibility toggle, not a security
+  boundary.
+- **Feed poisoning by producers.** Items are
+  write-once: once written, content cannot be edited
+  through the feed API — only visibility and the read
+  flag change. That protects history, but the *content*
+  is only as trustworthy as its producer. Today the
+  only writers are the repository (seed) and future
+  producer code; when workstreams start emitting
+  items, each producer must be a trusted service —
+  titles and bodies flow from workstream data into
+  the timeline unescaped, so a producer that lets
+  attacker-controlled text into a title (e.g. a
+  contact name rendered as a feed headline) poisons
+  every reader's view. Producers must sanitize at the
+  emission boundary; renderers must escape at display
+  time.
+- **Read state as a side channel.** The `read` flag is
+  shared per item, not per staffer: anyone with
+  `feed_item/update` can mark anything read, and the
+  change is visible to everyone on the profile. This
+  is a coordination feature, not a privacy mechanism —
+  do not infer who read what from it. Per-user read
+  records (a later task) would introduce per-staff
+  rows and their own privacy questions; the shared
+  flag deliberately avoids storing them.
+
 ## Frontend (SPA) security posture
 
 The Leptos frontend (`crates/crm-web`, task 06-UI) is a thin client:

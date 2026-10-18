@@ -700,6 +700,84 @@ async fn seed_form(pool: &sqlx::PgPool) -> Result<bool, DomainError> {
     Ok(true)
 }
 
+/// Seeds demo feed items on the demo profile: one pinned, one
+/// normal, one read, one hidden — exercising the feed ordering and
+/// visibility bands. Written through `PgFeedItemRepository`
+/// directly: there is no producer service yet (a 12-FEED-02
+/// follow-on will have workstreams emit items). Idempotent via the
+/// profile's item list (skipped when any feed items exist).
+async fn seed_feed(pool: &sqlx::PgPool) -> Result<bool, DomainError> {
+    use crm_db::feed::PgFeedItemRepository;
+    use crm_domain::audit::ActorKind as FeedActorKind;
+    use crm_domain::feed::{FeedItem, FeedQuery, FeedSource};
+    use crm_domain::repositories::FeedItemRepository;
+
+    let profile =
+        ClientProfileId::from(Uuid::parse_str(DEMO_PROFILE_ID).expect("demo profile id parses"));
+    let items = PgFeedItemRepository::new(pool.clone());
+    // Idempotency anchor: the profile's feed.
+    if !items
+        .list(
+            profile,
+            FeedQuery::new(1, true, false).expect("valid query"),
+        )
+        .await?
+        .is_empty()
+    {
+        return Ok(false);
+    }
+
+    let mk = |source: FeedSource, title: &str, ref_type: &str| {
+        FeedItem::new(
+            profile,
+            source,
+            title.to_string(),
+            None,
+            FeedActorKind::System,
+            ref_type.to_string(),
+            Uuid::new_v4(),
+        )
+    };
+
+    // Pinned: floats to the top of reads.
+    let mut pinned = mk(
+        FeedSource::ContactCreated,
+        "Ada Lovelace became a prospect",
+        "contact",
+    )?;
+    pinned.pin().expect("pin is valid");
+    items.create(pinned).await?;
+
+    // Normal: plain timeline item.
+    items
+        .create(mk(
+            FeedSource::FormSubmitted,
+            "Demo User submitted demo-seed-form",
+            "form_submission",
+        )?)
+        .await?;
+
+    // Read: shared read flag set.
+    let mut read = mk(
+        FeedSource::EmailReceived,
+        "Email received from ada@example.com",
+        "email_message",
+    )?;
+    read.mark_read();
+    items.create(read).await?;
+
+    // Hidden: excluded from default reads, sticky.
+    let mut hidden = mk(
+        FeedSource::NoteAdded,
+        "Internal note (hidden from the default timeline)",
+        "note",
+    )?;
+    hidden.hide();
+    items.create(hidden).await?;
+
+    Ok(true)
+}
+
 /// Env var gating writes: `CRM_SEED_DEV=1` is the explicit opt-in that
 /// lets this example write to the database.
 const SEED_DEV_ENV: &str = "CRM_SEED_DEV";
@@ -815,6 +893,27 @@ async fn seed_staff(pool: &sqlx::PgPool, agency_id: AgencyId) -> Result<bool, Do
             )
             .await?;
     }
+    // Grants for the feed slice (task 12-FEED-02): list the feed
+    // and annotate items (read/pin/hide) on the demo profile, so
+    // the demo user can try the feed endpoints after logging in.
+    for (resource, operation) in [
+        (Resource::FeedItem, Operation::Read),
+        (Resource::FeedItem, Operation::Update),
+    ] {
+        grant_repo
+            .assign(
+                user.staff_id,
+                Grant {
+                    grant_id: GrantId::new(),
+                    action: Action {
+                        resource,
+                        operation,
+                    },
+                    scope,
+                },
+            )
+            .await?;
+    }
     Ok(true)
 }
 
@@ -850,6 +949,7 @@ async fn run() -> Result<(), String> {
         println!("  8. seed demo agent run (completed, chain [stub, local]) (idempotent)");
         println!("  9. seed demo workflow (draft, trigger → action → delay) (idempotent)");
         println!("  10. seed demo form (published, 3 fields, 1 reviewed submission) (idempotent)");
+        println!("  11. seed demo feed items (pinned, normal, read, hidden) (idempotent)");
         return Ok(());
     }
 
@@ -915,6 +1015,14 @@ async fn run() -> Result<(), String> {
         println!("seed complete: demo form (published, 3 fields, 1 reviewed submission) created");
     } else {
         println!("seed complete: demo form already present");
+    }
+    if seed_feed(&pool)
+        .await
+        .map_err(|error| format!("seed feed: {error}"))?
+    {
+        println!("seed complete: demo feed items (pinned, normal, read, hidden) created");
+    } else {
+        println!("seed complete: demo feed items already present");
     }
     println!("dev login: email {DEMO_STAFF_EMAIL}, password {DEMO_STAFF_PASSWORD} (local only)");
     Ok(())
