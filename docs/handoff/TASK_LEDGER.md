@@ -37,7 +37,8 @@ Statuses: TODO / IN_PROGRESS / BLOCKED / DONE. Never mark DONE without linked co
 | 11-FORM-01 | DONE | issue #59 / PR #60 (merge `b03574e`) | | Form builder: define domain and interfaces (298 tests) |
 | 11-FORM-02 | DONE | issue #61 / PR #62 (merge `18154a5`) | | Form builder: vertical slice (304 tests) |
 | 11-FORM-03 | DONE | issue #63 / PR #64 (merge `8ba3443`) | | Form builder: verify + operationalize (304 tests) |
-| 12-FEED-01 | IN_PROGRESS | issue #65 / branch `task/12-FEED-01` | | Feed: define domain and interfaces |
+| 12-FEED-01 | DONE | issue #65 / PR #66 (merge `21846d5`) | | Feed: define domain and interfaces (319 tests) |
+| 12-FEED-02 | IN_PROGRESS | issue #67 / branch `task/12-FEED-02` | | Feed: implement vertical slice |
 | 02-DB-02 | TODO | | | |
 | 02-DB-03 | TODO | | | |
 | 03-SEC-01 | TODO | | | |

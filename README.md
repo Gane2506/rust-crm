@@ -238,7 +238,7 @@ and merge happens on green CI plus review. Follow along via
 | Jev agents | 09-JEV-01… | ✅ workstream complete ([#51](https://github.com/Gane2506/rust-crm/issues/51), [#52](https://github.com/Gane2506/rust-crm/pull/52)) |
 | Workflow builder | 10-WORK-01… | ✅ 10-WORK-03 done ([#57](https://github.com/Gane2506/rust-crm/issues/57), [#58](https://github.com/Gane2506/rust-crm/pull/58)); **workstream COMPLETE** |
 | Form builder | 11-FORM-01… | ✅ 11-FORM-03 done ([#63](https://github.com/Gane2506/rust-crm/issues/63), [#64](https://github.com/Gane2506/rust-crm/pull/64)); **workstream COMPLETE** |
-| Feed | 12-FEED-01… | 🔨 12-FEED-01 in progress |
+| Feed | 12-FEED-01… | ✅ 12-FEED-01 done ([#65](https://github.com/Gane2506/rust-crm/issues/65), [#66](https://github.com/Gane2506/rust-crm/pull/66)); 🔨 12-FEED-02 in progress |
 | Billing | 12-BILL-01…03 | ⬜ Not started |
 | Contract signing | 13-SIGN-01…03 | ⬜ Not started |
 | Calling | 14-VOICE-01…03 | ⬜ Not started |
