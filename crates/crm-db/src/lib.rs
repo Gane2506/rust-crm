@@ -29,6 +29,7 @@ pub mod auth;
 pub mod billing;
 pub mod campaign;
 pub mod core_crm;
+pub mod dashboard;
 pub mod email;
 pub mod feed;
 pub mod form;

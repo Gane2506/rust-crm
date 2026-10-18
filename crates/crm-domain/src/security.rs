@@ -435,6 +435,14 @@ pub enum Resource {
     /// call lifecycle (place, answer, end), consent-gated recordings,
     /// and the provider port.
     Call,
+    /// Saved analytics dashboards (task 15-DASH-02). Covers the
+    /// dashboard lifecycle (create, update, publish, delete), widget
+    /// configuration, and widget execution (`run_widget` is
+    /// read-only but still authorized).
+    Dashboard,
+    /// Saved, parameterized metric queries (task 15-DASH-02).
+    /// Immutable once created; covers create, read, and list.
+    Report,
 }
 
 /// Operations on a resource.

@@ -56,6 +56,7 @@ use crm_db::campaign::{
     PgCampaignRepository, PgConversionRepository, PgOptOutRepository, PgProspectPoolRepository,
 };
 use crm_db::core_crm::{PgAssetRepository, PgClientProfileRepository};
+use crm_db::dashboard::{PgDashboardRepository, PgReportRepository};
 use crm_db::email::{
     PgEmailAttachmentRepository, PgEmailMessageRepository, PgEmailThreadRepository,
 };
@@ -155,6 +156,14 @@ pub struct ApiAuth {
     /// Voice provider for the calling endpoints (stub until the
     /// Telnyx adapter lands).
     pub voice_provider: crm_core::voice::StubVoiceProvider,
+    /// Dashboard repository for the analytics endpoints.
+    pub dashboards: PgDashboardRepository,
+    /// Report repository for the analytics endpoints.
+    pub reports: PgReportRepository,
+    /// Database pool for read-only metric execution (widgets query
+    /// the entity tables directly; the service builds SQL only from
+    /// a hardcoded allowlist).
+    pub pool: PgPool,
 }
 
 impl ApiAuth {
@@ -210,6 +219,9 @@ impl ApiAuth {
             signing_templates: PgSigningTemplateRepository::new(pool.clone()),
             calls: PgCallRepository::new(pool.clone()),
             voice_provider: crm_core::voice::StubVoiceProvider::new(),
+            dashboards: PgDashboardRepository::new(pool.clone()),
+            reports: PgReportRepository::new(pool.clone()),
+            pool: pool.clone(),
         }
     }
 }
