@@ -2060,3 +2060,113 @@ pub trait VoiceService {
         ctx: &'a ActionContext,
     ) -> impl Future<Output = Result<Vec<crate::voice::Call>, DomainError>> + Send + 'a;
 }
+
+/// Input for [`DashboardService::create_dashboard`]: a named,
+/// scoped dashboard (created as a draft).
+#[derive(Debug, Clone)]
+pub struct NewDashboard {
+    /// Display name.
+    pub name: String,
+    /// Owner scope: `None` is agency-level (the master dashboard),
+    /// `Some` is one client profile's dashboard.
+    pub client_profile_id: Option<crate::ids::ClientProfileId>,
+}
+
+/// Input for [`DashboardService::update_dashboard`]: the draft-only
+/// mutations (rename, add/remove widgets).
+#[derive(Debug, Clone)]
+pub struct UpdateDashboard {
+    /// New display name, when renaming.
+    pub name: Option<String>,
+    /// Widgets to add (positions must be free).
+    pub widgets_to_add: Vec<crate::dashboard::DashboardWidget>,
+    /// Ids of widgets to remove.
+    pub widget_ids_to_remove: Vec<crate::ids::WidgetId>,
+}
+
+/// Input for [`DashboardService::create_report`]: a saved,
+/// parameterized metric query.
+#[derive(Debug, Clone)]
+pub struct NewReport {
+    /// Display name.
+    pub name: String,
+    /// The staff member saving the report.
+    pub owner: crate::ids::StaffId,
+    /// The metric the report runs.
+    pub metric: crate::dashboard::MetricDefinition,
+    /// The parameter values the metric runs with.
+    pub parameters: Vec<crate::dashboard::ReportParameter>,
+}
+
+/// Domain operations for analytics dashboards and reports (task
+/// 15-DASH-01).
+///
+/// Dashboards are saved widget configurations; `run_widget` executes
+/// one widget's metric against the existing repositories and returns
+/// the computed [`WidgetResult`](crate::dashboard::WidgetResult).
+/// Analytics is read-mostly: only the mutations below record
+/// [`AuditEvent`]s with pinned action names. All mutations authorize
+/// against `Resource::Dashboard` (profile-scoped; the variant lands
+/// in task 15-DASH-02 — see the [`crate::dashboard`] module docs);
+/// report operations authorize against `Resource::Report`
+/// (likewise deferred).
+pub trait DashboardService {
+    /// Creates a draft dashboard. Records a
+    /// [`DASHBOARD_DASHBOARD_CREATED`](crate::dashboard::DASHBOARD_DASHBOARD_CREATED)
+    /// audit event.
+    fn create_dashboard<'a>(
+        &'a self,
+        input: NewDashboard,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<crate::dashboard::Dashboard, DomainError>> + Send + 'a;
+
+    /// Applies draft-only mutations (rename, add/remove widgets).
+    /// Records a
+    /// [`DASHBOARD_DASHBOARD_UPDATED`](crate::dashboard::DASHBOARD_DASHBOARD_UPDATED)
+    /// audit event.
+    fn update_dashboard<'a>(
+        &'a self,
+        dashboard_id: crate::ids::DashboardId,
+        input: UpdateDashboard,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<crate::dashboard::Dashboard, DomainError>> + Send + 'a;
+
+    /// Fetches a dashboard by id (draft or published).
+    fn get_dashboard<'a>(
+        &'a self,
+        dashboard_id: crate::ids::DashboardId,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<crate::dashboard::Dashboard, DomainError>> + Send + 'a;
+
+    /// Lists dashboards for the context's scope, newest first.
+    fn list_dashboards<'a>(
+        &'a self,
+        limit: u64,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<Vec<crate::dashboard::Dashboard>, DomainError>> + Send + 'a;
+
+    /// Executes one widget's metric against the repositories and
+    /// returns the computed result. Read-only: no audit event.
+    fn run_widget<'a>(
+        &'a self,
+        dashboard_id: crate::ids::DashboardId,
+        widget_id: crate::ids::WidgetId,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<crate::dashboard::WidgetResult, DomainError>> + Send + 'a;
+
+    /// Saves a report. Records a
+    /// [`DASHBOARD_REPORT_CREATED`](crate::dashboard::DASHBOARD_REPORT_CREATED)
+    /// audit event.
+    fn create_report<'a>(
+        &'a self,
+        input: NewReport,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<crate::dashboard::Report, DomainError>> + Send + 'a;
+
+    /// Lists reports, newest first.
+    fn list_reports<'a>(
+        &'a self,
+        limit: u64,
+        ctx: &'a ActionContext,
+    ) -> impl Future<Output = Result<Vec<crate::dashboard::Report>, DomainError>> + Send + 'a;
+}
