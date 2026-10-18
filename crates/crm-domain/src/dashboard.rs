@@ -66,6 +66,10 @@ pub const DASHBOARD_DASHBOARD_CREATED: &str = "dashboard.dashboard_created";
 pub const DASHBOARD_DASHBOARD_UPDATED: &str = "dashboard.dashboard_updated";
 /// Audit action name recorded when a dashboard is published.
 pub const DASHBOARD_DASHBOARD_PUBLISHED: &str = "dashboard.dashboard_published";
+/// Audit action name recorded when a dashboard is deleted (task
+/// 15-DASH-02; the dashboard CRUD surface needs deletion, which the
+/// 15-DASH-01 trait omitted).
+pub const DASHBOARD_DASHBOARD_DELETED: &str = "dashboard.dashboard_deleted";
 /// Audit action name recorded when a widget is added to a dashboard.
 pub const DASHBOARD_WIDGET_ADDED: &str = "dashboard.widget_added";
 /// Audit action name recorded when a report is created.
