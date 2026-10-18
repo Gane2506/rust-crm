@@ -8,14 +8,16 @@
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::time::Duration;
 
 use axum::{
+    error_handling::HandleErrorLayer,
     extract::{OriginalUri, State},
     http::{header, HeaderMap, HeaderName, StatusCode},
     middleware,
     response::{IntoResponse, Json, Response},
     routing::{delete, get, post, put},
-    Router,
+    BoxError, Router,
 };
 use serde::Serialize;
 use thiserror::Error;
@@ -72,6 +74,14 @@ const WEB_DIR_ENV: &str = "CRM_WEB_DIR";
 /// Default web directory when [`WEB_DIR_ENV`] is unset, resolved relative
 /// to the server's working directory.
 const DEFAULT_WEB_DIR: &str = "./web";
+/// Server-wide request timeout in seconds (task 17-PERF-02): any
+/// request whose handler has not produced a response within this long
+/// is answered with `504 problem+json` (see [`handle_timeout_error`]).
+/// The timeout bounds handler latency, not body streaming — the timer
+/// stops when the response headers are ready.
+const REQUEST_TIMEOUT_SECS: u64 = 30;
+/// Environment variable overriding [`REQUEST_TIMEOUT_SECS`].
+const REQUEST_TIMEOUT_ENV: &str = "CRM_REQUEST_TIMEOUT_SECS";
 
 /// Errors that can abort server startup.
 #[derive(Debug, Error)]
@@ -228,6 +238,30 @@ pub(crate) fn problem_response(
         .into_response()
 }
 
+/// Converts service errors escaping the request-timeout layer into
+/// responses (task 17-PERF-02).
+///
+/// The only error [`tower::timeout::TimeoutLayer`] can produce is
+/// [`tower::timeout::error::Elapsed`], which becomes a `504`
+/// `problem+json`; anything else is a defensive `500` (it cannot
+/// happen with the current layer stack).
+async fn handle_timeout_error(error: BoxError) -> Response {
+    if error.is::<tower::timeout::error::Elapsed>() {
+        return problem_response(
+            StatusCode::GATEWAY_TIMEOUT,
+            "Request timed out",
+            format!("the request exceeded the {REQUEST_TIMEOUT_SECS}-second server timeout"),
+            "request-timeout".to_owned(),
+        );
+    }
+    problem_response(
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "Internal server error",
+        "an unexpected error occurred".to_owned(),
+        "request-timeout".to_owned(),
+    )
+}
+
 /// Build the Axum router with request-id and tracing middleware.
 ///
 /// The router is generic over the contact-service backend `R`/`A` and the
@@ -242,8 +276,9 @@ pub(crate) fn problem_response(
 ///
 /// API routes are nested under `/api` with their own `problem+json`
 /// fallback, so unknown `/api/*` paths never get swallowed by the SPA
-/// fallback. Layer order (outermost first): generate the request id, trace
-/// the request, then propagate the id onto the response.
+/// fallback. Layer order (outermost first): generate the request id,
+/// trace the request, propagate the id onto the response, convert
+/// timeout errors, then enforce the server-wide request timeout.
 pub(crate) fn app<R, A, I>(
     state: AppState<ContactServiceImpl<R, A>, I>,
     web_dir: Option<PathBuf>,
@@ -702,10 +737,23 @@ where
         None => api.route("/v1/emails/ingest", post(emails::ingest_email::<R, A, I>)),
     };
 
+    // Flood mitigation for mutating endpoints (task 17-PERF-02):
+    // installed inside the security-headers layer so 429 rejections
+    // carry the same defensive headers as every other API response.
+    // Only when `ApiAuth` is configured (the in-memory test slice
+    // has no limiter to share).
+    let api = match state.auth.clone() {
+        Some(api_auth) => api.layer(middleware::from_fn_with_state(
+            api_auth,
+            auth::write_rate_limit_middleware,
+        )),
+        None => api,
+    };
+
     // Defensive security headers on every API response — successes,
-    // `problem+json` errors, 401s and 403s alike. Applied after the auth
-    // middleware so it is the outermost API layer; see
-    // [`security_headers`] for the header set and the deliberate
+    // `problem+json` errors, 401s, 403s and 429s alike. Applied as the
+    // outermost API layer, after the auth and rate-limit middleware;
+    // see [`security_headers`] for the header set and the deliberate
     // omissions (HSTS, CSP).
     let api = api.layer(middleware::from_fn(security_headers::security_headers));
 
@@ -727,8 +775,26 @@ where
         ServiceBuilder::new()
             .layer(SetRequestIdLayer::new(header_name.clone(), MakeRequestUuid))
             .layer(TraceLayer::new_for_http())
-            .layer(PropagateRequestIdLayer::new(header_name)),
+            .layer(PropagateRequestIdLayer::new(header_name))
+            // Server-wide request timeout (task 17-PERF-02). The
+            // `HandleErrorLayer` must wrap the timeout: `Router::layer`
+            // needs the error convertible to `Infallible`, and bare
+            // `TimeoutLayer` produces `Elapsed`. Unparseable env values
+            // fall back to the default, never panic.
+            .layer(HandleErrorLayer::new(handle_timeout_error))
+            .timeout(Duration::from_secs(request_timeout_secs())),
     )
+}
+
+/// Resolve the server-wide request timeout from [`REQUEST_TIMEOUT_ENV`],
+/// defaulting to [`REQUEST_TIMEOUT_SECS`]. Clamped to at least one
+/// second: a zero or negative timeout would reject every request.
+fn request_timeout_secs() -> u64 {
+    std::env::var(REQUEST_TIMEOUT_ENV)
+        .ok()
+        .and_then(|raw| raw.parse::<u64>().ok())
+        .unwrap_or(REQUEST_TIMEOUT_SECS)
+        .max(1)
 }
 
 /// Resolve the bind address from [`BIND_ADDR_ENV`], defaulting to

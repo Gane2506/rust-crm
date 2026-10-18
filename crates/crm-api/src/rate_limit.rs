@@ -221,6 +221,116 @@ fn record(buckets: &mut HashMap<String, VecDeque<Instant>>, key: &str, now: Inst
     buckets.entry(key.to_owned()).or_default().push_back(now);
 }
 
+// ---------------------------------------------------------------------------
+// Write-endpoint rate limiting (task 17-PERF-02)
+// ---------------------------------------------------------------------------
+
+/// Tuning knobs for the per-endpoint write rate limiter.
+///
+/// Every mutating API endpoint (`POST`/`PUT`/`PATCH`/`DELETE`) consumes
+/// from a single per-client-IP sliding-window bucket. Writes are already
+/// authenticated, so no email bucket is needed; the budget is generous
+/// (legitimate staff bulk work) but finite (a compromised token or a
+/// runaway client cannot flood the API unboundedly).
+#[derive(Debug, Clone, Copy)]
+pub struct WriteRateLimitConfig {
+    /// Maximum write requests per client IP within [`Self::window`].
+    pub max_writes_per_ip: u32,
+    /// Sliding window for the per-IP write bucket.
+    pub window: Duration,
+}
+
+impl Default for WriteRateLimitConfig {
+    fn default() -> Self {
+        Self {
+            max_writes_per_ip: 300,
+            window: Duration::from_secs(60),
+        }
+    }
+}
+
+impl WriteRateLimitConfig {
+    /// Builds the configuration from environment variables, falling back
+    /// to the production defaults.
+    ///
+    /// | Variable | Default | Meaning |
+    /// |---|---|---|
+    /// | `CRM_RATE_LIMIT_WRITE_MAX` | `300` | Max write requests per IP per window |
+    /// | `CRM_RATE_LIMIT_WRITE_WINDOW_SECS` | `60` | Write window (seconds) |
+    ///
+    /// Unparseable values fall back to the default (with no panic — a
+    /// typo in an env var must not prevent startup).
+    pub fn from_env() -> Self {
+        Self {
+            max_writes_per_ip: env_u32("CRM_RATE_LIMIT_WRITE_MAX", 300),
+            window: Duration::from_secs(env_u64("CRM_RATE_LIMIT_WRITE_WINDOW_SECS", 60)),
+        }
+    }
+
+    /// Tiny limits for tests: trips after 3 writes per IP within a
+    /// minute, so HTTP tests exercise the 429 path cheaply.
+    #[cfg(test)]
+    pub(crate) fn for_tests() -> Self {
+        Self {
+            max_writes_per_ip: 3,
+            window: Duration::from_secs(60),
+        }
+    }
+}
+
+/// In-memory sliding-window rate limiter for mutating API endpoints.
+///
+/// Shares the bucket mechanics ([`bucket_wait`], [`record`]) with
+/// [`LoginRateLimiter`]; the difference is a single per-IP bucket
+/// (writes are already authenticated, so the email bucket does not
+/// apply). Share via [`std::sync::Arc`]; the interior is lock-protected.
+///
+/// Fail-closed: a poisoned lock rejects with a 60-second retry hint
+/// instead of bypassing the limit.
+#[derive(Debug)]
+pub struct WriteRateLimiter {
+    config: WriteRateLimitConfig,
+    state: Mutex<HashMap<String, VecDeque<Instant>>>,
+}
+
+impl WriteRateLimiter {
+    /// Builds a limiter with the given configuration.
+    pub fn new(config: WriteRateLimitConfig) -> Self {
+        Self {
+            config,
+            state: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Returns the tuning configuration.
+    pub fn config(&self) -> WriteRateLimitConfig {
+        self.config
+    }
+
+    /// Records a write request from `ip_key`.
+    ///
+    /// Returns `Ok(())` and records the request when the bucket has
+    /// capacity, or `Err(retry_after_secs)` when the bucket is exhausted.
+    /// Rejected requests are not recorded.
+    pub fn check(&self, ip_key: &str) -> Result<(), u64> {
+        let mut state = self.state.lock().map_err(|_| 60u64)?;
+        let now = Instant::now();
+        match bucket_wait(
+            &mut state,
+            ip_key,
+            now,
+            self.config.max_writes_per_ip,
+            self.config.window,
+        ) {
+            Ok(()) => {
+                record(&mut state, ip_key, now);
+                Ok(())
+            }
+            Err(wait) => Err(wait),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -325,5 +435,69 @@ mod tests {
         std::env::remove_var("CRM_RATE_LIMIT_IP_MAX");
         std::env::remove_var("CRM_RATE_LIMIT_EMAIL_WINDOW_SECS");
         std::env::remove_var("CRM_RATE_LIMIT_EMAIL_MAX");
+    }
+
+    fn tiny_write_config() -> WriteRateLimitConfig {
+        WriteRateLimitConfig {
+            max_writes_per_ip: 2,
+            window: Duration::from_millis(200),
+        }
+    }
+
+    #[test]
+    fn write_limiter_allows_up_to_the_limit() {
+        let limiter = WriteRateLimiter::new(tiny_write_config());
+        assert!(limiter.check("ip").is_ok());
+        assert!(limiter.check("ip").is_ok());
+    }
+
+    #[test]
+    fn write_limiter_trips_with_retry_hint() {
+        let limiter = WriteRateLimiter::new(tiny_write_config());
+        assert!(limiter.check("ip").is_ok());
+        assert!(limiter.check("ip").is_ok());
+        let wait = limiter.check("ip").expect_err("third write must trip");
+        assert!(wait >= 1, "retry hint must be positive");
+        // Rejected attempts are not recorded: the hint does not grow.
+        let wait_again = limiter.check("ip").expect_err("still trips").max(1);
+        assert!(wait_again <= wait.max(1) + 1);
+    }
+
+    #[test]
+    fn write_limiter_buckets_are_per_ip() {
+        let limiter = WriteRateLimiter::new(tiny_write_config());
+        assert!(limiter.check("ip-1").is_ok());
+        assert!(limiter.check("ip-1").is_ok());
+        assert!(limiter.check("ip-1").is_err());
+        // A different IP is unaffected.
+        assert!(limiter.check("ip-2").is_ok());
+    }
+
+    #[test]
+    fn write_limiter_window_expiry_restores_capacity() {
+        let limiter = WriteRateLimiter::new(tiny_write_config());
+        assert!(limiter.check("ip").is_ok());
+        assert!(limiter.check("ip").is_ok());
+        assert!(limiter.check("ip").is_err());
+        std::thread::sleep(Duration::from_millis(250));
+        assert!(
+            limiter.check("ip").is_ok(),
+            "expired entries must free capacity"
+        );
+    }
+
+    #[test]
+    fn write_config_from_env_reads_overrides_with_defaults() {
+        let config = WriteRateLimitConfig::from_env();
+        assert_eq!(config.max_writes_per_ip, 300);
+        assert_eq!(config.window, Duration::from_secs(60));
+
+        std::env::set_var("CRM_RATE_LIMIT_WRITE_MAX", "7");
+        std::env::set_var("CRM_RATE_LIMIT_WRITE_WINDOW_SECS", "not-a-number");
+        let config = WriteRateLimitConfig::from_env();
+        assert_eq!(config.max_writes_per_ip, 7);
+        assert_eq!(config.window, Duration::from_secs(60));
+        std::env::remove_var("CRM_RATE_LIMIT_WRITE_MAX");
+        std::env::remove_var("CRM_RATE_LIMIT_WRITE_WINDOW_SECS");
     }
 }
