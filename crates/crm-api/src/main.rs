@@ -27,6 +27,7 @@ use tower_http::{
 };
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
+mod admin;
 mod assets;
 mod audit;
 mod auth;
@@ -560,6 +561,121 @@ where
             post(dashboard::create_report::<R, A, I>).get(dashboard::list_reports::<R, A, I>),
         )
         .route("/v1/reports/{id}", get(dashboard::get_report::<R, A, I>))
+        .route(
+            "/v1/admin/invitations",
+            post(admin::create_invitation::<R, A, I>).get(admin::list_invitations::<R, A, I>),
+        )
+        .route(
+            "/v1/admin/invitations/{id}",
+            get(admin::get_invitation::<R, A, I>),
+        )
+        .route(
+            "/v1/admin/invitations/{id}/accept",
+            post(admin::accept_invitation::<R, A, I>),
+        )
+        .route(
+            "/v1/admin/invitations/{id}/revoke",
+            post(admin::revoke_invitation::<R, A, I>),
+        )
+        .route(
+            "/v1/admin/staff/{id}/disable",
+            post(admin::disable_staff::<R, A, I>),
+        )
+        .route(
+            "/v1/admin/staff/{id}/reactivate",
+            post(admin::reactivate_staff::<R, A, I>),
+        )
+        .route(
+            "/v1/admin/role-assignments",
+            post(admin::assign_role::<R, A, I>).get(admin::list_role_assignments::<R, A, I>),
+        )
+        .route(
+            "/v1/admin/role-assignments/{id}/revoke",
+            post(admin::revoke_role_assignment::<R, A, I>),
+        )
+        .route(
+            "/v1/admin/settings",
+            get(admin::get_settings::<R, A, I>).put(admin::update_settings::<R, A, I>),
+        )
+        .route(
+            "/v1/admin/maintenance",
+            get(admin::get_maintenance::<R, A, I>).put(admin::set_maintenance::<R, A, I>),
+        )
+        .route("/v1/admin/health", get(admin::get_system_health::<R, A, I>))
+        .route(
+            "/v1/admin/backups",
+            post(admin::schedule_backup::<R, A, I>).get(admin::list_backups::<R, A, I>),
+        )
+        .route("/v1/admin/backups/{id}", get(admin::get_backup::<R, A, I>))
+        .route(
+            "/v1/admin/backups/{id}/start",
+            post(admin::start_backup::<R, A, I>),
+        )
+        .route(
+            "/v1/admin/backups/{id}/complete",
+            post(admin::complete_backup::<R, A, I>),
+        )
+        .route(
+            "/v1/admin/backups/{id}/fail",
+            post(admin::fail_backup::<R, A, I>),
+        )
+        .route(
+            "/v1/admin/exports",
+            post(admin::request_export::<R, A, I>).get(admin::list_exports::<R, A, I>),
+        )
+        .route("/v1/admin/exports/{id}", get(admin::get_export::<R, A, I>))
+        .route(
+            "/v1/admin/exports/{id}/start",
+            post(admin::start_export::<R, A, I>),
+        )
+        .route(
+            "/v1/admin/exports/{id}/complete",
+            post(admin::complete_export::<R, A, I>),
+        )
+        .route(
+            "/v1/admin/exports/{id}/fail",
+            post(admin::fail_export::<R, A, I>),
+        )
+        .route(
+            "/v1/admin/exports/{id}/expire",
+            post(admin::expire_export::<R, A, I>),
+        )
+        .route(
+            "/v1/admin/upgrades",
+            post(admin::schedule_upgrade::<R, A, I>).get(admin::list_upgrades::<R, A, I>),
+        )
+        .route(
+            "/v1/admin/upgrades/{id}",
+            get(admin::get_upgrade::<R, A, I>),
+        )
+        .route(
+            "/v1/admin/upgrades/{id}/start",
+            post(admin::start_upgrade::<R, A, I>),
+        )
+        .route(
+            "/v1/admin/upgrades/{id}/complete",
+            post(admin::complete_upgrade::<R, A, I>),
+        )
+        .route(
+            "/v1/admin/upgrades/{id}/fail",
+            post(admin::fail_upgrade::<R, A, I>),
+        )
+        .route(
+            "/v1/admin/upgrades/{id}/rollback",
+            post(admin::rollback_upgrade::<R, A, I>),
+        )
+        .route(
+            "/v1/admin/installation",
+            get(admin::get_installation::<R, A, I>),
+        )
+        .route(
+            "/v1/admin/installation/begin",
+            post(admin::begin_installation::<R, A, I>),
+        )
+        .route(
+            "/v1/admin/installation/complete",
+            post(admin::complete_installation::<R, A, I>),
+        )
         .fallback(not_found);
 
     // When authentication is configured (the Postgres-backed server), the

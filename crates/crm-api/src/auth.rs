@@ -50,6 +50,11 @@ use crate::observability::{DenialTracker, DenialTrackerConfig, LoggingAnomalySin
 use crate::problem_response;
 use crate::rate_limit::{LoginRateLimitConfig, LoginRateLimiter};
 use crm_core::memory::{ContactReadModel, ContactServiceImpl};
+use crm_db::admin::{
+    PgAgencySettingsRepository, PgBackupRepository, PgExportRepository, PgInstallationRepository,
+    PgMaintenanceRepository, PgRoleAssignmentRepository, PgStaffInvitationRepository,
+    PgUpgradeRepository,
+};
 use crm_db::audit_log::PgAuditLogService;
 use crm_db::billing::{PgInvoiceRepository, PgPaymentRepository};
 use crm_db::campaign::{
@@ -65,7 +70,7 @@ use crm_db::form::{PgFormFieldRepository, PgFormRepository, PgFormSubmissionRepo
 use crm_db::jev::{
     PgAgentRunRepository, PgHandoffRepository, PgRoleMembership, PgToolCallRepository,
 };
-use crm_db::postgres::{PgAuditService, PgContactRepository};
+use crm_db::postgres::{PgAuditService, PgContactRepository, PgStaffRepository};
 use crm_db::signing::{PgContractRepository, PgSigningTemplateRepository};
 use crm_db::voice::PgCallRepository;
 use crm_db::workflow::{
@@ -160,6 +165,25 @@ pub struct ApiAuth {
     pub dashboards: PgDashboardRepository,
     /// Report repository for the analytics endpoints.
     pub reports: PgReportRepository,
+    /// Staff-invitation repository for the admin endpoints.
+    pub invitations: PgStaffInvitationRepository,
+    /// Role-assignment repository for the admin endpoints.
+    pub role_assignments: PgRoleAssignmentRepository,
+    /// Agency-settings repository for the admin endpoints.
+    pub settings: PgAgencySettingsRepository,
+    /// Maintenance-mode repository for the admin endpoints.
+    pub maintenance: PgMaintenanceRepository,
+    /// Staff repository for the admin endpoints (disable/reactivate,
+    /// invitation acceptance).
+    pub staff: PgStaffRepository,
+    /// Backup repository for the admin endpoints.
+    pub backups: PgBackupRepository,
+    /// Export repository for the admin endpoints.
+    pub exports: PgExportRepository,
+    /// Upgrade repository for the admin endpoints.
+    pub upgrades: PgUpgradeRepository,
+    /// Installation repository for the admin endpoints.
+    pub installation: PgInstallationRepository,
     /// Database pool for read-only metric execution (widgets query
     /// the entity tables directly; the service builds SQL only from
     /// a hardcoded allowlist).
@@ -221,6 +245,15 @@ impl ApiAuth {
             voice_provider: crm_core::voice::StubVoiceProvider::new(),
             dashboards: PgDashboardRepository::new(pool.clone()),
             reports: PgReportRepository::new(pool.clone()),
+            invitations: PgStaffInvitationRepository::new(pool.clone()),
+            role_assignments: PgRoleAssignmentRepository::new(pool.clone()),
+            settings: PgAgencySettingsRepository::new(pool.clone()),
+            maintenance: PgMaintenanceRepository::new(pool.clone()),
+            staff: PgStaffRepository::new(pool.clone()),
+            backups: PgBackupRepository::new(pool.clone()),
+            exports: PgExportRepository::new(pool.clone()),
+            upgrades: PgUpgradeRepository::new(pool.clone()),
+            installation: PgInstallationRepository::new(pool.clone()),
             pool: pool.clone(),
         }
     }
