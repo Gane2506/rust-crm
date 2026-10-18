@@ -204,6 +204,18 @@ define_id!(
     /// Identifies one feed item (task 12-FEED-01).
     FeedItemId
 );
+define_id!(
+    /// Identifies one invoice (task 12-BILL-01).
+    InvoiceId
+);
+define_id!(
+    /// Identifies one line on an invoice (task 12-BILL-01).
+    InvoiceLineId
+);
+define_id!(
+    /// Identifies one payment record (task 12-BILL-01).
+    PaymentId
+);
 
 impl From<StaffId> for ActorId {
     /// Renders a staff member as the actor of an audit event.
@@ -271,6 +283,9 @@ mod tests {
         assert_id_round_trip(FormFieldId::new());
         assert_id_round_trip(FormSubmissionId::new());
         assert_id_round_trip(FeedItemId::new());
+        assert_id_round_trip(InvoiceId::new());
+        assert_id_round_trip(InvoiceLineId::new());
+        assert_id_round_trip(PaymentId::new());
     }
 
     #[test]

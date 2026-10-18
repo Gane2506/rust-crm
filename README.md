@@ -238,8 +238,8 @@ and merge happens on green CI plus review. Follow along via
 | Jev agents | 09-JEV-01… | ✅ workstream complete ([#51](https://github.com/Gane2506/rust-crm/issues/51), [#52](https://github.com/Gane2506/rust-crm/pull/52)) |
 | Workflow builder | 10-WORK-01… | ✅ 10-WORK-03 done ([#57](https://github.com/Gane2506/rust-crm/issues/57), [#58](https://github.com/Gane2506/rust-crm/pull/58)); **workstream COMPLETE** |
 | Form builder | 11-FORM-01… | ✅ 11-FORM-03 done ([#63](https://github.com/Gane2506/rust-crm/issues/63), [#64](https://github.com/Gane2506/rust-crm/pull/64)); **workstream COMPLETE** |
-| Feed | 12-FEED-01… | ✅ 12-FEED-02 done ([#67](https://github.com/Gane2506/rust-crm/issues/67), [#68](https://github.com/Gane2506/rust-crm/pull/68)); 🔨 12-FEED-03 in progress |
-| Billing | 12-BILL-01…03 | ⬜ Not started |
+| Feed | 12-FEED-01… | ✅ 12-FEED-03 done ([#69](https://github.com/Gane2506/rust-crm/issues/69), [#70](https://github.com/Gane2506/rust-crm/pull/70)); **workstream COMPLETE** |
+| Billing | 12-BILL-01… | 🔨 12-BILL-01 in progress |
 | Contract signing | 13-SIGN-01…03 | ⬜ Not started |
 | Calling | 14-VOICE-01…03 | ⬜ Not started |
 | Analytics and staff | 15-DASH-01…03 | ⬜ Not started |
