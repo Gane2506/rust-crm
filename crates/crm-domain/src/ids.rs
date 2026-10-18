@@ -224,6 +224,18 @@ define_id!(
     /// Identifies one call (task 14-VOICE-01).
     CallId
 );
+define_id!(
+    /// Identifies one dashboard (task 15-DASH-01).
+    DashboardId
+);
+define_id!(
+    /// Identifies one widget on a dashboard (task 15-DASH-01).
+    WidgetId
+);
+define_id!(
+    /// Identifies one saved report (task 15-DASH-01).
+    ReportId
+);
 
 impl From<StaffId> for ActorId {
     /// Renders a staff member as the actor of an audit event.

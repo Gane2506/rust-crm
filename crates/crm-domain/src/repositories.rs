@@ -1181,3 +1181,68 @@ pub trait CallRepository {
         limit: u64,
     ) -> impl Future<Output = Result<Vec<crate::voice::Call>, DomainError>> + Send + 'a;
 }
+
+/// Persistence port for dashboards (task 15-DASH-01).
+///
+/// Dashboards are saved configurations; the repository stores them
+/// whole (widgets included). Authorization against
+/// `Resource::Dashboard` (profile-scoped) happens in the service
+/// layer — the repository is scope-agnostic storage.
+pub trait DashboardRepository {
+    /// Persists a new dashboard.
+    fn save<'a>(
+        &'a self,
+        dashboard: crate::dashboard::Dashboard,
+    ) -> impl Future<Output = Result<crate::dashboard::Dashboard, DomainError>> + Send + 'a;
+
+    /// Fetches a dashboard by id.
+    fn get<'a>(
+        &'a self,
+        dashboard_id: crate::ids::DashboardId,
+    ) -> impl Future<Output = Result<crate::dashboard::Dashboard, DomainError>> + Send + 'a;
+
+    /// Persists dashboard changes (rename, widgets, publish state).
+    fn update<'a>(
+        &'a self,
+        dashboard: crate::dashboard::Dashboard,
+    ) -> impl Future<Output = Result<crate::dashboard::Dashboard, DomainError>> + Send + 'a;
+
+    /// Deletes a dashboard by id.
+    fn delete<'a>(
+        &'a self,
+        dashboard_id: crate::ids::DashboardId,
+    ) -> impl Future<Output = Result<(), DomainError>> + Send + 'a;
+
+    /// Lists dashboards for one owner scope (`None` is agency-level),
+    /// newest first.
+    fn list<'a>(
+        &'a self,
+        client_profile_id: Option<crate::ids::ClientProfileId>,
+        limit: u64,
+    ) -> impl Future<Output = Result<Vec<crate::dashboard::Dashboard>, DomainError>> + Send + 'a;
+}
+
+/// Persistence port for saved reports (task 15-DASH-01).
+///
+/// Reports are immutable once saved — there is no update method.
+/// Authorization against `Resource::Report` happens in the service
+/// layer.
+pub trait ReportRepository {
+    /// Persists a new report.
+    fn save<'a>(
+        &'a self,
+        report: crate::dashboard::Report,
+    ) -> impl Future<Output = Result<crate::dashboard::Report, DomainError>> + Send + 'a;
+
+    /// Fetches a report by id.
+    fn get<'a>(
+        &'a self,
+        report_id: crate::ids::ReportId,
+    ) -> impl Future<Output = Result<crate::dashboard::Report, DomainError>> + Send + 'a;
+
+    /// Lists reports, newest first.
+    fn list<'a>(
+        &'a self,
+        limit: u64,
+    ) -> impl Future<Output = Result<Vec<crate::dashboard::Report>, DomainError>> + Send + 'a;
+}
