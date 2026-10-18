@@ -65,6 +65,7 @@ use crm_db::jev::{
     PgAgentRunRepository, PgHandoffRepository, PgRoleMembership, PgToolCallRepository,
 };
 use crm_db::postgres::{PgAuditService, PgContactRepository};
+use crm_db::signing::{PgContractRepository, PgSigningTemplateRepository};
 use crm_db::workflow::{
     PgTriggerRepository, PgWorkflowEdgeRepository, PgWorkflowNodeRepository, PgWorkflowRepository,
     PgWorkflowVersionRepository,
@@ -144,6 +145,10 @@ pub struct ApiAuth {
     pub invoices: PgInvoiceRepository,
     /// Payment repository for the billing endpoints.
     pub payments: PgPaymentRepository,
+    /// Contract repository for the signing endpoints.
+    pub contracts: PgContractRepository,
+    /// Signing-template repository for the signing endpoints.
+    pub signing_templates: PgSigningTemplateRepository,
 }
 
 impl ApiAuth {
@@ -195,6 +200,8 @@ impl ApiAuth {
             feed_items: PgFeedItemRepository::new(pool.clone()),
             invoices: PgInvoiceRepository::new(pool.clone()),
             payments: PgPaymentRepository::new(pool.clone()),
+            contracts: PgContractRepository::new(pool.clone()),
+            signing_templates: PgSigningTemplateRepository::new(pool.clone()),
         }
     }
 }

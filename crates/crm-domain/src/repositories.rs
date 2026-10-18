@@ -1083,6 +1083,40 @@ pub trait PaymentRepository {
     ) -> impl Future<Output = Result<crate::billing::Payment, DomainError>> + Send + 'a;
 }
 
+/// Persistence port for contract document snapshots and signing
+/// evidence (task 13-SIGN-02).
+///
+/// The rendered [`ContractDocument`](crate::signing::ContractDocument)
+/// is stored alongside its contract; it is written once at creation
+/// and never updated. Signing evidence is append-only.
+pub trait ContractDocumentRepository {
+    /// Stores the rendered document snapshot for a contract.
+    fn store_document<'a>(
+        &'a self,
+        contract_id: crate::ids::ContractId,
+        document: &'a crate::signing::ContractDocument,
+    ) -> impl Future<Output = Result<(), DomainError>> + Send + 'a;
+
+    /// Fetches the rendered document snapshot for a contract.
+    fn get_document<'a>(
+        &'a self,
+        contract_id: crate::ids::ContractId,
+    ) -> impl Future<Output = Result<crate::signing::ContractDocument, DomainError>> + Send + 'a;
+
+    /// Records one signature's forensic evidence. Idempotent per
+    /// (contract, signer email).
+    fn record_evidence<'a>(
+        &'a self,
+        evidence: &'a crate::signing::SigningEvidence,
+    ) -> impl Future<Output = Result<(), DomainError>> + Send + 'a;
+
+    /// Lists the forensic evidence for a contract, oldest first.
+    fn list_evidence<'a>(
+        &'a self,
+        contract_id: crate::ids::ContractId,
+    ) -> impl Future<Output = Result<Vec<crate::signing::SigningEvidence>, DomainError>> + Send + 'a;
+}
+
 /// Persistence port for signing templates (task 13-SIGN-01).
 ///
 /// Templates are immutable and append-only: there is no update or

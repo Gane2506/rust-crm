@@ -34,6 +34,7 @@ pub mod feed;
 pub mod form;
 pub mod jev;
 pub mod postgres;
+pub mod signing;
 pub mod workflow;
 
 use thiserror::Error;

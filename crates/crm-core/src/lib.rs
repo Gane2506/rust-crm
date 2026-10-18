@@ -75,6 +75,12 @@ pub mod feed;
 /// [`billing`](crm_domain::billing) domain.
 pub mod billing;
 
+/// Contract signing service: template rendering, signature
+/// collection with forensic evidence, and the payment gate over the
+/// [`signing`](crm_domain::signing) domain and the
+/// [`contract`](crm_domain::contract) aggregate.
+pub mod signing;
+
 /// Errors raised by [`crm-core`](crate) utilities.
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum CoreError {
