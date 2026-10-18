@@ -1122,7 +1122,7 @@ async fn seed_admin(pool: &sqlx::PgPool) -> Result<bool, DomainError> {
         PgInstallationRepository, PgMaintenanceRepository, PgRoleAssignmentRepository,
         PgStaffInvitationRepository, PgUpgradeRepository,
     };
-    use crm_domain::repositories::AgencySettingsRepository;
+    use crm_domain::repositories::{AgencySettingsRepository, MaintenanceRepository};
     use crm_domain::services::{AdminService, UpdateAgencySettings};
 
     let staff_repo = PgStaffRepository::new(pool.clone());
@@ -1132,8 +1132,22 @@ async fn seed_admin(pool: &sqlx::PgPool) -> Result<bool, DomainError> {
         .expect("demo staff user exists before admin seeding");
     let settings = PgAgencySettingsRepository::new(pool.clone());
 
-    // Idempotency anchor: the specific demo settings version 1.
-    if settings.get_current(staff_user.agency_id).await.is_ok() {
+    // Idempotency anchors, checked independently so a partial
+    // first run (settings written, maintenance lost) is repaired
+    // on re-run instead of skipped. Transient read errors fail
+    // the seed loudly rather than being mistaken for "missing".
+    let settings_missing = match settings.get_current(staff_user.agency_id).await {
+        Ok(_) => false,
+        Err(DomainError::NotFound { .. }) => true,
+        Err(error) => return Err(error),
+    };
+    let maintenance = PgMaintenanceRepository::new(pool.clone());
+    let maintenance_missing = match maintenance.get().await {
+        Ok(None) => true,
+        Ok(Some(_)) => false,
+        Err(error) => return Err(error),
+    };
+    if !settings_missing && !maintenance_missing {
         return Ok(false);
     }
 
@@ -1141,7 +1155,7 @@ async fn seed_admin(pool: &sqlx::PgPool) -> Result<bool, DomainError> {
         PgStaffInvitationRepository::new(pool.clone()),
         PgRoleAssignmentRepository::new(pool.clone()),
         settings,
-        PgMaintenanceRepository::new(pool.clone()),
+        maintenance,
         staff_repo,
         PgBackupRepository::new(pool.clone()),
         PgExportRepository::new(pool.clone()),
@@ -1157,20 +1171,24 @@ async fn seed_admin(pool: &sqlx::PgPool) -> Result<bool, DomainError> {
         correlation_id: Uuid::new_v4(),
     };
 
-    service
-        .update_settings(
-            UpdateAgencySettings {
-                display_name: Some("Demo Agency".to_string()),
-                support_email: Some(Some("support@example.com".to_string())),
-                session_ttl_secs: Some(3600),
-            },
-            &ctx,
-        )
-        .await?;
+    if settings_missing {
+        service
+            .update_settings(
+                UpdateAgencySettings {
+                    display_name: Some("Demo Agency".to_string()),
+                    support_email: Some(Some("support@example.com".to_string())),
+                    session_ttl_secs: Some(3600),
+                },
+                &ctx,
+            )
+            .await?;
+    }
     // Ensures the maintenance singleton row exists in the disabled
     // state (the service defaults a missing row to disabled and
     // persists it here).
-    service.disable_maintenance(&ctx).await?;
+    if maintenance_missing {
+        service.disable_maintenance(&ctx).await?;
+    }
     Ok(true)
 }
 
