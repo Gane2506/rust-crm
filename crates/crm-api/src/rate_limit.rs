@@ -259,11 +259,14 @@ impl WriteRateLimitConfig {
     /// | `CRM_RATE_LIMIT_WRITE_WINDOW_SECS` | `60` | Write window (seconds) |
     ///
     /// Unparseable values fall back to the default (with no panic — a
-    /// typo in an env var must not prevent startup).
+    /// typo in an env var must not prevent startup). A zero window is
+    /// also treated as unset: a zero window would expire every recorded
+    /// write before the capacity check, so the limiter would never trip.
     pub fn from_env() -> Self {
+        let window_secs = env_u64("CRM_RATE_LIMIT_WRITE_WINDOW_SECS", 60);
         Self {
-            max_writes_per_ip: env_u32("CRM_RATE_LIMIT_WRITE_MAX", 300),
-            window: Duration::from_secs(env_u64("CRM_RATE_LIMIT_WRITE_WINDOW_SECS", 60)),
+            max_writes_per_ip: env_u32("CRM_RATE_LIMIT_WRITE_MAX", 300).max(1),
+            window: Duration::from_secs(if window_secs == 0 { 60 } else { window_secs }),
         }
     }
 

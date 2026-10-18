@@ -242,24 +242,39 @@ pub(crate) fn problem_response(
 /// responses (task 17-PERF-02).
 ///
 /// The only error [`tower::timeout::TimeoutLayer`] can produce is
-/// [`tower::timeout::error::Elapsed`], which becomes a `504`
-/// `problem+json`; anything else is a defensive `500` (it cannot
-/// happen with the current layer stack).
-async fn handle_timeout_error(error: BoxError) -> Response {
-    if error.is::<tower::timeout::error::Elapsed>() {
-        return problem_response(
-            StatusCode::GATEWAY_TIMEOUT,
-            "Request timed out",
-            format!("the request exceeded the {REQUEST_TIMEOUT_SECS}-second server timeout"),
-            "request-timeout".to_owned(),
-        );
+/// Error handler for the request-timeout layer: [`Elapsed`][tower::timeout::error::Elapsed]
+/// becomes a `504 problem+json` reporting the *configured* timeout; anything else
+/// is a defensive `500` (it cannot happen with the current layer stack).
+///
+/// The timeout is resolved once in [`app`] and moved into the handler, so the
+/// `504` detail always matches the enforced limit even when
+/// [`REQUEST_TIMEOUT_ENV`] overrides the default.
+#[derive(Clone, Copy)]
+struct TimeoutErrorHandler {
+    timeout_secs: u64,
+}
+
+impl TimeoutErrorHandler {
+    /// Handles a boxed layer error, mapping timeouts to `504`.
+    async fn handle(self, error: BoxError) -> Response {
+        if error.is::<tower::timeout::error::Elapsed>() {
+            return problem_response(
+                StatusCode::GATEWAY_TIMEOUT,
+                "Request timed out",
+                format!(
+                    "the request exceeded the {}-second server timeout",
+                    self.timeout_secs
+                ),
+                "request-timeout".to_owned(),
+            );
+        }
+        problem_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Internal server error",
+            "an unexpected error occurred".to_owned(),
+            "unexpected-layer-error".to_owned(),
+        )
     }
-    problem_response(
-        StatusCode::INTERNAL_SERVER_ERROR,
-        "Internal server error",
-        "an unexpected error occurred".to_owned(),
-        "request-timeout".to_owned(),
-    )
 }
 
 /// Build the Axum router with request-id and tracing middleware.
@@ -780,9 +795,16 @@ where
             // `HandleErrorLayer` must wrap the timeout: `Router::layer`
             // needs the error convertible to `Infallible`, and bare
             // `TimeoutLayer` produces `Elapsed`. Unparseable env values
-            // fall back to the default, never panic.
-            .layer(HandleErrorLayer::new(handle_timeout_error))
-            .timeout(Duration::from_secs(request_timeout_secs())),
+            // fall back to the default, never panic. The resolved value
+            // is moved into the handler so the 504 detail matches the
+            // enforced limit.
+            .layer({
+                let timeout_secs = request_timeout_secs();
+                let handler = TimeoutErrorHandler { timeout_secs };
+                ServiceBuilder::new()
+                    .layer(HandleErrorLayer::new(move |error| handler.handle(error)))
+                    .timeout(Duration::from_secs(timeout_secs))
+            }),
     )
 }
 
