@@ -440,7 +440,7 @@ where
         };
     let service = admin_service(api_auth);
     let invitations = match service
-        .list_invitations(query.limit.unwrap_or(20), &ctx)
+        .list_invitations(query.limit.unwrap_or(20).min(100), &ctx)
         .await
     {
         Ok(invitations) => invitations,
@@ -731,7 +731,7 @@ where
     let assignments = match service
         .list_role_assignments(
             StaffId::from(query.staff_id),
-            query.limit.unwrap_or(20),
+            query.limit.unwrap_or(20).min(100),
             &ctx,
         )
         .await
@@ -1023,7 +1023,10 @@ where
         Err(response) => return *response,
     };
     let service = admin_service(api_auth);
-    let backups = match service.list_backups(query.limit.unwrap_or(20), &ctx).await {
+    let backups = match service
+        .list_backups(query.limit.unwrap_or(20).min(100), &ctx)
+        .await
+    {
         Ok(backups) => backups,
         Err(error) => return domain_error_response(error, instance),
     };
@@ -1276,7 +1279,10 @@ where
         Err(response) => return *response,
     };
     let service = admin_service(api_auth);
-    let exports = match service.list_exports(query.limit.unwrap_or(20), &ctx).await {
+    let exports = match service
+        .list_exports(query.limit.unwrap_or(20).min(100), &ctx)
+        .await
+    {
         Ok(exports) => exports,
         Err(error) => return domain_error_response(error, instance),
     };
@@ -1566,7 +1572,10 @@ where
         Err(response) => return *response,
     };
     let service = admin_service(api_auth);
-    let upgrades = match service.list_upgrades(query.limit.unwrap_or(20), &ctx).await {
+    let upgrades = match service
+        .list_upgrades(query.limit.unwrap_or(20).min(100), &ctx)
+        .await
+    {
         Ok(upgrades) => upgrades,
         Err(error) => return domain_error_response(error, instance),
     };

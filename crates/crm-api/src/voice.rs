@@ -293,7 +293,10 @@ where
         Err(response) => return *response,
     };
     let service = voice_service(api_auth);
-    let calls = match service.list_calls(query.limit.unwrap_or(20), &ctx).await {
+    let calls = match service
+        .list_calls(query.limit.unwrap_or(20).min(100), &ctx)
+        .await
+    {
         Ok(calls) => calls,
         Err(error) => return domain_error_response(error, instance),
     };
