@@ -13,7 +13,7 @@ AI handoff under [`docs/handoff/`](docs/handoff/) (start with `README.md`,
 
 ## Screenshots
 
-Real renders of the running app (Leptos/WASM frontend, seeded demo data):
+Real renders of the running app (Leptos/WASM frontend in the Twenty-style UI, seeded demo data):
 
 ![Login gate](docs/images/screenshots/login.png)
 *Login gate — staff sign in; there is no client login by design.*
