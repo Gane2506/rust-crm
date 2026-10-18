@@ -43,6 +43,7 @@ mod pg_tests;
 mod profiles;
 mod rate_limit;
 mod security_headers;
+mod signing;
 mod workflows;
 
 use contacts::{request_id, AppState, IdempotencyStore};
@@ -489,6 +490,39 @@ where
         .route(
             "/v1/payments/{id}/reverse",
             post(billing::reverse_payment::<R, A, I>),
+        )
+        .route(
+            "/v1/signing/templates",
+            post(signing::create_template::<R, A, I>).get(signing::list_templates::<R, A, I>),
+        )
+        .route(
+            "/v1/contracts",
+            post(signing::create_contract::<R, A, I>).get(signing::list_contracts::<R, A, I>),
+        )
+        .route("/v1/contracts/{id}", get(signing::get_contract::<R, A, I>))
+        .route(
+            "/v1/contracts/{id}/document",
+            get(signing::get_document::<R, A, I>),
+        )
+        .route(
+            "/v1/contracts/{id}/evidence",
+            get(signing::list_evidence::<R, A, I>),
+        )
+        .route(
+            "/v1/contracts/{id}/request",
+            post(signing::request_signature::<R, A, I>),
+        )
+        .route(
+            "/v1/contracts/{id}/sign",
+            post(signing::sign_contract::<R, A, I>),
+        )
+        .route(
+            "/v1/contracts/{id}/satisfy-payment-gate",
+            post(signing::satisfy_payment_gate::<R, A, I>),
+        )
+        .route(
+            "/v1/contracts/{id}/void",
+            post(signing::void_contract::<R, A, I>),
         )
         .fallback(not_found);
 
