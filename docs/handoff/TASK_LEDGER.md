@@ -49,7 +49,8 @@ Statuses: TODO / IN_PROGRESS / BLOCKED / DONE. Never mark DONE without linked co
 | 14-VOICE-01 | DONE | issue #84 / PR #85 (merge `65f6470`) | | Calling: domain and interfaces (397 tests) |
 | 14-VOICE-02 | DONE | issue #86 / PR #87 (merge `8c5bd67`) | | Calling: vertical slice (403 tests) |
 | 14-VOICE-03 | DONE | issue #88 / PR #89 (merge `73bf073`) | | Calling: verify + operationalize (403 tests) |
-| 15-DASH-01 | IN_PROGRESS | issue #90 / branch `task/15-DASH-01` | | Analytics and staff: define domain and interfaces |
+| 15-DASH-01 | DONE | issue #90 / PR #91 (merge `7eab8f7`) | | Analytics: domain and interfaces (425 tests) |
+| 15-DASH-02 | IN_PROGRESS | issue #92 / branch `task/15-DASH-02` | | Analytics: implement vertical slice |
 | 02-DB-02 | TODO | | | |
 | 02-DB-03 | TODO | | | |
 | 03-SEC-01 | TODO | | | |
