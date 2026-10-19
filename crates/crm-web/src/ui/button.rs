@@ -5,9 +5,9 @@
 //! sizes compose from the design tokens in [`crate::theme`], so dark
 //! mode and branding overrides restyle buttons without code changes.
 
-use std::rc::Rc;
-
 use leptos::prelude::*;
+
+use super::callback::UiHandler;
 
 /// Button visual variant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -83,7 +83,9 @@ pub fn Button(
     #[prop(optional)] size: ButtonSize,
     #[prop(optional)] btn_type: Option<&'static str>,
     #[prop(optional)] disabled: Option<Signal<bool>>,
-    #[prop(optional)] on_click: Option<Rc<dyn Fn()>>,
+    // `UiHandler` (not `Rc`/`Arc`): the view tree must be `Send`, and
+    // closures capturing reactive state are `Send` but not `Sync`.
+    #[prop(optional)] on_click: Option<UiHandler>,
     children: Children,
 ) -> impl IntoView {
     let is_disabled = move || disabled.map(|s| s.get()).unwrap_or(false);
@@ -102,8 +104,8 @@ pub fn Button(
             type={btn_type.unwrap_or("button")}
             disabled=is_disabled
             on:click=move |_| {
-                if let Some(handler) = on_click.as_ref() {
-                    handler();
+                if let Some(handler) = on_click {
+                    handler.call();
                 }
             }
             style=style

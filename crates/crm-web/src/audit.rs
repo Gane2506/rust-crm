@@ -2,24 +2,28 @@
 //! Audit log viewer: query the tamper-evident security log and verify
 //! the chain.
 //!
-//! Both endpoints require `AuditLog:Read` at agency scope — a caller
-//! without it gets `403`. The server returns events in chain order
-//! (oldest first) with no descending-order parameter; the "newest first"
-//! toggle therefore only reorders the fetched page for display. It does
-//! NOT fetch the newest N events — with more than one page of matches,
-//! the newest events may be beyond the fetched page. True newest-first
-//! querying needs a backend `order` parameter (a future backend task).
+//! Reskinned on the v2 component library (UI2-02). Both endpoints
+//! require `AuditLog:Read` at agency scope — a caller without it gets
+//! `403`. The server returns events in chain order (oldest first) with
+//! no descending-order parameter; the "newest first" toggle therefore
+//! only reorders the fetched page for display. It does NOT fetch the
+//! newest N events — with more than one page of matches, the newest
+//! events may be beyond the fetched page. True newest-first querying
+//! needs a backend `order` parameter (a future backend task).
+
+use leptos::prelude::*;
+use leptos::task::spawn_local;
 
 use crate::api::{
     fetch_audit_events, verify_audit_chain, ApiError, AuditEventsResponse, AuditQuery,
     VerifyResponse,
 };
-use crate::components::{EmptyState, ErrorAlert, Loading};
-use crate::styles;
-use crate::ui::components::{Btn, BtnVariant, Card, HoverTr, PageHeader};
-use leptos::html::Input;
-use leptos::prelude::*;
-use leptos::task::spawn_local;
+use crate::components::{EmptyState, ErrorAlert, Hint, Loading, PageHeader};
+use crate::ui::{
+    Badge, BadgeVariant, Button, ButtonVariant, Card, CardContent, Icon, IconName,
+    Input as TextInput, Label, Switch, Table, TableBody, TableCell, TableHead, TableHeader,
+    TableRow, UiHandler, UiValueHandler,
+};
 
 /// Audit log page: filterable event table plus chain verification.
 ///
@@ -27,7 +31,7 @@ use leptos::task::spawn_local;
 /// - `token`: the in-memory bearer token.
 #[component]
 pub fn AuditPage(token: String) -> impl IntoView {
-    let action_ref = NodeRef::<Input>::new();
+    let action = RwSignal::new(String::new());
     let reload = RwSignal::new(0u32);
     let newest_first = RwSignal::new(true);
     let events = RwSignal::new(None::<Result<AuditEventsResponse, ApiError>>);
@@ -42,15 +46,12 @@ pub fn AuditPage(token: String) -> impl IntoView {
         Effect::new(move |_| {
             reload.get();
             events.set(None);
-            let action = action_ref
-                .get()
-                .map(|i| i.value().trim().to_string())
-                .unwrap_or_default();
+            let filter = action.get_untracked().trim().to_string();
             let query = AuditQuery {
-                action: if action.is_empty() {
+                action: if filter.is_empty() {
                     None
                 } else {
-                    Some(action)
+                    Some(filter)
                 },
                 limit: Some(50),
             };
@@ -65,10 +66,10 @@ pub fn AuditPage(token: String) -> impl IntoView {
             });
         });
     }
-    let retry = move || reload.update(|n| *n = n.wrapping_add(1));
+    let retry = UiHandler::new(move || reload.update(|n| *n = n.wrapping_add(1)));
 
-    // 0-arg so it plugs straight into [`Btn`]'s `on_click`.
-    let on_verify = move || {
+    // 0-arg so it plugs straight into [`Button`]'s `on_click`.
+    let on_verify = UiHandler::new(move || {
         if verifying.get() {
             return;
         }
@@ -79,7 +80,7 @@ pub fn AuditPage(token: String) -> impl IntoView {
             verification.set(Some(verify_audit_chain(&token).await));
             verifying.set(false);
         });
-    };
+    });
 
     view! {
         <section aria-label="Audit log">
@@ -88,68 +89,75 @@ pub fn AuditPage(token: String) -> impl IntoView {
                 description="Tamper-evident security event history."
             />
             <Card>
-                <div style="display: flex; gap: 0.75rem; align-items: end; flex-wrap: wrap;">
-                    <div style="flex: 1; min-width: 12rem;">
-                        <label for="audit-action" style=styles::LABEL>"Action filter"</label>
-                        <input
-                            id="audit-action"
-                            type="text"
-                            node_ref=action_ref
-                            placeholder="auth.login_failed"
-                            autocomplete="off"
-                            style=styles::INPUT
-                        />
+                <CardContent>
+                    <div style="display: flex; gap: 0.75rem; align-items: end; flex-wrap: wrap; padding-top: 0.5rem;">
+                        <div style="flex: 1; min-width: 12rem;">
+                            <Label for_id="audit-action">"Action filter"</Label>
+                            <TextInput
+                                id="audit-action"
+                                placeholder="auth.login_failed"
+                                value=action
+                                on_input={UiValueHandler::new(move |v: String| action.set(v))}
+                            />
+                        </div>
+                        <Button
+                            variant=ButtonVariant::Default
+                            btn_type="button"
+                            on_click={retry}
+                        >
+                            <Icon name=IconName::Search size=15 />
+                            "Query"
+                        </Button>
+                        <Button
+                            variant=ButtonVariant::Secondary
+                            btn_type="button"
+                            disabled=Signal::derive(move || verifying.get())
+                            on_click={on_verify}
+                        >
+                            <Icon name=IconName::ShieldCheck size=15 />
+                            {move || if verifying.get() { "Verifying…" } else { "Verify chain" }}
+                        </Button>
+                        <div style="display: flex; align-items: center; gap: 0.5rem; padding-bottom: 0.625rem;">
+                            <Switch
+                                checked=newest_first
+                                label="Newest first"
+                            />
+                            <span style="font-size: 0.8125rem; color: var(--muted-foreground);">
+                                "Newest first"
+                            </span>
+                        </div>
                     </div>
-                    <Btn
-                        variant=BtnVariant::Primary
-                        btn_type="button"
-                        on_click={std::rc::Rc::new(retry) as std::rc::Rc<dyn Fn()>}
-                    >
-                        "Query"
-                    </Btn>
-                    <Btn
-                        variant=BtnVariant::Secondary
-                        btn_type="button"
-                        disabled=Signal::derive(move || verifying.get())
-                        on_click={std::rc::Rc::new(on_verify) as std::rc::Rc<dyn Fn()>}
-                    >
-                        {move || if verifying.get() { "Verifying…" } else { "Verify chain" }}
-                    </Btn>
-                    <label style="display: flex; gap: 0.375rem; align-items: center; font-size: 0.8125rem; color: #475569;" title="Reorders the fetched page only — the API returns chain order (oldest first) with no descending option.">
-                        <input
-                            type="checkbox"
-                            checked=move || newest_first.get()
-                            on:change=move |ev| newest_first.set(leptos::leptos_dom::helpers::event_target_checked(&ev))
-                        />
-                        "Newest first"
-                    </label>
-                </div>
+                    <Hint text="Newest-first reorders the fetched page only — the API returns chain order (oldest first).".to_string() />
+                </CardContent>
             </Card>
             {move || match verification.get() {
                 None => ().into_any(),
                 Some(Ok(v)) => {
-                    let style = if v.valid { styles::ALERT_OK } else { styles::ALERT_ERROR };
+                    let (variant, message) = if v.valid {
+                        (
+                            BadgeVariant::Success,
+                            format!("Chain valid — {} events checked.", v.events_checked),
+                        )
+                    } else {
+                        (
+                            BadgeVariant::Destructive,
+                            format!(
+                                "CHAIN BROKEN at event {}. Treat as a security incident.",
+                                v.first_bad_event.as_deref().unwrap_or("?"),
+                            ),
+                        )
+                    };
                     view! {
-                        <div role="status" style=style>
-                            <p style="margin: 0;">
-                                {if v.valid {
-                                    format!(
-                                        "Chain valid — {} events checked.",
-                                        v.events_checked
-                                    )
-                                } else {
-                                    format!(
-                                        "CHAIN BROKEN at event {}. Treat as a security incident.",
-                                        v.first_bad_event.as_deref().unwrap_or("?"),
-                                    )
-                                }}
-                            </p>
+                        <div style="margin: 1rem 0;">
+                            <Badge variant=variant>{message}</Badge>
                             {v
                                 .head
                                 .as_ref()
                                 .map(|head| {
                                     view! {
-                                        <p style=styles::MONO>{format!("head {head}")}</p>
+                                        <p style="margin: 0.5rem 0 0; font-family: var(--font-mono); font-size: 0.75rem; color: var(--muted-foreground);">
+                                            {format!("head {head}")}
+                                        </p>
                                     }
                                 })}
                         </div>
@@ -163,7 +171,7 @@ pub fn AuditPage(token: String) -> impl IntoView {
             {move || match events.get() {
                 None => view! { <Loading label="audit events" /> }.into_any(),
                 Some(Err(error)) => {
-                    view! { <ErrorAlert message=error.to_string() on_retry={std::rc::Rc::new(retry) as std::rc::Rc<dyn Fn()>} /> }.into_any()
+                    view! { <ErrorAlert message=error.to_string() on_retry={retry} /> }.into_any()
                 }
                 Some(Ok(page)) if page.events.is_empty() => {
                     view! { <EmptyState message="No audit events match." /> }.into_any()
@@ -174,32 +182,30 @@ pub fn AuditPage(token: String) -> impl IntoView {
                         rows.reverse();
                     }
                     view! {
-                        <div style=styles::TABLE_WRAPPER>
-                            <table style=styles::TABLE>
-                                <thead>
-                                    <tr>
-                                        <th style=styles::TH>"Time"</th>
-                                        <th style=styles::TH>"Action"</th>
-                                        <th style=styles::TH>"Actor"</th>
-                                        <th style=styles::TH>"Target"</th>
-                                        <th style=styles::TH>"Decision"</th>
-                                        <th style=styles::TH>"Payload"</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
+                        <Card>
+                            <Table>
+                                <TableHeader>
+                                    <TableRow>
+                                        <TableHead>"Time"</TableHead>
+                                        <TableHead>"Action"</TableHead>
+                                        <TableHead>"Actor"</TableHead>
+                                        <TableHead>"Target"</TableHead>
+                                        <TableHead>"Decision"</TableHead>
+                                        <TableHead>"Payload"</TableHead>
+                                    </TableRow>
+                                </TableHeader>
+                                <TableBody>
                                     <For each=move || rows.clone() key=|item| item.event.event_id.to_string() let:item>
                                         <AuditRow item=item />
                                     </For>
-                                </tbody>
-                            </table>
-                        </div>
+                                </TableBody>
+                            </Table>
+                        </Card>
                         {page
                             .has_more
                             .then(|| {
                                 view! {
-                                    <p style=styles::MUTED>
-                                        "More events match — refine the filter."
-                                    </p>
+                                    <Hint text="More events match — refine the filter.".to_string() />
                                 }
                             })}
                     }
@@ -224,15 +230,29 @@ fn AuditRow(item: crate::api::AuditEventItem) -> impl IntoView {
         .map(|v| v.to_string())
         .unwrap_or_else(|| "—".to_string());
     view! {
-        <HoverTr>
-            <td style=styles::TD>{time}</td>
-            <td style=styles::MONO>{event.action.clone()}</td>
-            <td style=styles::MONO>{actor}</td>
-            <td style=styles::TD>
+        <TableRow>
+            <TableCell>{time}</TableCell>
+            <TableCell>
+                <span style="font-family: var(--font-mono); font-size: 0.8125rem;">{event.action.clone()}</span>
+            </TableCell>
+            <TableCell>
+                <span style="font-family: var(--font-mono); font-size: 0.8125rem; color: var(--muted-foreground);">
+                    {actor}
+                </span>
+            </TableCell>
+            <TableCell>
                 {format!("{} {}", event.target_kind, event.target_id.chars().take(8).collect::<String>())}
-            </td>
-            <td style=styles::TD>{decision}</td>
-            <td style=styles::MONO>{payload}</td>
-        </HoverTr>
+            </TableCell>
+            <TableCell>
+                <Badge variant=BadgeVariant::Secondary>{decision}</Badge>
+            </TableCell>
+            <TableCell>
+                <span style="font-family: var(--font-mono); font-size: 0.75rem; color: var(--muted-foreground); \
+                             display: inline-block; max-width: 16rem; overflow: hidden; \
+                             text-overflow: ellipsis; white-space: nowrap;" title=payload.clone()>
+                    {payload.clone()}
+                </span>
+            </TableCell>
+        </TableRow>
     }
 }

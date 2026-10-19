@@ -53,7 +53,10 @@ pub fn BentoGrid(
 /// Set `interactive` for the hover-lift treatment on clickable tiles.
 ///
 /// # Props
-/// - `col_span` / `row_span`: grid span (default 1 each).
+/// - `col_span` / `row_span`: grid span (default 1 each). `col_span` is
+///   responsive: it applies at ≥640px clamped to the grid's `sm_cols`,
+///   and at ≥1024px clamped to `lg_cols`; below 640px every tile spans
+///   the single column so nothing overflows.
 /// - `eyebrow`: uppercase micro label above the title.
 /// - `title`: tile heading.
 /// - `metric`: big value line (stat tiles), e.g. `"1,248"`.
@@ -91,7 +94,7 @@ pub fn BentoTile(
         <div
             class=cls
             style={format!(
-                "grid-column: span {}; grid-row: span {}; display: flex; flex-direction: column; \
+                "--bento-col-span: {}; grid-row: span {}; display: flex; flex-direction: column; \
                  min-width: 0; padding: 1.25rem; background: var(--card); color: var(--card-foreground); \
                  border: 1px solid var(--border); border-radius: calc(var(--radius) + 4px); \
                  box-shadow: 0 1px 2px oklch(0 0 0 / 0.04);",
