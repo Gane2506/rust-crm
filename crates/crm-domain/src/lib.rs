@@ -45,6 +45,8 @@ pub mod audit;
 /// Billing domain: invoices and payment records for agency clients
 /// (task 12-BILL-01).
 pub mod billing;
+/// Branding domain: per-agency visual customization (task UI2-03).
+pub mod branding;
 /// Campaign aggregate: owner context, channel, schedule, delivery state,
 /// steps, prospect pools, opt-outs, attribution and conversions.
 pub mod campaign;
@@ -110,6 +112,9 @@ pub use billing::{
     Invoice, InvoiceLine, InvoiceStatus, Money, Payment, PaymentStatus, BILLING_INVOICE_CREATED,
     BILLING_INVOICE_ISSUED, BILLING_INVOICE_VOIDED, BILLING_LINE_ADDED, BILLING_PAYMENT_RECORDED,
     BILLING_PAYMENT_REVERSED,
+};
+pub use branding::{
+    BrandingRepository, BrandingService, BrandingTheme, BrandingVersion, BRANDING_UPDATED,
 };
 pub use campaign::{
     attribute_conversion, AttributionModel, Campaign, CampaignStep, Channel, Conversion,

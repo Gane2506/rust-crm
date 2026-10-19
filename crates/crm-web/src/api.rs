@@ -615,3 +615,88 @@ pub async fn verify_audit_chain(token: &str) -> Result<VerifyResponse, ApiError>
         Err(api_error_from_response(&response).await)
     }
 }
+
+/// `GET /api/v1/branding` response: the current theme version.
+///
+/// The theme fields mirror `crm_domain::branding::BrandingTheme`; the
+/// web copy in `crate::theme` is the render source of truth.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct BrandingResponse {
+    /// Monotonic version (0 when never set).
+    pub version: u64,
+    /// The theme (all `None` when never set).
+    pub theme: BrandingThemeDto,
+}
+
+/// Branding theme DTO (mirrors the domain type).
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct BrandingThemeDto {
+    /// Logo image URL (https only).
+    #[serde(default)]
+    pub logo_url: Option<String>,
+    /// Overrides `--primary`.
+    #[serde(default)]
+    pub primary: Option<String>,
+    /// Overrides `--primary-foreground`.
+    #[serde(default)]
+    pub primary_foreground: Option<String>,
+    /// Overrides `--ring`.
+    #[serde(default)]
+    pub ring: Option<String>,
+    /// Overrides `--chart-1`.
+    #[serde(default)]
+    pub chart_1: Option<String>,
+    /// Overrides `--radius`.
+    #[serde(default)]
+    pub radius: Option<String>,
+    /// Overrides `--font-sans`.
+    #[serde(default)]
+    pub font_family: Option<String>,
+}
+
+/// Fetches the agency branding theme. Public: no token required (the
+/// login page calls this before authentication).
+pub async fn fetch_branding() -> Result<BrandingResponse, ApiError> {
+    let url = format!("{API_BASE}/api/v1/branding");
+    let response = Request::get(&url)
+        .send()
+        .await
+        .map_err(|error| ApiError::Transport(error.to_string()))?;
+    if response.ok() {
+        response
+            .json::<BrandingResponse>()
+            .await
+            .map_err(|error| ApiError::Transport(format!("invalid branding response: {error}")))
+    } else {
+        Err(api_error_from_response(&response).await)
+    }
+}
+
+/// Updates the agency branding theme (requires `AgencySettings:Write`).
+pub async fn update_branding(
+    theme: &BrandingThemeDto,
+    token: &str,
+) -> Result<BrandingResponse, ApiError> {
+    let url = format!("{API_BASE}/api/v1/branding");
+    let body = serde_json::to_string(theme)
+        .map_err(|error| ApiError::Transport(format!("invalid branding request: {error}")))?;
+    let response = bearer(
+        Request::put(&url)
+            .header("Idempotency-Key", &new_idempotency_key())
+            .header("Content-Type", "application/json"),
+        token,
+    )
+    .body(body)
+    .map_err(|error| ApiError::Transport(error.to_string()))?
+    .send()
+    .await
+    .map_err(|error| ApiError::Transport(error.to_string()))?;
+    if response.ok() {
+        response
+            .json::<BrandingResponse>()
+            .await
+            .map_err(|error| ApiError::Transport(format!("invalid branding response: {error}")))
+    } else {
+        Err(api_error_from_response(&response).await)
+    }
+}

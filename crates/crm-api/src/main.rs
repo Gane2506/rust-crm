@@ -34,6 +34,7 @@ mod assets;
 mod audit;
 mod auth;
 mod billing;
+mod branding;
 mod campaigns;
 mod contacts;
 mod dashboard;
@@ -647,6 +648,9 @@ where
             "/v1/admin/settings",
             get(admin::get_settings::<R, A, I>).put(admin::update_settings::<R, A, I>),
         )
+        // Branding writes stay behind auth; the public GET is
+        // registered above, outside the middleware.
+        .route("/v1/branding", put(branding::update_branding::<R, A, I>))
         .route(
             "/v1/admin/maintenance",
             get(admin::get_maintenance::<R, A, I>).put(admin::set_maintenance::<R, A, I>),
@@ -743,13 +747,20 @@ where
             // the `CRM_EMAIL_WEBHOOK_SECRET` shared secret inside the
             // handler, so it lives outside the auth middleware.
             .route("/v1/emails/ingest", post(emails::ingest_email::<R, A, I>))
+            // The branding GET is public: the login page needs the
+            // theme before authentication. It lives outside the auth
+            // middleware; the PUT stays behind it.
+            .route("/v1/branding", get(branding::get_branding::<R, A, I>))
             .merge(api.layer(middleware::from_fn_with_state(
                 api_auth,
                 auth::auth_middleware,
             ))),
-        // No auth configured (in-memory test slice): the ingest route
-        // still registers; the handler returns 501 without `ApiAuth`.
-        None => api.route("/v1/emails/ingest", post(emails::ingest_email::<R, A, I>)),
+        // No auth configured (in-memory test slice): the ingest and
+        // branding routes still register; the handlers return 501/empty
+        // without `ApiAuth`.
+        None => api
+            .route("/v1/emails/ingest", post(emails::ingest_email::<R, A, I>))
+            .route("/v1/branding", get(branding::get_branding::<R, A, I>)),
     };
 
     // Flood mitigation for mutating endpoints (task 17-PERF-02):

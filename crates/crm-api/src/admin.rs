@@ -234,7 +234,7 @@ fn admin_service(api_auth: &crate::auth::ApiAuth) -> ApiAdminService {
 
 /// Authorizes `operation` on `resource` at agency scope, or returns
 /// the 401/403 response. Admin never accepts a client-profile scope.
-async fn authorize_admin<R, A, I>(
+pub(crate) async fn authorize_admin<R, A, I>(
     state: &AppState<ContactServiceImpl<R, A>, I>,
     auth: Option<Extension<RequestAuth>>,
     headers: &HeaderMap,
@@ -356,7 +356,7 @@ fn path_upgrade_id(
 
 /// Returns the 501 used when the server has no authentication
 /// configured (the in-memory slice).
-fn not_configured(instance: String) -> Response {
+pub(crate) fn not_configured(instance: String) -> Response {
     problem_response(
         StatusCode::NOT_IMPLEMENTED,
         "Not implemented",
