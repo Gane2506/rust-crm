@@ -29,6 +29,7 @@ mod contacts;
 mod login;
 mod profiles;
 mod styles;
+mod theme;
 mod ui;
 
 /// Root application shell: login gate plus nav header and routed content.
@@ -38,6 +39,10 @@ mod ui;
 /// router (and every route in it) only renders for authenticated sessions.
 #[component]
 fn App() -> impl IntoView {
+    // Design-token foundation (UI2-01): injected once; every v2 component
+    // references var(--token). Also provides the dark-mode context.
+    theme::provide_theme_mode();
+
     // `None` = not logged in; `Some(token)` = bearer token in memory.
     let token = RwSignal::new(None::<String>);
     let on_logged_in = move |new_token: String| token.set(Some(new_token));
@@ -52,12 +57,15 @@ fn App() -> impl IntoView {
     };
 
     view! {
-        {move || match token.get() {
-            None => view! { <LoginForm on_logged_in=on_logged_in /> }.into_any(),
-            Some(token) => {
-                view! { <Shell token=token on_logout=on_logout /> }.into_any()
-            }
-        }}
+        <>
+            <style>{crate::theme::theme_css()}</style>
+            {move || match token.get() {
+                None => view! { <LoginForm on_logged_in=on_logged_in /> }.into_any(),
+                Some(token) => {
+                    view! { <Shell token=token on_logout=on_logout /> }.into_any()
+                }
+            }}
+        </>
     }
 }
 
