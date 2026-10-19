@@ -6,7 +6,7 @@
 //! `on_input`/`on_change` callbacks; pass a `value`/`checked` signal for
 //! controlled usage.
 
-use std::rc::Rc;
+use super::callback::UiValueHandler;
 
 use leptos::leptos_dom::helpers::event_target_value;
 use leptos::prelude::*;
@@ -48,7 +48,7 @@ pub fn Input(
     #[prop(optional)] input_type: Option<&'static str>,
     #[prop(optional, into)] placeholder: Option<String>,
     #[prop(optional)] value: Option<RwSignal<String>>,
-    #[prop(optional)] on_input: Option<Rc<dyn Fn(String)>>,
+    #[prop(optional)] on_input: Option<UiValueHandler<String>>,
     #[prop(optional)] disabled: bool,
     #[prop(optional)] id: Option<&'static str>,
 ) -> impl IntoView {
@@ -61,8 +61,8 @@ pub fn Input(
             disabled=disabled
             prop:value=move || current.as_ref().map(|f| f()).unwrap_or_default()
             on:input=move |ev| {
-                if let Some(handler) = on_input.as_ref() {
-                    handler(event_target_value(&ev));
+                if let Some(handler) = on_input.as_ref().copied() {
+                    handler.call(event_target_value(&ev));
                 }
             }
             style=format!(
@@ -81,7 +81,7 @@ pub fn Textarea(
     #[prop(optional)] rows: Option<u8>,
     #[prop(optional, into)] placeholder: Option<String>,
     #[prop(optional)] value: Option<RwSignal<String>>,
-    #[prop(optional)] on_input: Option<Rc<dyn Fn(String)>>,
+    #[prop(optional)] on_input: Option<UiValueHandler<String>>,
     #[prop(optional)] disabled: bool,
     #[prop(optional)] id: Option<&'static str>,
 ) -> impl IntoView {
@@ -94,8 +94,8 @@ pub fn Textarea(
             disabled=disabled
             prop:value=move || current.as_ref().map(|f| f()).unwrap_or_default()
             on:input=move |ev| {
-                if let Some(handler) = on_input.as_ref() {
-                    handler(event_target_value(&ev));
+                if let Some(handler) = on_input.as_ref().copied() {
+                    handler.call(event_target_value(&ev));
                 }
             }
             style=format!(
@@ -121,7 +121,7 @@ pub type SelectOption = (String, String);
 pub fn Select(
     options: Vec<SelectOption>,
     selected: RwSignal<String>,
-    #[prop(optional)] on_change: Option<Rc<dyn Fn(String)>>,
+    #[prop(optional)] on_change: Option<UiValueHandler<String>>,
     #[prop(optional)] disabled: bool,
     #[prop(optional)] id: Option<&'static str>,
 ) -> impl IntoView {
@@ -133,8 +133,8 @@ pub fn Select(
             on:change=move |ev| {
                 let v = event_target_value(&ev);
                 selected.set(v.clone());
-                if let Some(handler) = on_change.as_ref() {
-                    handler(v);
+                if let Some(handler) = on_change.as_ref().copied() {
+                    handler.call(v);
                 }
             }
             style=format!(
@@ -164,7 +164,7 @@ pub fn Select(
 #[component]
 pub fn Switch(
     checked: RwSignal<bool>,
-    #[prop(optional)] on_change: Option<Rc<dyn Fn(bool)>>,
+    #[prop(optional)] on_change: Option<UiValueHandler<bool>>,
     #[prop(optional)] disabled: bool,
     #[prop(optional)] label: Option<&'static str>,
 ) -> impl IntoView {
@@ -174,8 +174,8 @@ pub fn Switch(
         }
         let next = !checked.get_untracked();
         checked.set(next);
-        if let Some(handler) = on_change.as_ref() {
-            handler(next);
+        if let Some(handler) = on_change.as_ref().copied() {
+            handler.call(next);
         }
     };
     view! {

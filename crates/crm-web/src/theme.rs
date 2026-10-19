@@ -184,6 +184,16 @@ a { color: inherit; }
   .crm-bento-grid { grid-template-columns: repeat(var(--bento-lg, 4), minmax(0, 1fr)); }
 }
 .crm-bento-tile { transition: transform 0.18s ease, box-shadow 0.18s ease; }
+/* Column spans apply only where the grid is wide enough: single column
+   below 640px always spans 1; wider breakpoints clamp the requested
+   span to the available column count so tiles never overflow. */
+.crm-bento-tile { grid-column: span 1; }
+@media (min-width: 640px) {
+  .crm-bento-tile { grid-column: span min(var(--bento-col-span, 1), var(--bento-sm, 2)); }
+}
+@media (min-width: 1024px) {
+  .crm-bento-tile { grid-column: span min(var(--bento-col-span, 1), var(--bento-lg, 4)); }
+}
 .crm-bento-tile-interactive:hover { transform: translateY(-2px); box-shadow: 0 12px 32px oklch(0 0 0 / 0.10); }
 "#
 }
@@ -283,18 +293,12 @@ pub struct ThemeMode {
 
 impl ThemeMode {
     /// Sets the mode and applies the `<html>` class to match.
-    //
-    // Called from the top-bar toggle in UI2-02; allowed dead until then.
-    #[allow(dead_code)]
     pub fn set(self, dark: bool) {
         self.dark.set(dark);
         set_dark_mode(dark);
     }
 
     /// Toggles the current mode.
-    //
-    // Called from the top-bar toggle in UI2-02; allowed dead until then.
-    #[allow(dead_code)]
     pub fn toggle(self) {
         self.set(!self.dark.get_untracked());
     }
@@ -322,9 +326,6 @@ pub fn provide_theme_mode() -> ThemeMode {
 /// # Panics
 ///
 /// Panics when called outside a subtree of [`provide_theme_mode`].
-//
-// Called from the top-bar toggle in UI2-02; allowed dead until then.
-#[allow(dead_code)]
 pub fn use_theme_mode() -> ThemeMode {
     use_context::<ThemeMode>()
         .expect("ThemeMode context: call provide_theme_mode() at the app root")

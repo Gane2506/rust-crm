@@ -1,6 +1,10 @@
 // Copyright (C) 2026 Gane — SPDX-License-Identifier: GPL-3.0-only
 //! Asset pages: list + register metadata for one client profile.
 //!
+//! Reskinned on the v2 component library (UI2-02): shadcn-style table,
+//! cards, badges, and buttons over the design-token system. Behavior is
+//! unchanged from the original slice.
+//!
 //! Assets are profile-scoped (`Asset` grant in the profile). The page
 //! first loads the agency's profiles into a selector, then lists the
 //! selected profile's assets. Registration is metadata-only — the byte
@@ -8,7 +12,6 @@
 //! address (e.g. computed by the agency's ingestion pipeline); uploads
 //! are deduped by content hash within the profile.
 
-use leptos::html::{Input, Select};
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 
@@ -18,19 +21,22 @@ use crate::api::{
     archive_asset, fetch_assets, fetch_profiles, register_asset, ApiError, AssetListResponse,
     RegisterAssetRequest,
 };
-use crate::components::{EmptyState, ErrorAlert, Loading, OkAlert};
-use crate::styles;
-use crate::ui::components::{Badge, Btn, BtnVariant, Card, HoverTr, PageHeader, Tone};
+use crate::components::{CountLine, EmptyState, ErrorAlert, Loading, OkAlert, PageHeader};
+use crate::ui::{
+    Badge, BadgeVariant, Button, ButtonVariant, Card, CardContent, CardHeader, CardTitle,
+    Input as TextInput, Label, Select, Table, TableBody, TableCell, TableHead, TableHeader,
+    TableRow, UiHandler, UiValueHandler,
+};
 
-/// Maps an asset kind to its badge tone.
-fn asset_tone(kind: &crm_domain::asset::AssetKind) -> Tone {
+/// Maps an asset kind to its badge variant.
+fn asset_badge(kind: &crm_domain::asset::AssetKind) -> BadgeVariant {
     use crm_domain::asset::AssetKind;
     match kind {
-        AssetKind::Document => Tone::Blue,
-        AssetKind::Image => Tone::Green,
-        AssetKind::Audio => Tone::Amber,
-        AssetKind::Video => Tone::Blue,
-        AssetKind::Other => Tone::Gray,
+        AssetKind::Document => BadgeVariant::Info,
+        AssetKind::Image => BadgeVariant::Success,
+        AssetKind::Audio => BadgeVariant::Warning,
+        AssetKind::Video => BadgeVariant::Info,
+        AssetKind::Other => BadgeVariant::Secondary,
     }
 }
 
@@ -76,10 +82,20 @@ pub fn AssetsPage(token: String) -> impl IntoView {
                 Some(Ok(options)) if options.is_empty() => {
                     view! { <EmptyState message="Create a client profile first." /> }.into_any()
                 }
-                Some(Ok(options)) => {
+                Some(Ok(mut options)) => {
+                    options.insert(0, (String::new(), "— select —".to_string()));
                     view! {
                         <Card>
-                            <ProfileSelect options=options selected=selected />
+                            <CardContent>
+                                <div style="max-width: 28rem; padding-top: 0.5rem;">
+                                    <Label for_id="asset-profile">"Client profile"</Label>
+                                    <Select
+                                        id="asset-profile"
+                                        options=options
+                                        selected=selected
+                                    />
+                                </div>
+                            </CardContent>
                         </Card>
                         <AssetBrowser token={token.clone()} selected=selected />
                     }
@@ -129,7 +145,7 @@ fn AssetBrowser(token: String, selected: RwSignal<String>) -> impl IntoView {
             });
         });
     }
-    let retry = move || reload.update(|n| *n = n.wrapping_add(1));
+    let retry = UiHandler::new(move || reload.update(|n| *n = n.wrapping_add(1)));
 
     view! {
         {move || {
@@ -146,11 +162,10 @@ fn AssetBrowser(token: String, selected: RwSignal<String>) -> impl IntoView {
                         profile_id=selected.get()
                         on_registered=retry
                     />
-                    <h3 style=styles::H3>"Assets"</h3>
                     {move || match assets.get() {
                         None => view! { <Loading label="assets" /> }.into_any(),
                         Some(Err(error)) => {
-                            view! { <ErrorAlert message=error.to_string() on_retry={std::rc::Rc::new(retry) as std::rc::Rc<dyn Fn()>} /> }
+                            view! { <ErrorAlert message=error.to_string() on_retry={retry} /> }
                                 .into_any()
                         }
                         Some(Ok(page)) if page.assets.is_empty() => {
@@ -159,28 +174,21 @@ fn AssetBrowser(token: String, selected: RwSignal<String>) -> impl IntoView {
                         Some(Ok(page)) => {
                             // Own copy for the `For` children closure.
                             let row_token = list_token.clone();
-                            let total = page.total;
                             view! {
-                                <p style=styles::MUTED>
-                                    {format!(
-                                        "{} asset{} total",
-                                        total,
-                                        if total == 1 { "" } else { "s" }
-                                    )}
-                                </p>
-                                <div style=styles::TABLE_WRAPPER>
-                                    <table style=styles::TABLE>
-                                        <thead>
-                                            <tr>
-                                                <th style=styles::TH>"File"</th>
-                                                <th style=styles::TH>"Kind"</th>
-                                                <th style=styles::TH>"MIME"</th>
-                                                <th style=styles::TH>"Size"</th>
-                                                <th style=styles::TH>"SHA-256"</th>
-                                                <th style=styles::TH>"Actions"</th>
-                                            </tr>
-                                        </thead>
-                                        <tbody>
+                                <CountLine count=page.total singular="asset" plural="assets" />
+                                <Card>
+                                    <Table>
+                                        <TableHeader>
+                                            <TableRow>
+                                                <TableHead>"File"</TableHead>
+                                                <TableHead>"Kind"</TableHead>
+                                                <TableHead>"MIME"</TableHead>
+                                                <TableHead>"Size"</TableHead>
+                                                <TableHead>"SHA-256"</TableHead>
+                                                <TableHead>"Actions"</TableHead>
+                                            </TableRow>
+                                        </TableHeader>
+                                        <TableBody>
                                             <For
                                                 each=move || page.assets.clone()
                                                 key=|asset| asset.asset_id
@@ -192,9 +200,9 @@ fn AssetBrowser(token: String, selected: RwSignal<String>) -> impl IntoView {
                                                     on_archived=retry
                                                 />
                                             </For>
-                                        </tbody>
-                                    </table>
-                                </div>
+                                        </TableBody>
+                                    </Table>
+                                </Card>
                             }
                                 .into_any()
                         }
@@ -206,48 +214,19 @@ fn AssetBrowser(token: String, selected: RwSignal<String>) -> impl IntoView {
     }
 }
 
-/// Profile `<select>` driving the asset list.
-///
-/// # Props
-/// - `options`: `(profile_id, name)` pairs.
-/// - `selected`: write signal for the chosen profile id.
-#[component]
-fn ProfileSelect(options: Vec<(String, String)>, selected: RwSignal<String>) -> impl IntoView {
-    let select_ref = NodeRef::<Select>::new();
-    let on_change = move |_| {
-        let value = select_ref.get().map(|el| el.value()).unwrap_or_default();
-        selected.set(value);
-    };
-    view! {
-        <div style="max-width: 36rem;">
-            <label for="asset-profile" style=styles::LABEL>"Client profile"</label>
-            <select id="asset-profile" node_ref=select_ref on:change=on_change style=styles::INPUT>
-                <option value="">"— select —"</option>
-                {options
-                    .into_iter()
-                    .map(|(id, name)| {
-                        view! { <option value=id>{name}</option> }
-                    })
-                    .collect::<Vec<_>>()}
-            </select>
-        </div>
-    }
-}
-
 /// Register-asset form: file name, MIME type, size, SHA-256 hex.
 ///
 /// POSTs with a fresh `Idempotency-Key`. A `200` (not `201`) means the
 /// same bytes were already registered — the form reports the dedupe.
+///
+/// Uses controlled signals (idiomatic for the v2 [`Input`]) instead of
+/// `NodeRef`s; validation and clearing read/write the signals directly.
 #[component]
-fn AssetRegisterForm(
-    token: String,
-    profile_id: String,
-    on_registered: impl Fn() + Clone + Send + 'static,
-) -> impl IntoView {
-    let name_ref = NodeRef::<Input>::new();
-    let mime_ref = NodeRef::<Input>::new();
-    let size_ref = NodeRef::<Input>::new();
-    let sha_ref = NodeRef::<Input>::new();
+fn AssetRegisterForm(token: String, profile_id: String, on_registered: UiHandler) -> impl IntoView {
+    let file_name = RwSignal::new(String::new());
+    let mime_type = RwSignal::new(String::new());
+    let size_text = RwSignal::new(String::new());
+    let sha256_hex = RwSignal::new(String::new());
     let status = RwSignal::new(None::<Result<String, String>>);
     let submitting = RwSignal::new(false);
 
@@ -256,23 +235,11 @@ fn AssetRegisterForm(
         if submitting.get() {
             return;
         }
-        let file_name = name_ref
-            .get()
-            .map(|i| i.value().trim().to_string())
-            .unwrap_or_default();
-        let mime_type = mime_ref
-            .get()
-            .map(|i| i.value().trim().to_string())
-            .unwrap_or_default();
-        let size_bytes: u64 = size_ref
-            .get()
-            .map(|i| i.value().trim().parse().unwrap_or(0))
-            .unwrap_or(0);
-        let sha256_hex = sha_ref
-            .get()
-            .map(|i| i.value().trim().to_lowercase())
-            .unwrap_or_default();
-        if file_name.is_empty() || mime_type.is_empty() {
+        let file_name_value = file_name.get_untracked().trim().to_string();
+        let mime_type_value = mime_type.get_untracked().trim().to_string();
+        let size_bytes: u64 = size_text.get_untracked().trim().parse().unwrap_or(0);
+        let sha256_value = sha256_hex.get_untracked().trim().to_lowercase();
+        if file_name_value.is_empty() || mime_type_value.is_empty() {
             status.set(Some(Err(
                 "File name and MIME type are required.".to_string()
             )));
@@ -282,7 +249,7 @@ fn AssetRegisterForm(
             status.set(Some(Err("Size must be greater than zero.".to_string())));
             return;
         }
-        if sha256_hex.len() != 64 || !sha256_hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+        if sha256_value.len() != 64 || !sha256_value.bytes().all(|b| b.is_ascii_hexdigit()) {
             status.set(Some(Err("SHA-256 must be 64 hex characters.".to_string())));
             return;
         }
@@ -290,21 +257,19 @@ fn AssetRegisterForm(
         status.set(None);
         let request = RegisterAssetRequest {
             client_profile_id: profile_id.clone(),
-            file_name,
-            mime_type,
+            file_name: file_name_value,
+            mime_type: mime_type_value,
             size_bytes,
-            sha256_hex,
+            sha256_hex: sha256_value,
         };
-        let on_registered = on_registered.clone();
         let token = token.clone();
         spawn_local(async move {
             match register_asset(&request, &token).await {
                 Ok(result) => {
-                    for field in [&name_ref, &mime_ref, &size_ref, &sha_ref] {
-                        if let Some(input) = field.get() {
-                            input.set_value("");
-                        }
-                    }
+                    file_name.set(String::new());
+                    mime_type.set(String::new());
+                    size_text.set(String::new());
+                    sha256_hex.set(String::new());
                     // `200 OK` (not `201`) means the same bytes were already
                     // registered under the profile — report the dedupe
                     // distinctly instead of claiming a fresh registration.
@@ -317,7 +282,7 @@ fn AssetRegisterForm(
                         format!("Asset registered: {}", result.asset.file_name)
                     };
                     status.set(Some(Ok(message)));
-                    on_registered();
+                    on_registered.call();
                 }
                 Err(error) => status.set(Some(Err(error.to_string()))),
             }
@@ -327,70 +292,66 @@ fn AssetRegisterForm(
 
     view! {
         <Card>
-            <h3 style=styles::FORM_TITLE>"Register asset"</h3>
-            <form on:submit=on_submit>
-            <div style=styles::FORM>
-                <div>
-                    <label for="asset-name" style=styles::LABEL>"File name"</label>
-                    <input
-                        id="asset-name"
-                        type="text"
-                        node_ref=name_ref
-                        placeholder="contract-draft.pdf"
-                        autocomplete="off"
-                        style=styles::INPUT
-                    />
-                </div>
-                <div>
-                    <label for="asset-mime" style=styles::LABEL>"MIME type"</label>
-                    <input
-                        id="asset-mime"
-                        type="text"
-                        node_ref=mime_ref
-                        placeholder="application/pdf"
-                        autocomplete="off"
-                        style=styles::INPUT
-                    />
-                </div>
-                <div>
-                    <label for="asset-size" style=styles::LABEL>"Size (bytes)"</label>
-                    <input
-                        id="asset-size"
-                        type="number"
-                        min="1"
-                        node_ref=size_ref
-                        placeholder="1024"
-                        autocomplete="off"
-                        style=styles::INPUT
-                    />
-                </div>
-                <div>
-                    <label for="asset-sha" style=styles::LABEL>"SHA-256 (hex)"</label>
-                    <input
-                        id="asset-sha"
-                        type="text"
-                        node_ref=sha_ref
-                        placeholder="64 hex characters"
-                        autocomplete="off"
-                        style=styles::INPUT
-                    />
-                </div>
-                <div>
-                    <Btn
-                        variant=BtnVariant::Primary
-                        btn_type="submit"
-                        disabled=Signal::derive(move || submitting.get())
-                    >
-                        {move || if submitting.get() { "Registering…" } else { "Register asset" }}
-                    </Btn>
-                </div>
-                {move || match status.get() {
-                    None => ().into_any(),
-                    Some(Ok(message)) => view! { <OkAlert message=message /> }.into_any(),
-                    Some(Err(message)) => view! { <ErrorAlert message=message /> }.into_any(),
-                }}
-            </div>
-            </form>
+            <CardHeader>
+                <CardTitle>"Register asset"</CardTitle>
+            </CardHeader>
+            <CardContent>
+                <form on:submit=on_submit>
+                    <div style="display: grid; gap: 0.875rem; max-width: 36rem;">
+                        <div>
+                            <Label for_id="asset-name">"File name"</Label>
+                            <TextInput
+                                id="asset-name"
+                                placeholder="contract-draft.pdf"
+                                value=file_name
+                                on_input={UiValueHandler::new(move |v: String| file_name.set(v))}
+                            />
+                        </div>
+                        <div>
+                            <Label for_id="asset-mime">"MIME type"</Label>
+                            <TextInput
+                                id="asset-mime"
+                                placeholder="application/pdf"
+                                value=mime_type
+                                on_input={UiValueHandler::new(move |v: String| mime_type.set(v))}
+                            />
+                        </div>
+                        <div>
+                            <Label for_id="asset-size">"Size (bytes)"</Label>
+                            <TextInput
+                                id="asset-size"
+                                input_type="number"
+                                placeholder="1024"
+                                value=size_text
+                                on_input={UiValueHandler::new(move |v: String| size_text.set(v))}
+                            />
+                        </div>
+                        <div>
+                            <Label for_id="asset-sha">"SHA-256 (hex)"</Label>
+                            <TextInput
+                                id="asset-sha"
+                                placeholder="64 hex characters"
+                                value=sha256_hex
+                                on_input={UiValueHandler::new(move |v: String| sha256_hex.set(v))}
+                            />
+                        </div>
+                        <div>
+                            <Button
+                                variant=ButtonVariant::Default
+                                btn_type="submit"
+                                disabled=Signal::derive(move || submitting.get())
+                            >
+                                {move || if submitting.get() { "Registering…" } else { "Register asset" }}
+                            </Button>
+                        </div>
+                        {move || match status.get() {
+                            None => ().into_any(),
+                            Some(Ok(message)) => view! { <OkAlert message=message /> }.into_any(),
+                            Some(Err(message)) => view! { <ErrorAlert message=message /> }.into_any(),
+                        }}
+                    </div>
+                </form>
+            </CardContent>
         </Card>
     }
 }
@@ -401,11 +362,7 @@ fn AssetRegisterForm(
 /// only on success so the list refetch (and its error state) stays
 /// consistent.
 #[component]
-fn AssetRow(
-    asset: Asset,
-    token: String,
-    on_archived: impl Fn() + Clone + Send + 'static,
-) -> impl IntoView {
+fn AssetRow(asset: Asset, token: String, on_archived: UiHandler) -> impl IntoView {
     let working = RwSignal::new(false);
     let archive_error = RwSignal::new(None::<String>);
     let asset_id = asset.asset_id.to_string();
@@ -416,8 +373,8 @@ fn AssetRow(
         .map(|b| format!("{b:02x}"))
         .collect();
 
-    // 0-arg so it can plug straight into [`Btn`]'s `on_click`.
-    let on_archive = move || {
+    // 0-arg so it can plug straight into [`Button`]'s `on_click`.
+    let on_archive = UiHandler::new(move || {
         if working.get() {
             return;
         }
@@ -425,48 +382,47 @@ fn AssetRow(
         archive_error.set(None);
         let token = token.clone();
         let asset_id = asset_id.clone();
-        let on_archived = on_archived.clone();
         spawn_local(async move {
             match archive_asset(&asset_id, &token).await {
-                Ok(_) => on_archived(),
+                Ok(_) => on_archived.call(),
                 Err(error) => archive_error.set(Some(error.to_string())),
             }
             working.set(false);
         });
-    };
+    });
 
     view! {
-        <HoverTr>
-            <td style=styles::TD>
+        <TableRow>
+            <TableCell>
                 <strong style="font-weight: 600;">{asset.file_name.clone()}</strong>
-            </td>
-            <td style=styles::TD>
-                <Badge tone=asset_tone(&asset.kind)>{format!("{:?}", asset.kind)}</Badge>
-            </td>
-            <td style=styles::TD>
-                <span style=styles::MUTED>{asset.mime_type.clone()}</span>
-            </td>
-            <td style=styles::TD>{format!("{} bytes", asset.size_bytes)}</td>
-            <td style=styles::TD>
-                <span style=styles::MONO>{format!("{short_hash}…")}</span>
-            </td>
-            <td style=styles::TD>
+            </TableCell>
+            <TableCell>
+                <Badge variant=asset_badge(&asset.kind)>{format!("{:?}", asset.kind)}</Badge>
+            </TableCell>
+            <TableCell>
+                <span style="color: var(--muted-foreground);">{asset.mime_type.clone()}</span>
+            </TableCell>
+            <TableCell>{format!("{} bytes", asset.size_bytes)}</TableCell>
+            <TableCell>
+                <span style="font-family: var(--font-mono); font-size: 0.75rem; color: var(--muted-foreground);">
+                    {format!("{short_hash}…")}
+                </span>
+            </TableCell>
+            <TableCell>
                 {move || {
                     archive_error
                         .get()
                         .map(|message| view! { <ErrorAlert message=message /> })
                 }}
-                <Btn
-                    variant=BtnVariant::Danger
+                <Button
+                    variant=ButtonVariant::Destructive
                     btn_type="button"
                     disabled=Signal::derive(move || working.get())
-                    on_click={
-                        std::rc::Rc::new(on_archive) as std::rc::Rc<dyn Fn()>
-                    }
+                    on_click=on_archive
                 >
                     {move || if working.get() { "Archiving…" } else { "Archive" }}
-                </Btn>
-            </td>
-        </HoverTr>
+                </Button>
+            </TableCell>
+        </TableRow>
     }
 }

@@ -4,10 +4,9 @@
 //!
 //! Token-driven surfaces; no positioning JavaScript.
 
-use std::sync::Arc;
-
 use leptos::prelude::*;
 
+use super::callback::{UiHandler, UiValueHandler};
 use super::icon::{Icon, IconName};
 
 // ---------------------------------------------------------------------------
@@ -26,17 +25,17 @@ use super::icon::{Icon, IconName};
 #[component]
 pub fn Dialog(
     open: RwSignal<bool>,
-    #[prop(optional)] on_close: Option<Arc<dyn Fn() + Send + Sync>>,
+    #[prop(optional)] on_close: Option<UiHandler>,
     #[prop(default = true)] close_on_escape: bool,
     #[prop(optional)] title: Option<&'static str>,
     children: ChildrenFn,
 ) -> impl IntoView {
-    // `Arc` (not `Rc`): the close handler is captured inside the `<Show>`
+    // `UiHandler`: the close handler is captured inside the `<Show>`
     // children closure, which must be `Send`.
-    let close: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
+    let close = UiHandler::new(move || {
         open.set(false);
-        if let Some(handler) = on_close.as_ref() {
-            handler();
+        if let Some(handler) = on_close {
+            handler.call();
         }
     });
     view! {
@@ -45,14 +44,14 @@ pub fn Dialog(
             // so assistive tech names it from the title.
             <div
                 on:click={
-                    let close = close.clone();
-                    move |_| close()
+                    let close = close;
+                    move |_| close.call()
                 }
                 on:keydown={
-                    let close = close.clone();
+                    let close = close;
                     move |ev: leptos::ev::KeyboardEvent| {
                         if close_on_escape && ev.key() == "Escape" {
-                            close();
+                            close.call();
                         }
                     }
                 }
@@ -79,8 +78,8 @@ pub fn Dialog(
                             type="button"
                             aria-label="Close dialog"
                             on:click={
-                                let close = close.clone();
-                                move |_| close()
+                                let close = close;
+                                move |_| close.call()
                             }
                             style="margin-left: auto; display: inline-flex; align-items: center; justify-content: center; width: 2rem; height: 2rem; border-radius: var(--radius-md); border: none; background: transparent; color: var(--muted-foreground);"
                         >
@@ -158,7 +157,7 @@ impl MenuItem {
 #[component]
 pub fn DropdownMenu(
     items: Vec<MenuItem>,
-    on_select: Arc<dyn Fn(usize) + Send + Sync>,
+    on_select: UiValueHandler<usize>,
     #[prop(optional)] align: MenuAlign,
     children: Children,
 ) -> impl IntoView {
@@ -167,12 +166,10 @@ pub fn DropdownMenu(
         MenuAlign::Left => "left: 0;",
         MenuAlign::Right => "right: 0;",
     };
-    // `Arc` (not `Rc`): `on_select` is captured inside the `<Show>`
-    // children closure, which must be `Send`. `items` and the handler
-    // live in `StoredValue`s so the `Fn` render closure can reach them
-    // on every re-render without moving anything out.
+    // `items` lives in a `StoredValue` so the `Fn` render closure can
+    // reach it on every re-render without moving it out. `on_select` is
+    // a `Copy` `UiValueHandler`.
     let items = StoredValue::new(items);
-    let on_select = StoredValue::new(on_select);
     view! {
         <div style="position: relative; display: inline-block;">
             <button
@@ -212,11 +209,9 @@ pub fn DropdownMenu(
                                 .iter()
                                 .enumerate()
                                 .map(|(i, item)| {
-                                    let select = {
-                                        move |_| {
-                                            open.set(false);
-                                            on_select.with_value(|f| f(i));
-                                        }
+                                    let select = move |_| {
+                                        open.set(false);
+                                        on_select.call(i);
                                     };
                                     view! {
                                         <button

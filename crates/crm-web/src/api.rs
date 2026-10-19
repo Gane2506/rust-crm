@@ -252,7 +252,7 @@ pub struct ProfileListResponse {
     /// Profiles for the caller's agency.
     pub profiles: Vec<ClientProfile>,
     /// Total profiles.
-    pub total: usize,
+    pub total: u64,
 }
 
 /// `POST /api/v1/profiles` request body.
@@ -355,7 +355,7 @@ pub struct AssetListResponse {
     /// Assets for the requested profile.
     pub assets: Vec<Asset>,
     /// Total assets.
-    pub total: usize,
+    pub total: u64,
 }
 
 /// `POST /api/v1/assets` request body: asset metadata. The byte store is

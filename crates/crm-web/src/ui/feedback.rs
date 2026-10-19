@@ -6,10 +6,10 @@
 //! by a [`Toasts`] signal owned by the app shell.
 
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
 
 use leptos::prelude::*;
 
+use super::callback::UiValueHandler;
 use super::icon::{Icon, IconName};
 
 // ---------------------------------------------------------------------------
@@ -208,7 +208,7 @@ fn toast_accent(variant: ToastVariant) -> (&'static str, IconName) {
 #[component]
 pub fn Toaster(
     toasts: Toasts,
-    #[prop(optional)] on_dismiss: Option<Arc<dyn Fn(u64) + Send + Sync>>,
+    #[prop(optional)] on_dismiss: Option<UiValueHandler<u64>>,
 ) -> impl IntoView {
     view! {
         <div
@@ -220,12 +220,11 @@ pub fn Toaster(
                 key=|toast| toast.id
                 children=move |toast| {
                     let id = toast.id;
-                    let on_dismiss = on_dismiss.clone();
                     let (accent, icon) = toast_accent(toast.variant);
                     let dismiss = move |_| {
                         dismiss_toast(toasts, id);
-                        if let Some(handler) = on_dismiss.as_ref() {
-                            handler(id);
+                        if let Some(handler) = on_dismiss {
+                            handler.call(id);
                         }
                     };
                     view! {
