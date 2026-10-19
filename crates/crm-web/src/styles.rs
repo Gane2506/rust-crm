@@ -9,11 +9,12 @@
 //! navigation rail, a utility top bar, clean data tables, and record
 //! pages. The component library in [`crate::ui`] composes these tokens.
 
-/// App root: counteracts the browser's default body margin and sets the
-/// base font. The sidebar layout needs full-bleed, so this (not a
-/// centered max-width column) is the top-level wrapper.
+/// App root: sets the base font and full-bleed sidebar layout.
+///
+/// `body` margin is reset to 0 by [`crate::theme::theme_css`], so no
+/// negative-margin hack is needed here.
 pub const APP_ROOT: &str =
-    "margin: -8px; min-height: 100vh; display: flex; background: #f8fafc; color: #0f172a; font-family: Inter, -apple-system, BlinkMacSystemFont, \"Segoe UI\", system-ui, sans-serif; font-size: 13px; line-height: 1.5;";
+    "margin: 0; min-height: 100vh; display: flex; background: #f8fafc; color: #0f172a; font-family: Inter, -apple-system, BlinkMacSystemFont, \"Segoe UI\", system-ui, sans-serif; font-size: 13px; line-height: 1.5;";
 
 /// Left navigation rail.
 pub const SIDEBAR: &str =
