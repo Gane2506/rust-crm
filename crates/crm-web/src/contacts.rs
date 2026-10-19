@@ -76,7 +76,7 @@ pub fn ContactsPage(token: String) -> impl IntoView {
                     "Merge duplicates"
                 </A>
             </PageHeader>
-            <ContactForm token={token.clone()} on_created={UiHandler::new(move || reload.update(|n| *n = n.wrapping_add(1)))} />
+            <ContactForm token={token.clone()} on_created=retry />
             {move || match contacts.get() {
                 None => {
                     view! { <Loading label="contacts" /> }.into_any()
