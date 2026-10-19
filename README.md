@@ -13,7 +13,43 @@ AI handoff under [`docs/handoff/`](docs/handoff/) (start with `README.md`,
 
 ## Screenshots
 
-Real renders of the running app (Leptos/WASM frontend in the Twenty-style UI, seeded demo data):
+Real renders of the running app (Leptos/WASM frontend in the Bento UI, seeded demo data).
+A per-feature gallery lives below; the original set is kept at
+[`docs/images/screenshots/`](docs/images/screenshots/).
+
+### UI gallery
+
+![Login](docs/images/ui2/login.png)
+*Login — staff sign in; there is no client login by design.*
+
+![Dashboard](docs/images/ui2/dashboard.png)
+*Bento dashboard — live stat tiles (contacts, profiles, audit chain health) and recent audit events.*
+
+![Dashboard (dark mode)](docs/images/ui2/dashboard-dark.png)
+*Dashboard in dark mode — the theme toggle restyles every view via CSS custom properties.*
+
+![Contacts](docs/images/ui2/contacts.png)
+*Contacts — new-contact form and the seeded contact list.*
+
+![Contacts (dark mode)](docs/images/ui2/contacts-dark.png)
+*Contacts in dark mode.*
+
+![Contact detail](docs/images/ui2/contact-detail.png)
+*Contact detail — lifecycle, sources, and merge history.*
+
+![Client profiles](docs/images/ui2/profiles.png)
+*Client profiles — agency-operated client workspaces.*
+
+![Assets](docs/images/ui2/assets.png)
+*Assets — content-addressed files scoped to a client profile.*
+
+![Audit log](docs/images/ui2/audit.png)
+*Audit log — tamper-evident security event history with chain verification.*
+
+![Branding studio](docs/images/ui2/branding.png)
+*Branding studio — businesses customize logo, colours, radius and font with a live preview.*
+
+### Previous UI (Twenty-style)
 
 ![Login gate](docs/images/screenshots/login.png)
 *Login gate — staff sign in; there is no client login by design.*
@@ -260,11 +296,9 @@ and merge happens on green CI plus review. Follow along via
 | Contract signing | 13-SIGN-01… | ✅ 13-SIGN-03 done ([#82](https://github.com/Gane2506/rust-crm/issues/82), [#83](https://github.com/Gane2506/rust-crm/pull/83)); **workstream COMPLETE** |
 | Calling | 14-VOICE-01… | ✅ 14-VOICE-03 done ([#88](https://github.com/Gane2506/rust-crm/issues/88), [#89](https://github.com/Gane2506/rust-crm/pull/89)); **workstream COMPLETE** |
 | Analytics and staff | 15-DASH-01… | ✅ 15-DASH-03 done ([#99](https://github.com/Gane2506/rust-crm/issues/99), [#100](https://github.com/Gane2506/rust-crm/pull/100)); **workstream COMPLETE** |
-| Contract signing | 13-SIGN-01…03 | ⬜ Not started |
-| Calling | 14-VOICE-01…03 | ⬜ Not started |
-| Analytics and staff | 15-DASH-01…03 | ✅ Complete |
 | Admin and operations | 16-ADMIN-01…03 | ✅ 16-ADMIN-03 done ([#105](https://github.com/Gane2506/rust-crm/issues/105), [#106](https://github.com/Gane2506/rust-crm/pull/106)); **workstream COMPLETE** |
-| Hardening and release | 17-PERF-01…03 | ✅ 17-PERF-02 done ([#109](https://github.com/Gane2506/rust-crm/issues/109), [#110](https://github.com/Gane2506/rust-crm/pull/110)); 🔨 17-PERF-03 in progress ([#111](https://github.com/Gane2506/rust-crm/issues/111)) |
+| Hardening and release | 17-PERF-01…03 | ✅ 17-PERF-03 done ([#111](https://github.com/Gane2506/rust-crm/issues/111), [#112](https://github.com/Gane2506/rust-crm/pull/112)); **workstream COMPLETE** |
+| UI 2.0 (Bento + branding) | UI2-01…04 | ✅ UI2-01 done ([#113](https://github.com/Gane2506/rust-crm/issues/113), [#114](https://github.com/Gane2506/rust-crm/pull/114)); ✅ UI2-02 done ([#115](https://github.com/Gane2506/rust-crm/issues/115), [#116](https://github.com/Gane2506/rust-crm/pull/116)); ✅ UI2-03 done ([#117](https://github.com/Gane2506/rust-crm/issues/117), [#118](https://github.com/Gane2506/rust-crm/pull/118)); 🔨 UI2-04 in progress ([#119](https://github.com/Gane2506/rust-crm/issues/119)) |
 
 ## CI gates (summary)
 
