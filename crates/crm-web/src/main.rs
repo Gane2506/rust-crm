@@ -17,6 +17,7 @@ use leptos_router::path;
 use api::logout;
 use assets::AssetsPage;
 use audit::AuditPage;
+use branding::BrandingPage;
 use contacts::{ContactDetail, ContactsPage, MergePage};
 use login::LoginForm;
 use profiles::{ProfileDetail, ProfilesPage};
@@ -30,6 +31,7 @@ use ui::{
 mod api;
 mod assets;
 mod audit;
+mod branding;
 mod components;
 mod contacts;
 mod login;
@@ -50,7 +52,30 @@ fn App() -> impl IntoView {
 
     // `None` = not logged in; `Some(token)` = bearer token in memory.
     let token = RwSignal::new(None::<String>);
-    let on_logged_in = UiValueHandler::new(move |new_token: String| token.set(Some(new_token)));
+
+    // Branding (UI2-03): fetch the public theme on mount (the login page
+    // is themed too) and re-fetch after login; inject as a `<style>`
+    // layered after the theme_css tag.
+    let apply_branding = move || {
+        spawn_local(async move {
+            if let Ok(resp) = crate::api::fetch_branding().await {
+                let theme = crate::theme::BrandingTheme {
+                    primary: resp.theme.primary,
+                    primary_foreground: resp.theme.primary_foreground,
+                    ring: resp.theme.ring,
+                    chart_1: resp.theme.chart_1,
+                    business_name: None,
+                    logo_url: resp.theme.logo_url,
+                };
+                crate::branding::apply_branding_style(&theme);
+            }
+        });
+    };
+    apply_branding();
+    let on_logged_in = UiValueHandler::new(move |new_token: String| {
+        token.set(Some(new_token));
+        apply_branding();
+    });
     // Server-side revocation first, then drop the local token either way.
     let on_logout = UiHandler::new(move || {
         if let Some(current) = token.get_untracked() {
@@ -160,6 +185,11 @@ const NAV_ITEMS: &[NavItem] = &[
         label: "Admin",
         href: "/admin",
         icon: IconName::Settings,
+    },
+    NavItem {
+        label: "Branding",
+        href: "/branding",
+        icon: IconName::Image,
     },
     NavItem {
         label: "Audit",
@@ -460,6 +490,13 @@ fn Shell(token: String, on_logout: UiHandler) -> impl IntoView {
                                 view={
                                     let token = token.clone();
                                     move || view! { <AuditPage token=token.clone() /> }
+                                }
+                            />
+                            <Route
+                                path=path!("/branding")
+                                view={
+                                    let token = token.clone();
+                                    move || view! { <BrandingPage token=token.clone() /> }
                                 }
                             />
                             // Feature areas whose dedicated views land in later

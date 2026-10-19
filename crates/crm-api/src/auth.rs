@@ -190,6 +190,8 @@ pub struct ApiAuth {
     pub upgrades: PgUpgradeRepository,
     /// Installation repository for the admin endpoints.
     pub installation: PgInstallationRepository,
+    /// Branding repository for the branding studio endpoints (UI2-03).
+    pub branding: crm_db::branding::PgBrandingRepository,
     /// Database pool for read-only metric execution (widgets query
     /// the entity tables directly; the service builds SQL only from
     /// a hardcoded allowlist).
@@ -273,6 +275,7 @@ impl ApiAuth {
             exports: PgExportRepository::new(pool.clone()),
             upgrades: PgUpgradeRepository::new(pool.clone()),
             installation: PgInstallationRepository::new(pool.clone()),
+            branding: crm_db::branding::PgBrandingRepository::new(pool.clone()),
             pool: pool.clone(),
         }
     }
