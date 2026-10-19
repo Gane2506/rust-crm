@@ -219,13 +219,34 @@ pub struct BrandingTheme {
 /// so it composes with [`theme_css`] and dark mode (dark-mode-specific
 /// overrides are a UI2-03 follow-on). Returns an empty string when no
 /// color field is set.
+///
+/// # Security
+///
+/// Color values are validated against a bounded CSS color grammar before
+/// being interpolated: branding input is admin-controlled today, but the
+/// branding studio (UI2-03) will accept it through the UI, and raw
+/// interpolation would allow CSS rule injection (`</style>`, `url(`, …).
+/// Values that fail validation are silently dropped.
 //
 // Wired up by the branding studio in UI2-03; allowed dead until then.
 #[allow(dead_code)]
 pub fn branded_css(branding: &BrandingTheme) -> String {
+    /// Accepts hex (`#rrggbb`), `rgb()/hsl()/oklch()` functional notation,
+    /// and CSS color keywords — rejects anything that could break out of
+    /// a declaration value (`;`, `{`, `}`, quotes, `url(`, …).
+    fn is_safe_css_color(value: &str) -> bool {
+        let v = value.trim();
+        !v.is_empty()
+            && v.len() <= 64
+            && v.chars()
+                .all(|c| c.is_ascii_alphanumeric() || " \t.,%/#()".contains(c))
+            && !v.to_ascii_lowercase().contains("url(")
+            && !v.contains([';', '{', '}', '"', '\'', '<', '>', '\\'])
+    }
+
     let mut vars = String::new();
     let mut push = |name: &str, value: &Option<String>| {
-        if let Some(v) = value {
+        if let Some(v) = value.as_deref().filter(|v| is_safe_css_color(v)) {
             vars.push_str(&format!("  {name}: {v};\n"));
         }
     };
