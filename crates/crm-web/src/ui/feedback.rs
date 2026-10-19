@@ -86,12 +86,14 @@ fn initials(name: &str) -> String {
 /// - `name`: full name used for initials and the accessible label.
 /// - `size`: pixel diameter (default 32).
 #[component]
-pub fn Avatar(name: &'static str, #[prop(optional)] size: Option<u16>) -> impl IntoView {
+pub fn Avatar(name: String, #[prop(optional)] size: Option<u16>) -> impl IntoView {
     let size = size.unwrap_or(32);
+    let label = format!("Avatar for {name}");
+    let glyphs = initials(&name);
     view! {
         <span
             title=name
-            aria-label={format!("Avatar for {name}")}
+            aria-label=label
             role="img"
             style={format!(
                 "display: inline-flex; align-items: center; justify-content: center; \
@@ -101,7 +103,7 @@ pub fn Avatar(name: &'static str, #[prop(optional)] size: Option<u16>) -> impl I
                 size / 2 + 2,
             )}
         >
-            {initials(name)}
+            {glyphs}
         </span>
     }
 }

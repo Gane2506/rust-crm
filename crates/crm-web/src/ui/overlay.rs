@@ -41,12 +41,9 @@ pub fn Dialog(
     });
     view! {
         <Show when=move || open.get()>
+            // Backdrop: plain overlay; the dialog role lives on the panel
+            // so assistive tech names it from the title.
             <div
-                role="dialog"
-                aria-modal="true"
-                tabindex="-1"
-                // Cloned inline: the `<Show>` children closure is `Fn` and
-                // cannot move a captured handler out on re-render.
                 on:click={
                     let close = close.clone();
                     move |_| close()
@@ -62,7 +59,9 @@ pub fn Dialog(
                 style="position: fixed; inset: 0; z-index: 50; display: flex; align-items: center; justify-content: center; padding: 1rem; background: oklch(0 0 0 / 0.5);"
             >
                 <div
-                    role="document"
+                    role="dialog"
+                    aria-modal="true"
+                    tabindex="-1"
                     class="crm-fade-in"
                     on:click=|ev| ev.stop_propagation()
                     style="width: 100%; max-width: 28rem; background: var(--card); color: var(--card-foreground); border: 1px solid var(--border); border-radius: var(--radius-lg); box-shadow: 0 24px 64px oklch(0 0 0 / 0.24);"
@@ -181,6 +180,11 @@ pub fn DropdownMenu(
                 aria-haspopup="menu"
                 aria-expanded=move || open.get().to_string()
                 on:click=move |_| open.set(!open.get_untracked())
+                on:keydown=move |ev: leptos::ev::KeyboardEvent| {
+                    if ev.key() == "Escape" {
+                        open.set(false);
+                    }
+                }
                 style="display: inline-flex; align-items: center; gap: 0.375rem; height: 2.5rem; padding: 0 0.75rem; border-radius: var(--radius-md); border: 1px solid var(--input); background: var(--card); color: var(--foreground); font-size: 0.875rem; font-weight: 500;"
             >
                 {children()}

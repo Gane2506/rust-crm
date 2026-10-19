@@ -129,6 +129,7 @@ pub fn Select(
         <select
             id={id.unwrap_or("")}
             disabled=disabled
+            prop:value=move || selected.get()
             on:change=move |ev| {
                 let v = event_target_value(&ev);
                 selected.set(v.clone());
@@ -144,14 +145,8 @@ pub fn Select(
             {options
                 .into_iter()
                 .map(|(value, label)| {
-                    let is_selected = {
-                        let value = value.clone();
-                        move || selected.get() == value
-                    };
                     view! {
-                        <option value=value selected=is_selected>
-                            {label}
-                        </option>
+                        <option value=value>{label}</option>
                     }
                 })
                 .collect::<Vec<_>>()}
