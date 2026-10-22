@@ -221,6 +221,10 @@ pub struct BrandingTheme {
     pub business_name: Option<String>,
     /// Logo image URL rendered in the sidebar brand slot (UI2-03).
     pub logo_url: Option<String>,
+    /// Selected UI style id (one of the 16 kebab-case ids, UI3-01);
+    /// `None`/empty = the Bento default. Read by
+    /// [`crate::ui_styles::apply_ui_style`], not by [`branded_css`].
+    pub ui_style: Option<String>,
 }
 
 /// Builds the branding override stylesheet for `branding`.
@@ -277,6 +281,35 @@ pub fn branded_css(branding: &BrandingTheme) -> String {
 pub fn set_dark_mode(dark: bool) {
     if let Some(html) = document().document_element() {
         let _ = html.class_list().toggle_with_force("dark", dark);
+    }
+}
+
+/// Enforces stylesheet precedence in document order: base theme
+/// (`#crm-base-style`, rendered by the App view), then the UI style
+/// (`#crm-ui-style`), then the branding style (`#crm-branding-style`).
+///
+/// Equal-specificity `:root`/`.dark` token rules resolve by document order.
+/// The base theme tag lives in `<body>` (rendered by Leptos) while the
+/// dynamic tags were historically appended to `<head>` — `<head>` sorts
+/// before `<body>`, so without this ordering the base theme would silently
+/// beat both the UI style and the saved branding tokens. `append_child`
+/// moves an already-attached node, so calling this after every injection
+/// keeps the three tags in the right order. Missing tags are skipped;
+/// no-op when the document body is unavailable.
+pub fn enforce_style_order() {
+    let doc = document();
+    let Some(body) = doc.body() else {
+        return;
+    };
+    let Some(base) = doc.get_element_by_id("crm-base-style") else {
+        return;
+    };
+    let _ = body.append_child(&base);
+    if let Some(ui) = doc.get_element_by_id("crm-ui-style") {
+        let _ = body.append_child(&ui);
+    }
+    if let Some(branding) = doc.get_element_by_id("crm-branding-style") {
+        let _ = body.append_child(&branding);
     }
 }
 

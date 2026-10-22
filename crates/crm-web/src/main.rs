@@ -38,6 +38,7 @@ mod login;
 mod profiles;
 mod theme;
 mod ui;
+mod ui_styles;
 
 /// Root application: login gate plus the authenticated shell.
 ///
@@ -55,7 +56,8 @@ fn App() -> impl IntoView {
 
     // Branding (UI2-03): fetch the public theme on mount (the login page
     // is themed too) and re-fetch after login; inject as a `<style>`
-    // layered after the theme_css tag.
+    // layered after the theme_css tag. The UI style (UI3-01) is applied
+    // right after, as its own `<style id="crm-ui-style">` tag.
     let apply_branding = move || {
         spawn_local(async move {
             if let Ok(resp) = crate::api::fetch_branding().await {
@@ -66,8 +68,10 @@ fn App() -> impl IntoView {
                     chart_1: resp.theme.chart_1,
                     business_name: None,
                     logo_url: resp.theme.logo_url,
+                    ui_style: resp.theme.ui_style,
                 };
                 crate::branding::apply_branding_style(&theme);
+                crate::ui_styles::apply_ui_style(theme.ui_style.as_deref());
             }
         });
     };
@@ -88,7 +92,7 @@ fn App() -> impl IntoView {
 
     view! {
         <>
-            <style>{crate::theme::theme_css()}</style>
+            <style id="crm-base-style">{crate::theme::theme_css()}</style>
             {move || match token.get() {
                 None => view! { <LoginForm on_logged_in=on_logged_in /> }.into_any(),
                 Some(token) => {
