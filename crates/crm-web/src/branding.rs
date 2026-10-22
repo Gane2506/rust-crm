@@ -14,6 +14,7 @@ use crate::ui::{
     Badge, BadgeVariant, Button, ButtonVariant, Card, CardContent, CardDescription, CardHeader,
     CardTitle, Input, Label, UiHandler, UiValueHandler,
 };
+use crate::ui_styles::{apply_ui_style, UiStyle, ALL_STYLES};
 
 /// Converts the API DTO to the render theme.
 fn dto_to_theme(dto: &BrandingThemeDto) -> BrandingTheme {
@@ -24,6 +25,7 @@ fn dto_to_theme(dto: &BrandingThemeDto) -> BrandingTheme {
         chart_1: dto.chart_1.clone(),
         business_name: None,
         logo_url: dto.logo_url.clone(),
+        ui_style: dto.ui_style.clone(),
     }
 }
 
@@ -91,6 +93,7 @@ pub fn BrandingPage(token: String) -> impl IntoView {
     let logo_url = RwSignal::new(String::new());
     let radius = RwSignal::new("0.625rem".to_string());
     let font_family = RwSignal::new("Inter, sans-serif".to_string());
+    let ui_style = RwSignal::new(UiStyle::BentoGrid.as_str().to_string());
     let status = RwSignal::new(String::new());
     let version = RwSignal::new(0u64);
 
@@ -122,6 +125,9 @@ pub fn BrandingPage(token: String) -> impl IntoView {
                         if let Some(v) = theme.font_family {
                             font_family.set(v);
                         }
+                        if let Some(v) = theme.ui_style {
+                            ui_style.set(v);
+                        }
                     }
                     Err(e) => status.set(format!("Could not load branding: {e:?}")),
                 }
@@ -141,6 +147,7 @@ pub fn BrandingPage(token: String) -> impl IntoView {
                 chart_1: non_empty(chart_1.get_untracked()),
                 radius: non_empty(radius.get_untracked()),
                 font_family: non_empty(font_family.get_untracked()),
+                ui_style: non_empty(ui_style.get_untracked()),
             };
             leptos::task::spawn_local(async move {
                 status.set("Saving…".to_string());
@@ -148,6 +155,7 @@ pub fn BrandingPage(token: String) -> impl IntoView {
                     Ok(resp) => {
                         version.set(resp.version);
                         apply_branding_style(&dto_to_theme(&resp.theme));
+                        apply_ui_style(resp.theme.ui_style.as_deref());
                         status.set(format!("Saved (version {})", resp.version));
                     }
                     Err(e) => status.set(format!("Save failed: {e:?}")),
@@ -164,6 +172,7 @@ pub fn BrandingPage(token: String) -> impl IntoView {
         logo_url.set(String::new());
         radius.set("0.625rem".to_string());
         font_family.set("Inter, sans-serif".to_string());
+        ui_style.set(UiStyle::BentoGrid.as_str().to_string());
         apply_branding_style(&BrandingTheme {
             primary: None,
             primary_foreground: None,
@@ -171,7 +180,9 @@ pub fn BrandingPage(token: String) -> impl IntoView {
             chart_1: None,
             business_name: None,
             logo_url: None,
+            ui_style: None,
         });
+        apply_ui_style(None);
         status.set("Reset to defaults (not saved yet)".to_string());
     });
 
@@ -268,9 +279,80 @@ pub fn BrandingPage(token: String) -> impl IntoView {
 
             <Card>
                 <CardHeader>
+                    <CardTitle>"UI style"</CardTitle>
+                    <CardDescription>
+                        "Pick one of sixteen design languages. The whole app re-themes instantly."
+                    </CardDescription>
+                </CardHeader>
+                <CardContent>
+                    <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(13.5rem, 1fr)); gap: 0.75rem;">
+                        {ALL_STYLES
+                            .iter()
+                            .map(|s| {
+                                let style = *s;
+                                let id = style.as_str();
+                                let is_selected = move || ui_style.get() == id;
+                                view! {
+                                    <button
+                                        type="button"
+                                        aria-pressed=move || is_selected().to_string()
+                                        title=style.description()
+                                        on:click=move |_| {
+                                            ui_style.set(id.to_string());
+                                            apply_ui_style(Some(id));
+                                        }
+                                        style=move || {
+                                            format!(
+                                                "display: flex; flex-direction: column; gap: 0.5rem; \
+                                                 text-align: left; padding: 0.875rem; cursor: pointer; \
+                                                 background: var(--card); color: var(--foreground); \
+                                                 border-radius: var(--radius-md); \
+                                                 border: {}; transition: border-color 0.12s ease;",
+                                                if is_selected() {
+                                                    "2px solid var(--primary)"
+                                                } else {
+                                                    "1px solid var(--border)"
+                                                },
+                                            )
+                                        }
+                                    >
+                                        <span
+                                            aria-hidden="true"
+                                            style="display: flex; gap: 0.25rem; height: 2rem; \
+                                                   border-radius: var(--radius-sm); overflow: hidden; \
+                                                   border: 1px solid var(--border);"
+                                        >
+                                            {style
+                                                .swatch()
+                                                .iter()
+                                                .map(|c| view! {
+                                                    <span style=format!("flex: 1; background: {c};")></span>
+                                                })
+                                                .collect::<Vec<_>>()}
+                                        </span>
+                                        <span style="font-weight: 600; font-size: 0.875rem;">
+                                            {style.label()}
+                                        </span>
+                                        <span style="font-size: 0.75rem; color: var(--muted-foreground);">
+                                            {style.description()}
+                                        </span>
+                                        {move || {
+                                            is_selected()
+                                                .then(|| view! { <Badge>"Active"</Badge> })
+                                        }}
+                                    </button>
+                                }
+                            })
+                            .collect::<Vec<_>>()}
+                    </div>
+                </CardContent>
+            </Card>
+
+            <Card>
+                <CardHeader>
                     <CardTitle>"Live preview"</CardTitle>
                     <CardDescription>
-                        "Components rendered with your draft theme."
+                        "Components rendered with your draft theme and UI style."
                     </CardDescription>
                 </CardHeader>
                 <CardContent>

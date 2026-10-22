@@ -38,6 +38,36 @@ pub const MAX_COLOR_LEN: usize = 64;
 /// Maximum length for the font family stack.
 pub const MAX_FONT_FAMILY_LEN: usize = 256;
 
+/// Kebab-case ids of the 16 selectable UI styles (task UI3-01).
+///
+/// This is the single source of truth for valid style ids: the domain
+/// validates membership here, and the web crate's `UiStyle::as_str()`
+/// indexes into this table (in the same order) so the two can never
+/// drift. `None`/empty means the Bento default.
+pub const UI_STYLE_IDS: [&str; 16] = [
+    "minimalism",
+    "flat-design-2",
+    "skeuomorphism",
+    "neumorphism",
+    "glassmorphism",
+    "claymorphism",
+    "bento-grid",
+    "cards-based",
+    "split-screen",
+    "brutalism",
+    "neo-brutalism",
+    "bauhaus",
+    "hand-drawn",
+    "cyberpunk",
+    "y2k",
+    "pixel-art",
+];
+
+/// Returns `true` when `id` names one of the [`UI_STYLE_IDS`].
+pub fn is_known_ui_style(id: &str) -> bool {
+    UI_STYLE_IDS.contains(&id.trim())
+}
+
 /// Returns `true` when `value` is a safe CSS color.
 ///
 /// Accepts hex (`#rrggbb`), `rgb()/hsl()/oklch()` functional notation,
@@ -96,6 +126,9 @@ pub struct BrandingTheme {
     radius: Option<String>,
     /// Overrides `--font-sans` (font family stack).
     font_family: Option<String>,
+    /// Selected UI style id (one of [`UI_STYLE_IDS`]); `None`/empty =
+    /// the Bento default.
+    ui_style: Option<String>,
 }
 
 impl<'de> serde::Deserialize<'de> for BrandingTheme {
@@ -119,6 +152,8 @@ impl<'de> serde::Deserialize<'de> for BrandingTheme {
             radius: Option<String>,
             #[serde(default)]
             font_family: Option<String>,
+            #[serde(default)]
+            ui_style: Option<String>,
         }
         let raw = RawBranding::deserialize(deserializer)?;
         BrandingTheme::new(
@@ -129,6 +164,7 @@ impl<'de> serde::Deserialize<'de> for BrandingTheme {
             raw.chart_1,
             raw.radius,
             raw.font_family,
+            raw.ui_style,
         )
         .map_err(serde::de::Error::custom)
     }
@@ -138,7 +174,8 @@ impl BrandingTheme {
     /// Creates a branding theme, validating every set field.
     ///
     /// Rejects: color values outside the bounded CSS grammar; logo URLs
-    /// that are not `https://` (or empty); over-long values.
+    /// that are not `https://` (or empty); over-long values; UI style ids
+    /// outside [`UI_STYLE_IDS`] (empty/absent means the Bento default).
     ///
     /// ```
     /// use crm_domain::branding::BrandingTheme;
@@ -147,15 +184,22 @@ impl BrandingTheme {
     ///     Some("https://example.com/logo.png".to_string()),
     ///     Some("oklch(0.55 0.2 250)".to_string()),
     ///     None, None, None, None, None,
+    ///     Some("cyberpunk".to_string()),
     /// );
     /// assert!(theme.is_ok());
     ///
     /// let bad = BrandingTheme::new(
     ///     None,
     ///     Some("red; } evil {".to_string()),
-    ///     None, None, None, None, None,
+    ///     None, None, None, None, None, None,
     /// );
     /// assert!(bad.is_err());
+    ///
+    /// let bad_style = BrandingTheme::new(
+    ///     None, None, None, None, None, None, None,
+    ///     Some("not-a-style".to_string()),
+    /// );
+    /// assert!(bad_style.is_err());
     /// ```
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -166,6 +210,7 @@ impl BrandingTheme {
         chart_1: Option<String>,
         radius: Option<String>,
         font_family: Option<String>,
+        ui_style: Option<String>,
     ) -> Result<Self, DomainError> {
         let check_color =
             |name: &str, value: Option<String>| -> Result<Option<String>, DomainError> {
@@ -185,6 +230,24 @@ impl BrandingTheme {
                     }
                 }
             };
+
+        let check_ui_style = |value: Option<String>| -> Result<Option<String>, DomainError> {
+            match value {
+                None => Ok(None),
+                Some(s) => {
+                    let s = s.trim().to_owned();
+                    if s.is_empty() {
+                        Ok(None)
+                    } else if !is_known_ui_style(&s) {
+                        Err(DomainError::Validation(format!(
+                            "branding.ui_style '{s}' is not a known UI style"
+                        )))
+                    } else {
+                        Ok(Some(s))
+                    }
+                }
+            }
+        };
 
         let logo_url = match logo_url {
             None => None,
@@ -248,6 +311,7 @@ impl BrandingTheme {
             chart_1: check_color("chart_1", chart_1)?,
             radius,
             font_family,
+            ui_style: check_ui_style(ui_style)?,
         })
     }
 
@@ -289,6 +353,11 @@ impl BrandingTheme {
     /// Font family stack override, if set.
     pub fn font_family(&self) -> Option<&str> {
         self.font_family.as_deref()
+    }
+
+    /// Selected UI style id, if set (`None` = the Bento default).
+    pub fn ui_style(&self) -> Option<&str> {
+        self.ui_style.as_deref()
     }
 }
 
@@ -379,6 +448,7 @@ mod tests {
             Some("oklch(0.8 0.1 250)".to_string()),
             Some("0.625rem".to_string()),
             Some("Inter, sans-serif".to_string()),
+            Some("cyberpunk".to_string()),
         )
         .expect("valid theme")
     }
@@ -398,8 +468,16 @@ mod tests {
             "red\" onload=\"evil",
             "oklch(0.5 0.2 250) <script>",
         ] {
-            let result =
-                BrandingTheme::new(None, Some(evil.to_string()), None, None, None, None, None);
+            let result = BrandingTheme::new(
+                None,
+                Some(evil.to_string()),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            );
             assert!(result.is_err(), "should reject: {evil}");
         }
     }
@@ -408,6 +486,7 @@ mod tests {
     fn rejects_non_https_logo() {
         let result = BrandingTheme::new(
             Some("http://example.com/logo.png".to_string()),
+            None,
             None,
             None,
             None,
@@ -428,10 +507,73 @@ mod tests {
             None,
             None,
             None,
+            Some("  ".to_string()),
         )
         .expect("empty strings are fine");
         assert_eq!(theme.logo_url(), None);
         assert_eq!(theme.primary(), None);
+        assert_eq!(theme.ui_style(), None);
+    }
+
+    #[test]
+    fn accepts_known_ui_style() {
+        for id in super::UI_STYLE_IDS {
+            let theme = BrandingTheme::new(
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                Some(id.to_string()),
+            )
+            .expect("known style id");
+            assert_eq!(theme.ui_style(), Some(id));
+        }
+    }
+
+    #[test]
+    fn rejects_unknown_ui_style() {
+        for bad in ["neon-dreams", "BENTO-GRID", "bento_grid", "cyberpunk "] {
+            // Note: "cyberpunk " trims to a valid id, so it is accepted.
+            let result = BrandingTheme::new(
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                Some(bad.to_string()),
+            );
+            if bad.trim() == "cyberpunk" {
+                assert!(result.is_ok(), "trimmed valid id should pass");
+            } else {
+                assert!(result.is_err(), "should reject: {bad}");
+            }
+        }
+    }
+
+    #[test]
+    fn ui_style_ids_are_sixteen_kebab_case() {
+        assert_eq!(super::UI_STYLE_IDS.len(), 16);
+        for id in super::UI_STYLE_IDS {
+            assert!(!id.is_empty());
+            assert_eq!(*id, id.to_ascii_lowercase());
+            assert!(!id.contains('_'));
+            assert!(!id.contains(' '));
+        }
+    }
+
+    #[test]
+    fn deserialize_validates_ui_style() {
+        let json = r#"{"ui_style": "not-a-style"}"#;
+        let result: Result<BrandingTheme, _> = serde_json::from_str(json);
+        assert!(result.is_err());
+        let json = r#"{"ui_style": "y2k"}"#;
+        let theme: BrandingTheme = serde_json::from_str(json).expect("valid style");
+        assert_eq!(theme.ui_style(), Some("y2k"));
     }
 
     #[test]

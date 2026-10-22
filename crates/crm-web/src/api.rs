@@ -652,6 +652,9 @@ pub struct BrandingThemeDto {
     /// Overrides `--font-sans`.
     #[serde(default)]
     pub font_family: Option<String>,
+    /// UI style id (one of the 16 style ids); empty/absent = Bento default.
+    #[serde(default)]
+    pub ui_style: Option<String>,
 }
 
 /// Fetches the agency branding theme. Public: no token required (the

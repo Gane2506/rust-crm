@@ -64,6 +64,9 @@ pub struct UpdateBrandingBody {
     /// Overrides `--font-sans`.
     #[serde(default)]
     pub font_family: Option<String>,
+    /// UI style id (one of the 16 style ids); empty/absent = Bento default.
+    #[serde(default)]
+    pub ui_style: Option<String>,
 }
 
 /// `GET /api/v1/branding` response: the current theme version.
@@ -187,6 +190,7 @@ where
         body.chart_1,
         body.radius,
         body.font_family,
+        body.ui_style,
     ) {
         Ok(theme) => theme,
         Err(error) => return domain_error_response(error, instance),

@@ -29,6 +29,7 @@ fn test_theme() -> BrandingTheme {
         None,
         None,
         None,
+        None,
     )
     .expect("valid test theme")
 }

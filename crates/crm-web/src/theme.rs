@@ -221,6 +221,10 @@ pub struct BrandingTheme {
     pub business_name: Option<String>,
     /// Logo image URL rendered in the sidebar brand slot (UI2-03).
     pub logo_url: Option<String>,
+    /// Selected UI style id (one of the 16 kebab-case ids, UI3-01);
+    /// `None`/empty = the Bento default. Read by
+    /// [`crate::ui_styles::apply_ui_style`], not by [`branded_css`].
+    pub ui_style: Option<String>,
 }
 
 /// Builds the branding override stylesheet for `branding`.
