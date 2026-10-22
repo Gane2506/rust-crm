@@ -29,13 +29,14 @@ fn dto_to_theme(dto: &BrandingThemeDto) -> BrandingTheme {
     }
 }
 
-/// Re-injects the branding `<style>` tag in the document head.
+/// Re-injects the branding `<style>` tag, ordered after the base theme
+/// and the UI style (see [`crate::theme::enforce_style_order`]).
 ///
 /// Called after save so the whole app re-themes without a reload.
 pub fn apply_branding_style(theme: &BrandingTheme) {
     use leptos::leptos_dom::helpers::document;
     let css = branded_css(theme);
-    if let Some(head) = document().head() {
+    if let Some(body) = document().body() {
         // Remove the previous branding style, if any.
         if let Some(old) = document().get_element_by_id("crm-branding-style") {
             old.remove();
@@ -44,10 +45,11 @@ pub fn apply_branding_style(theme: &BrandingTheme) {
             if let Ok(style) = document().create_element("style") {
                 let _ = style.set_attribute("id", "crm-branding-style");
                 style.set_text_content(Some(&css));
-                let _ = head.append_child(&style);
+                let _ = body.append_child(&style);
             }
         }
     }
+    crate::theme::enforce_style_order();
 }
 
 /// One color row: native color picker + manual oklch text field.

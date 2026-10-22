@@ -284,6 +284,35 @@ pub fn set_dark_mode(dark: bool) {
     }
 }
 
+/// Enforces stylesheet precedence in document order: base theme
+/// (`#crm-base-style`, rendered by the App view), then the UI style
+/// (`#crm-ui-style`), then the branding style (`#crm-branding-style`).
+///
+/// Equal-specificity `:root`/`.dark` token rules resolve by document order.
+/// The base theme tag lives in `<body>` (rendered by Leptos) while the
+/// dynamic tags were historically appended to `<head>` — `<head>` sorts
+/// before `<body>`, so without this ordering the base theme would silently
+/// beat both the UI style and the saved branding tokens. `append_child`
+/// moves an already-attached node, so calling this after every injection
+/// keeps the three tags in the right order. Missing tags are skipped;
+/// no-op when the document body is unavailable.
+pub fn enforce_style_order() {
+    let doc = document();
+    let Some(body) = doc.body() else {
+        return;
+    };
+    let Some(base) = doc.get_element_by_id("crm-base-style") else {
+        return;
+    };
+    let _ = body.append_child(&base);
+    if let Some(ui) = doc.get_element_by_id("crm-ui-style") {
+        let _ = body.append_child(&ui);
+    }
+    if let Some(branding) = doc.get_element_by_id("crm-branding-style") {
+        let _ = body.append_child(&branding);
+    }
+}
+
 /// Dark-mode state, provided once at the app root via [`provide_theme_mode`].
 ///
 /// The inner signal is `Copy`; toggle through [`ThemeMode::set`], which

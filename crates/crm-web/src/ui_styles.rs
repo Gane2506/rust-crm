@@ -801,7 +801,9 @@ button:active { transform: translate(2px, 2px); box-shadow: 2px 2px 0 oklch(0 0 
     }
 }
 
-/// Injects (or removes) the `<style id="crm-ui-style">` tag.
+/// Injects (or removes) the `<style id="crm-ui-style">` tag, ordered after
+/// the base theme and before the branding style (see
+/// [`crate::theme::enforce_style_order`]).
 ///
 /// `None`/empty/unknown `id` falls back to [`UiStyle::BentoGrid`], whose
 /// block is empty — the tag is removed so the base theme shows through.
@@ -812,7 +814,7 @@ pub fn apply_ui_style(id: Option<&str>) {
 
     let style = id.and_then(UiStyle::from_str).unwrap_or(UiStyle::BentoGrid);
     let css = style_css(&style);
-    if let Some(head) = document().head() {
+    if let Some(body) = document().body() {
         if let Some(old) = document().get_element_by_id("crm-ui-style") {
             old.remove();
         }
@@ -820,10 +822,11 @@ pub fn apply_ui_style(id: Option<&str>) {
             if let Ok(el) = document().create_element("style") {
                 let _ = el.set_attribute("id", "crm-ui-style");
                 el.set_text_content(Some(&css));
-                let _ = head.append_child(&el);
+                let _ = body.append_child(&el);
             }
         }
     }
+    crate::theme::enforce_style_order();
 }
 
 #[cfg(test)]

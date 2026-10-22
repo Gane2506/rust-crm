@@ -92,7 +92,7 @@ fn App() -> impl IntoView {
 
     view! {
         <>
-            <style>{crate::theme::theme_css()}</style>
+            <style id="crm-base-style">{crate::theme::theme_css()}</style>
             {move || match token.get() {
                 None => view! { <LoginForm on_logged_in=on_logged_in /> }.into_any(),
                 Some(token) => {
