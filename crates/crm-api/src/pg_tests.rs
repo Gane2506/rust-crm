@@ -4388,19 +4388,56 @@ async fn pg_maintenance_mode_blocks_writes_not_reads() {
         StatusCode::SERVICE_UNAVAILABLE,
         "write blocked during maintenance"
     );
+    assert_eq!(
+        response
+            .headers()
+            .get(header::RETRY_AFTER)
+            .and_then(|v| v.to_str().ok()),
+        Some("60"),
+        "503 carries Retry-After: 60"
+    );
     assert!(
-        response.headers().contains_key(header::RETRY_AFTER),
-        "503 carries Retry-After"
+        response
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default()
+            .starts_with("application/problem+json"),
+        "503 is a problem+json response"
     );
     let (status, body) = read_json(response).await;
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    let detail = body["detail"].as_str().unwrap_or_default();
     assert!(
-        body["detail"]
-            .as_str()
-            .unwrap_or_default()
-            .contains("maintenance"),
+        detail.contains("maintenance"),
         "problem detail names maintenance: {body}"
     );
+    assert!(
+        detail.contains("test maintenance window"),
+        "problem detail carries the operator reason: {body}"
+    );
+
+    // Login stays reachable during maintenance (needed to reach the toggle
+    // with a fresh token).
+    let (status, _) = read_json(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/auth/login")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        serde_json::json!({ "email": "maint@example.com", "password": TEST_PASSWORD })
+                            .to_string(),
+                    ))
+                    .expect("login request builds"),
+            )
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "login works during maintenance");
 
     // Reads still work.
     let (status, _) = read_json(
