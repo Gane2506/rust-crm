@@ -99,7 +99,7 @@ fn thread_status_from_str(raw: &str) -> Result<ThreadStatus, DomainError> {
 /// Columns selected for an [`EmailMessage`] row.
 const MESSAGE_COLUMNS: &str = "message_id, client_profile_id, thread_id, direction, status, \
      from_address, to_addresses, cc_addresses, bcc_addresses, subject, body_text, body_html, \
-     provider_message_id, sent_at, created_at";
+     provider_message_id, idempotency_key, sent_at, created_at";
 
 /// Columns selected for an [`EmailThread`] row.
 const THREAD_COLUMNS: &str = "thread_id, client_profile_id, provider_thread_id, subject, status, \
@@ -116,6 +116,8 @@ fn row_to_message(row: &sqlx::postgres::PgRow) -> Result<EmailMessage, DomainErr
     let provider_message_id: Option<String> = row
         .try_get("provider_message_id")
         .map_err(map_storage_error)?;
+    let idempotency_key: Option<String> =
+        row.try_get("idempotency_key").map_err(map_storage_error)?;
     Ok(EmailMessage {
         message_id: EmailMessageId::from(
             row.try_get::<Uuid, _>("message_id")
@@ -144,6 +146,7 @@ fn row_to_message(row: &sqlx::postgres::PgRow) -> Result<EmailMessage, DomainErr
         body_text: row.try_get("body_text").map_err(map_storage_error)?,
         body_html: row.try_get("body_html").map_err(map_storage_error)?,
         provider_message_id,
+        idempotency_key,
         sent_at,
         created_at: row
             .try_get::<DateTime<Utc>, _>("created_at")
@@ -235,8 +238,8 @@ impl EmailMessageRepository for PgEmailMessageRepository {
         sqlx::query(
             "INSERT INTO email_messages (message_id, client_profile_id, thread_id, direction, status, \
              from_address, to_addresses, cc_addresses, bcc_addresses, subject, body_text, body_html, \
-             provider_message_id, sent_at, created_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)",
+             provider_message_id, idempotency_key, sent_at, created_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)",
         )
         .bind(message.message_id.as_uuid())
         .bind(message.client_profile_id.as_uuid())
@@ -251,6 +254,7 @@ impl EmailMessageRepository for PgEmailMessageRepository {
         .bind(&message.body_text)
         .bind(&message.body_html)
         .bind(&message.provider_message_id)
+        .bind(&message.idempotency_key)
         .bind(message.sent_at)
         .bind(message.created_at)
         .execute(&self.pool)
@@ -350,6 +354,23 @@ impl EmailMessageRepository for PgEmailMessageRepository {
         ))
         .bind(client_profile_id.as_uuid())
         .bind(provider_message_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(map_storage_error)?;
+        row.map(|row| row_to_message(&row)).transpose()
+    }
+
+    async fn find_by_idempotency_key(
+        &self,
+        client_profile_id: ClientProfileId,
+        idempotency_key: &str,
+    ) -> Result<Option<EmailMessage>, DomainError> {
+        let row = sqlx::query(&format!(
+            "SELECT {MESSAGE_COLUMNS} FROM email_messages
+             WHERE client_profile_id = $1 AND idempotency_key = $2"
+        ))
+        .bind(client_profile_id.as_uuid())
+        .bind(idempotency_key)
         .fetch_optional(&self.pool)
         .await
         .map_err(map_storage_error)?;

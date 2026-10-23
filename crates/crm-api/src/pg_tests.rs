@@ -3360,6 +3360,200 @@ async fn pg_campaign_launch_skips_opted_out_contacts() {
 }
 
 #[tokio::test]
+async fn pg_campaign_launch_is_idempotent() {
+    let Some((pool, admin_url, db_name)) = fresh_db().await else {
+        eprintln!("pg_campaign_idempotent: DATABASE_URL not set, skipping");
+        return;
+    };
+    let router = pg_router(&pool);
+    let profile = uuid::Uuid::new_v4();
+    let (token, _staff, _agency) =
+        seed_campaign_user(&pool, &router, profile, "idempotent@example.com").await;
+
+    // Create two contacts.
+    let mut contact_ids = Vec::new();
+    for email in ["carol@example.com", "dave@example.com"] {
+        let (status, body) = read_json(
+            router
+                .clone()
+                .oneshot(post_contacts(
+                    serde_json::json!({
+                        "client_profile_id": profile,
+                        "emails": [email],
+                        "phones": [],
+                        "source": "web-form"
+                    }),
+                    None,
+                    &token,
+                ))
+                .await
+                .expect("oneshot"),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::CREATED,
+            "create contact {email}: {body}"
+        );
+        contact_ids.push(body["contact_id"].as_str().expect("contact_id").to_owned());
+    }
+
+    // Create a pool and add both contacts.
+    let (status, body) = read_json(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/prospect-pools")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                    .body(Body::from(create_pool_body(profile).to_string()))
+                    .expect("test request builds"),
+            )
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let pool_id = body["pool_id"].as_str().expect("pool_id").to_owned();
+
+    for contact_id in &contact_ids {
+        let (status, _) = read_json(
+            router
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri(format!("/api/v1/prospect-pools/{pool_id}/members"))
+                        .header(header::CONTENT_TYPE, "application/json")
+                        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                        .body(Body::from(
+                            serde_json::json!({ "contact_id": contact_id }).to_string(),
+                        ))
+                        .expect("test request builds"),
+                )
+                .await
+                .expect("oneshot"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "add member {contact_id}");
+    }
+
+    // Create a campaign with two email steps.
+    let (status, body) = read_json(
+        router
+            .clone()
+            .oneshot(post_campaigns(
+                create_campaign_body(profile, &pool_id),
+                &token,
+            ))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let campaign_id = body["campaign_id"]
+        .as_str()
+        .expect("campaign_id")
+        .to_owned();
+
+    for position in [0, 1] {
+        let (status, _) = read_json(
+            router
+                .clone()
+                .oneshot(post_campaign_step(
+                    &campaign_id,
+                    serde_json::json!({
+                        "kind": "email",
+                        "position": position,
+                        "template_id": "idempotent-template"
+                    }),
+                    &token,
+                ))
+                .await
+                .expect("oneshot"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "add step {position}");
+    }
+
+    // First launch: 2 contacts x 2 steps = 4 emails.
+    let (status, body) = read_json(
+        router
+            .clone()
+            .oneshot(post_campaign_action(&campaign_id, "launch", &token))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "first launch: {body}");
+    assert_eq!(body["delivery_state"], "Running");
+
+    let count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM email_messages WHERE client_profile_id = $1")
+            .bind(profile)
+            .fetch_one(&pool)
+            .await
+            .expect("count emails after first launch");
+    assert_eq!(count, 4, "2 contacts x 2 steps sent on first launch");
+
+    // Every stored message carries its deterministic idempotency key.
+    let keyed: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM email_messages WHERE client_profile_id = $1 AND idempotency_key IS NOT NULL",
+    )
+    .bind(profile)
+    .fetch_one(&pool)
+    .await
+    .expect("count keyed emails");
+    assert_eq!(keyed, 4, "all launch emails carry idempotency keys");
+
+    let first_ids: Vec<uuid::Uuid> = sqlx::query_scalar(
+        "SELECT message_id FROM email_messages WHERE client_profile_id = $1 ORDER BY message_id",
+    )
+    .bind(profile)
+    .fetch_all(&pool)
+    .await
+    .expect("first launch message ids");
+
+    // Simulate a crash mid-launch followed by a re-launch: the campaign
+    // row is already Running, and the re-launch must resume without
+    // duplicating any send.
+    let (status, body) = read_json(
+        router
+            .clone()
+            .oneshot(post_campaign_action(&campaign_id, "launch", &token))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "re-launch resumes: {body}");
+    assert_eq!(body["delivery_state"], "Running");
+
+    let count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM email_messages WHERE client_profile_id = $1")
+            .bind(profile)
+            .fetch_one(&pool)
+            .await
+            .expect("count emails after re-launch");
+    assert_eq!(count, 4, "re-launch sends no duplicates");
+
+    let second_ids: Vec<uuid::Uuid> = sqlx::query_scalar(
+        "SELECT message_id FROM email_messages WHERE client_profile_id = $1 ORDER BY message_id",
+    )
+    .bind(profile)
+    .fetch_all(&pool)
+    .await
+    .expect("second launch message ids");
+    assert_eq!(
+        first_ids, second_ids,
+        "re-launch returns the original messages"
+    );
+
+    drop_db(&admin_url, &db_name, pool).await;
+}
+
+#[tokio::test]
 async fn pg_campaign_scope_isolation() {
     let Some((pool, admin_url, db_name)) = fresh_db().await else {
         eprintln!("pg_campaign_scope: DATABASE_URL not set, skipping");
