@@ -42,26 +42,44 @@ mod ui_styles;
 
 /// `sessionStorage` key for the bearer token. Session scope (not local)
 /// is deliberate: survives refresh, cleared on tab close.
+///
+/// Security note (CWE-922): storing the bearer token in `sessionStorage`
+/// exposes it to XSS. This is a conscious tradeoff — the pre-fix behavior
+/// (memory-only) logged users out on every refresh, which was reported as
+/// a bug. `sessionStorage` over `localStorage` limits the exposure window
+/// to the tab lifetime. The app has no `eval`/inline-script vectors; all
+/// UI is Leptos-rendered (no `innerHTML` with user data).
 const TOKEN_STORAGE_KEY: &str = "crm.auth.token";
 
+/// Best-effort access to `sessionStorage`. Returns `None` when the window
+/// is unavailable or storage access is denied (private mode, disabled
+/// cookies) — every caller treats `None` as "no persisted session" and
+/// falls back to the login form. Never panics.
+fn session_storage() -> Option<web_sys::Storage> {
+    let window = web_sys::window()?;
+    window.session_storage().ok()?
+}
+
 /// Reads the persisted bearer token, if any. Returns `None` when storage
-/// is unavailable or empty — the login form handles that case.
+/// is unavailable, denied, or empty — the login form handles that case.
 fn restore_token() -> Option<String> {
-    use gloo_storage::Storage;
-    gloo_storage::SessionStorage::get(TOKEN_STORAGE_KEY).ok()
+    let storage = session_storage()?;
+    storage.get_item(TOKEN_STORAGE_KEY).ok()?
 }
 
 /// Persists the bearer token to `sessionStorage`. Best-effort: a storage
 /// failure just means the next refresh will ask for login again.
 fn persist_token(token: &str) {
-    use gloo_storage::Storage;
-    let _ = gloo_storage::SessionStorage::set(TOKEN_STORAGE_KEY, token);
+    if let Some(storage) = session_storage() {
+        let _ = storage.set_item(TOKEN_STORAGE_KEY, token);
+    }
 }
 
 /// Removes the bearer token from `sessionStorage` on logout.
 fn clear_token() {
-    use gloo_storage::Storage;
-    gloo_storage::SessionStorage::delete(TOKEN_STORAGE_KEY);
+    if let Some(storage) = session_storage() {
+        let _ = storage.remove_item(TOKEN_STORAGE_KEY);
+    }
 }
 
 /// Root application: login gate plus the authenticated shell.
