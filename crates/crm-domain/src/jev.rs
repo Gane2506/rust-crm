@@ -164,7 +164,11 @@ impl AgentRun {
 
     /// Pauses a running run to await a human approval decision.
     pub fn request_approval(&mut self) -> Result<(), DomainError> {
-        self.transition(AgentRunStatus::AwaitingApproval, "request approval")
+        self.transition(AgentRunStatus::AwaitingApproval, "request approval")?;
+        // Awaiting a fresh decision: the previous gate (if any) is
+        // stale and must not be exposed as the current decision.
+        self.approval_gate = None;
+        Ok(())
     }
 
     /// Resumes an approval-awaiting run after a human approved.

@@ -474,6 +474,35 @@ async fn agent_service_approval_gate_persists_decision() {
         Some(crm_domain::jev::ApprovalDecision::Denied)
     );
 
+    // Re-requesting approval clears the previous decision: a run
+    // awaiting a fresh decision must not expose the old gate.
+    let run = service
+        .start_run(new_run_input(profile), &ctx)
+        .await
+        .expect("start run");
+    let run = service
+        .request_approval(run.run_id, &ctx)
+        .await
+        .expect("request approval");
+    let run = service
+        .approve_step(run.run_id, &ctx)
+        .await
+        .expect("approve");
+    assert!(run.approval_gate.is_some(), "gate set after approve");
+    let run = service
+        .request_approval(run.run_id, &ctx)
+        .await
+        .expect("re-request approval");
+    assert!(
+        run.approval_gate.is_none(),
+        "re-request clears the previous decision"
+    );
+    let fetched = runs.get(run.run_id).await.expect("get run");
+    assert!(
+        fetched.approval_gate.is_none(),
+        "cleared gate persists as cleared"
+    );
+
     drop_db(&admin_url, &db_name, pool).await;
 }
 
