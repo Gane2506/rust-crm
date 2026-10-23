@@ -3469,6 +3469,49 @@ async fn pg_billing_issue_invoice_idempotent() {
     drop_db(&admin_url, &db_name, pool).await;
 }
 
+#[tokio::test]
+async fn pg_billing_replay_without_grant_is_denied() {
+    let Some((pool, admin_url, db_name)) = fresh_db().await else {
+        eprintln!("pg_billing_replay_without_grant_is_denied: DATABASE_URL not set, skipping");
+        return;
+    };
+    let router = pg_router(&pool);
+    let profile = uuid::Uuid::new_v4();
+    let (token, _, _) = seed_billing_user(&pool, &router, profile, "biller7@example.com").await;
+    // A second user with no invoice grants at all.
+    let (unprivileged, _, _) =
+        seed_authed_user(&pool, &router, profile, "intruder@example.com").await;
+
+    // Authorized user creates an invoice with a key.
+    let key = IdempotencyKey::generate().to_string();
+    let (status, _) = read_json(
+        router
+            .clone()
+            .oneshot(post_invoices(invoice_body(profile), Some(&key), &token))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    // The unprivileged user replays the same key+body: authorization runs
+    // before the replay check, so this is denied, not replayed.
+    let (status, _) = read_json(
+        router
+            .oneshot(post_invoices(
+                invoice_body(profile),
+                Some(&key),
+                &unprivileged,
+            ))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    drop_db(&admin_url, &db_name, pool).await;
+}
+
 fn create_pool_body(profile: uuid::Uuid) -> serde_json::Value {
     serde_json::json!({
         "client_profile_id": profile,
