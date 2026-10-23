@@ -9,6 +9,7 @@ description = "Leptos CSR single-page application for the Rust CRM (WASM)"
 leptos.workspace = true
 leptos_router.workspace = true
 gloo-net.workspace = true
+gloo-storage.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 # Contact shape for API (de)serialization; wasm-compatible deps only.

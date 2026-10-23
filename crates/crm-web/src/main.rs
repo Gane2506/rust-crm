@@ -40,19 +40,48 @@ mod theme;
 mod ui;
 mod ui_styles;
 
+/// `sessionStorage` key for the bearer token. Session scope (not local)
+/// is deliberate: survives refresh, cleared on tab close.
+const TOKEN_STORAGE_KEY: &str = "crm.auth.token";
+
+/// Reads the persisted bearer token, if any. Returns `None` when storage
+/// is unavailable or empty — the login form handles that case.
+fn restore_token() -> Option<String> {
+    use gloo_storage::Storage;
+    gloo_storage::SessionStorage::get(TOKEN_STORAGE_KEY).ok()
+}
+
+/// Persists the bearer token to `sessionStorage`. Best-effort: a storage
+/// failure just means the next refresh will ask for login again.
+fn persist_token(token: &str) {
+    use gloo_storage::Storage;
+    let _ = gloo_storage::SessionStorage::set(TOKEN_STORAGE_KEY, token);
+}
+
+/// Removes the bearer token from `sessionStorage` on logout.
+fn clear_token() {
+    use gloo_storage::Storage;
+    gloo_storage::SessionStorage::delete(TOKEN_STORAGE_KEY);
+}
+
 /// Root application: login gate plus the authenticated shell.
 ///
-/// The bearer token lives in a Leptos signal (memory only — it is never
-/// persisted). Until login succeeds, the login form is the whole app; the
-/// router (and every route in it) only renders for authenticated sessions.
+/// The bearer token lives in a Leptos signal, persisted to `sessionStorage`
+/// so a page refresh keeps the session. `sessionStorage` (not
+/// `localStorage`) is the deliberate choice: the token survives reloads
+/// but is cleared when the tab closes, limiting the XSS exposure window
+/// vs. a persistent store. Until login succeeds, the login form is the
+/// whole app; the router (and every route in it) only renders for
+/// authenticated sessions.
 #[component]
 fn App() -> impl IntoView {
     // Design-token foundation (UI2-01): injected once; every v2 component
     // references var(--token). Also provides the dark-mode context.
     provide_theme_mode();
 
-    // `None` = not logged in; `Some(token)` = bearer token in memory.
-    let token = RwSignal::new(None::<String>);
+    // `None` = not logged in; `Some(token)` = bearer token. Restored from
+    // `sessionStorage` on init so refreshes don't log the user out.
+    let token = RwSignal::new(restore_token());
 
     // Branding (UI2-03): fetch the public theme on mount (the login page
     // is themed too) and re-fetch after login; inject as a `<style>`
@@ -77,6 +106,7 @@ fn App() -> impl IntoView {
     };
     apply_branding();
     let on_logged_in = UiValueHandler::new(move |new_token: String| {
+        persist_token(&new_token);
         token.set(Some(new_token));
         apply_branding();
     });
@@ -87,6 +117,7 @@ fn App() -> impl IntoView {
                 logout(&current).await.ok();
             });
         }
+        clear_token();
         token.set(None);
     });
 

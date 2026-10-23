@@ -130,15 +130,15 @@ async fn api_error_from_response(response: &gloo_net::http::Response) -> ApiErro
 /// `POST /api/v1/auth/login` response body: the bearer token.
 #[derive(Debug, Clone, Deserialize)]
 pub struct LoginResponse {
-    /// The bearer token (UUID string). Keep in memory; never persist.
+    /// The bearer token (UUID string).
     pub token: String,
 }
 
 /// Logs in with email + password, returning the bearer token.
 ///
-/// The token is kept in memory (a Leptos signal) for the session and sent
-/// as `Authorization: Bearer <token>` on every API call. It is never
-/// written to local storage.
+/// The token is kept in a Leptos signal for the session, persisted to
+/// `sessionStorage` (survives refresh, cleared on tab close), and sent
+/// as `Authorization: Bearer <token>` on every API call.
 pub async fn login(email: &str, password: &str) -> Result<String, ApiError> {
     let url = format!("{API_BASE}/api/v1/auth/login");
     let body = serde_json::json!({ "email": email, "password": password }).to_string();
