@@ -246,6 +246,15 @@ where
                     invoice.currency
                 )));
             }
+            // Payments are only recorded on issued invoices; the
+            // repository re-checks the locked status for the concurrent
+            // case (FIX-03).
+            if invoice.status != InvoiceStatus::Issued {
+                return Err(DomainError::Validation(format!(
+                    "cannot record a payment on an invoice with status {:?}",
+                    invoice.status
+                )));
+            }
             // `record` rejects zero amounts; nothing is persisted yet.
             let payment = Payment::record(input.invoice_id, input.amount)?;
             // Atomic read-check-write: the repository locks the invoice

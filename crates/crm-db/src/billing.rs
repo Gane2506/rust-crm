@@ -253,6 +253,12 @@ impl InvoiceRepository for PgInvoiceRepository {
         invoice: Invoice,
         expected_status: &[InvoiceStatus],
     ) -> Result<Invoice, DomainError> {
+        // The status-guarded UPDATE, the existence check, and the line
+        // inserts run in one transaction: the check and the write are
+        // atomic (a concurrent transition wins or loses here, never
+        // silently overwrites), and a failed line insert rolls back the
+        // status change instead of leaving a half-written invoice.
+        let mut tx = self.pool.begin().await.map_err(map_storage_error)?;
         // The status predicate is part of the UPDATE itself, so the
         // check and the write are atomic: a concurrent transition
         // wins or loses here, never silently overwrites.
@@ -267,14 +273,14 @@ impl InvoiceRepository for PgInvoiceRepository {
         .bind(invoice_status_as_str(invoice.status))
         .bind(invoice.updated_at)
         .bind(expected)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await
         .map_err(map_storage_error)?;
         if result.rows_affected() == 0 {
             // Distinguish "no such invoice" from "status moved".
             let exists = sqlx::query("SELECT 1 FROM invoices WHERE invoice_id = $1")
                 .bind(invoice.invoice_id.as_uuid())
-                .fetch_optional(&self.pool)
+                .fetch_optional(&mut *tx)
                 .await
                 .map_err(map_storage_error)?;
             if exists.is_none() {
@@ -285,7 +291,25 @@ impl InvoiceRepository for PgInvoiceRepository {
             }
             return Err(DomainError::ConcurrencyConflict);
         }
-        self.insert_new_lines(&invoice).await?;
+        for (position, line) in invoice.lines.iter().enumerate() {
+            sqlx::query(
+                "INSERT INTO invoice_lines (line_id, invoice_id, description, quantity, \
+                 unit_price_amount, unit_price_currency, position)\n                 VALUES ($1, $2, $3, $4, $5, $6, $7)\n                 ON CONFLICT (line_id) DO NOTHING",
+            )
+            .bind(line.line_id.as_uuid())
+            .bind(invoice.invoice_id.as_uuid())
+            .bind(&line.description)
+            .bind(i32::try_from(line.quantity).map_err(|_| {
+                DomainError::Validation("line quantity does not fit in i32".to_owned())
+            })?)
+            .bind(line.unit_price.amount())
+            .bind(line.unit_price.currency())
+            .bind(position as i32)
+            .execute(&mut *tx)
+            .await
+            .map_err(map_storage_error)?;
+        }
+        tx.commit().await.map_err(map_storage_error)?;
         Ok(invoice)
     }
 
@@ -447,6 +471,13 @@ impl PaymentRepository for PgPaymentRepository {
                 .map_err(map_storage_error)?
                 .as_str(),
         )?;
+        // The service validated `Issued` before the lock; if the status
+        // moved concurrently (voided, paid), the stale snapshot must
+        // not authorize the write. A non-`Issued` locked status is a
+        // concurrent state change, not a validation of this request.
+        if locked_status != InvoiceStatus::Issued {
+            return Err(DomainError::ConcurrencyConflict);
+        };
         // Re-read the payments inside the transaction.
         let rows = sqlx::query(&format!(
             "SELECT {PAYMENT_COLUMNS} FROM payments\n             WHERE invoice_id = $1\n             ORDER BY recorded_at ASC"

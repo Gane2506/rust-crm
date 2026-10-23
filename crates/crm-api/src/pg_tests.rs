@@ -3220,6 +3220,33 @@ async fn seed_invoice_with_line(router: &axum::Router, profile: uuid::Uuid, toke
     invoice_id
 }
 
+/// Creates a draft invoice with one $100.00 line and issues it,
+/// returning its id. Payments are only recorded on issued invoices.
+async fn seed_issued_invoice_with_line(
+    router: &axum::Router,
+    profile: uuid::Uuid,
+    token: &str,
+) -> String {
+    let invoice_id = seed_invoice_with_line(router, profile, token).await;
+    let (status, _) = read_json(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/v1/invoices/{invoice_id}/issue"))
+                    .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .expect("test request builds"),
+            )
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    invoice_id
+}
+
 #[tokio::test]
 async fn pg_billing_invoice_create_idempotent() {
     let Some((pool, admin_url, db_name)) = fresh_db().await else {
@@ -3278,7 +3305,7 @@ async fn pg_billing_payment_record_idempotent() {
     let router = pg_router(&pool);
     let profile = uuid::Uuid::new_v4();
     let (token, _, _) = seed_billing_user(&pool, &router, profile, "biller2@example.com").await;
-    let invoice_id = seed_invoice_with_line(&router, profile, &token).await;
+    let invoice_id = seed_issued_invoice_with_line(&router, profile, &token).await;
 
     let key = IdempotencyKey::generate().to_string();
     let body = payment_body();
@@ -3371,7 +3398,7 @@ async fn pg_billing_idempotency_key_reuse_across_routes_conflicts() {
     let router = pg_router(&pool);
     let profile = uuid::Uuid::new_v4();
     let (token, _, _) = seed_billing_user(&pool, &router, profile, "biller4@example.com").await;
-    let invoice_id = seed_invoice_with_line(&router, profile, &token).await;
+    let invoice_id = seed_issued_invoice_with_line(&router, profile, &token).await;
 
     // The same key on two different billing routes is a conflict, not a
     // replay: the fingerprint is scoped per route, so reusing a key across
@@ -3524,23 +3551,7 @@ async fn pg_billing_concurrent_payments_do_not_over_apply() {
     let profile = uuid::Uuid::new_v4();
     let (token, _, _) = seed_billing_user(&pool, &router, profile, "biller8@example.com").await;
     // $100.00 invoice, issued.
-    let invoice_id = seed_invoice_with_line(&router, profile, &token).await;
-    let (status, _) = read_json(
-        router
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri(format!("/api/v1/invoices/{invoice_id}/issue"))
-                    .header(header::AUTHORIZATION, format!("Bearer {token}"))
-                    .body(Body::empty())
-                    .expect("test request builds"),
-            )
-            .await
-            .expect("oneshot"),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK);
+    let invoice_id = seed_issued_invoice_with_line(&router, profile, &token).await;
 
     // Two $60.00 payments race: the invoice only has $100.00 of
     // balance, so exactly one must win. The `FOR UPDATE` row lock in
