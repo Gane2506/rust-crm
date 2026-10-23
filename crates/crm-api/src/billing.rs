@@ -1,6 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-only
 //! Billing endpoints: invoices and payment records (task 12-BILL-02).
 //!
+//! All `POST` endpoints accept the `Idempotency-Key` header (a UUID):
+//! a repeated request with the same key and payload replays the
+//! original response instead of executing again; the same key with a
+//! different payload is a `409`. Keys are scoped per route, so a key
+//! used on `POST /api/v1/invoices` never collides with one used on
+//! `POST /api/v1/invoices/{id}/payments`.
+//!
 //! * `POST /api/v1/invoices` — creates a draft invoice (`201`).
 //! * `GET /api/v1/invoices?client_profile_id=…` — lists invoices,
 //!   newest first (`200`).
@@ -27,15 +34,19 @@
 //! profile-scoped. Fetch-then-authorize: a missing invoice surfaces
 //! as `404` before any grant check.
 
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+
 use axum::{
     extract::{rejection::PathRejection, Extension, Path, Query, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Json, Response},
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crm_core::billing::BillingServiceImpl;
+use crm_core::IdempotencyKey;
 use crm_db::billing::{PgInvoiceRepository, PgPaymentRepository};
 use crm_domain::billing::{Invoice, Money, Payment};
 use crm_domain::ids::{ClientProfileId, InvoiceId, PaymentId};
@@ -44,12 +55,14 @@ use crm_domain::security::{Action, Operation, Resource};
 use crm_domain::services::{AuditService, BillingService, NewInvoice, NewInvoiceLine, NewPayment};
 
 use crate::auth::{resolve_context, RequestAuth};
-use crate::contacts::{domain_error_response, request_id, AppState, IdempotencyStore};
+use crate::contacts::{
+    domain_error_response, idempotency_key, request_id, AppState, IdempotencyStore,
+};
 use crate::problem_response;
 use crm_core::memory::ContactServiceImpl;
 
 /// Body of `POST /api/v1/invoices`.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct CreateInvoiceBody {
     /// Owning client profile.
     pub client_profile_id: Uuid,
@@ -58,7 +71,7 @@ pub struct CreateInvoiceBody {
 }
 
 /// Body of `POST /api/v1/invoices/{id}/lines`.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct AddLineBody {
     /// Human-readable description (validated non-blank).
     pub description: String,
@@ -70,7 +83,7 @@ pub struct AddLineBody {
 }
 
 /// Body of `POST /api/v1/invoices/{id}/payments`.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct RecordPaymentBody {
     /// Amount paid. Deserializes through `Money::new`.
     pub amount: Money,
@@ -95,6 +108,81 @@ fn billing_service(
         api_auth.payments.clone(),
         api_auth.audit_service.clone(),
     )
+}
+
+/// Fingerprints a billing write request so a reused idempotency key with
+/// a *different* payload is rejected instead of replayed.
+///
+/// The fingerprint includes the route: a key issued for
+/// `POST /api/v1/invoices` must never replay against
+/// `POST /api/v1/invoices/{id}/payments`.
+///
+/// The fingerprint is over the parsed-then-reserialized payload, so it
+/// is stable across insignificant whitespace differences in the raw
+/// JSON.
+fn fingerprint(route: &str, payload: &impl Serialize) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    route.hash(&mut hasher);
+    serde_json::to_string(payload)
+        .unwrap_or_default()
+        .hash(&mut hasher);
+    hasher.finish()
+}
+
+/// Replays the stored response when `key` was already seen with the same
+/// fingerprint. Returns `Ok(None)` for a fresh key; a key seen with a
+/// different payload is a `409` response, never a silent replay.
+async fn replay_if_seen<I>(
+    store: &I,
+    key: &IdempotencyKey,
+    fp: u64,
+    status: StatusCode,
+    instance: &str,
+) -> Result<Option<Response>, Box<Response>>
+where
+    I: IdempotencyStore,
+{
+    match store.lookup(key, fp).await {
+        Ok(Some(stored)) => Ok(Some((status, Json(stored)).into_response())),
+        Ok(None) => Ok(None),
+        // The error side is boxed: `axum::http::Response` is a large type
+        // and returning it by value trips `clippy::result_large_err`.
+        Err(error) => Err(Box::new(domain_error_response(error, instance.to_owned()))),
+    }
+}
+
+/// Persists an idempotent response after a successful write. The write
+/// already happened, so a persistence failure is logged loudly instead
+/// of failing the request the client is waiting on — losing the
+/// response would be worse than losing the replay. Making the write
+/// and the idempotency record atomic is a later hardening task.
+async fn record_response<I>(store: &I, key: IdempotencyKey, fp: u64, body: serde_json::Value)
+where
+    I: IdempotencyStore,
+{
+    if let Err(error) = store.record(key, fp, body).await {
+        tracing::warn!(%error, "idempotency response could not be persisted");
+    }
+}
+
+/// Serializes a successful write result for the idempotency store. A
+/// serialization failure is a `500`: the value about to be returned to
+/// the client must be storable for replay.
+/// The error side is boxed: `axum::http::Response` is a large type and
+/// returning it by value trips `clippy::result_large_err`.
+fn storable_value(
+    value: &impl Serialize,
+    what: &str,
+    instance: &str,
+) -> Result<serde_json::Value, Box<Response>> {
+    serde_json::to_value(value).map_err(|_| {
+        Box::new(problem_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Serialization failed",
+            format!("the created {what} could not be serialized"),
+            instance.to_owned(),
+        ))
+    })
 }
 
 /// Extracts an invoice id from the path, or returns a 422.
@@ -209,6 +297,30 @@ where
     I: IdempotencyStore,
 {
     let (instance, _) = request_id(headers);
+    let key = match idempotency_key(headers, &instance) {
+        Ok(key) => key,
+        Err(response) => return *response,
+    };
+    let route = match &transition {
+        InvoiceTransition::Issue => "POST /api/v1/invoices/{id}/issue",
+        InvoiceTransition::Void => "POST /api/v1/invoices/{id}/void",
+    };
+    let fp = fingerprint(route, &invoice_id.as_uuid());
+    if let Some(key) = &key {
+        match replay_if_seen(
+            state.idempotency_store(),
+            key,
+            fp,
+            StatusCode::OK,
+            &instance,
+        )
+        .await
+        {
+            Ok(Some(response)) => return response,
+            Ok(None) => {}
+            Err(response) => return *response,
+        }
+    }
     let Some(api_auth) = &state.auth else {
         return problem_response(
             StatusCode::NOT_IMPLEMENTED,
@@ -233,10 +345,22 @@ where
         Ok(invoice) => invoice,
         Err(error) => return domain_error_response(error, instance),
     };
+    let stored = match storable_value(&invoice, "invoice", &instance) {
+        Ok(value) => value,
+        Err(response) => return *response,
+    };
+    if let Some(key) = key {
+        record_response(state.idempotency_store(), key, fp, stored).await;
+    }
     (StatusCode::OK, Json(invoice)).into_response()
 }
 
 /// `POST /api/v1/invoices` — creates a draft invoice.
+///
+/// Returns `201` with the created invoice. When `Idempotency-Key` is
+/// supplied, a repeated request with the same key and body replays the
+/// original `201` without re-executing; the same key with a different
+/// body is a `409`.
 ///
 /// Requires the `invoice/create` grant in the profile (`403`
 /// without it).
@@ -252,6 +376,26 @@ where
     I: IdempotencyStore,
 {
     let (instance, _) = request_id(&headers);
+    let key = match idempotency_key(&headers, &instance) {
+        Ok(key) => key,
+        Err(response) => return *response,
+    };
+    let fp = fingerprint("POST /api/v1/invoices", &body);
+    if let Some(key) = &key {
+        match replay_if_seen(
+            state.idempotency_store(),
+            key,
+            fp,
+            StatusCode::CREATED,
+            &instance,
+        )
+        .await
+        {
+            Ok(Some(response)) => return response,
+            Ok(None) => {}
+            Err(response) => return *response,
+        }
+    }
     let Some(api_auth) = &state.auth else {
         return problem_response(
             StatusCode::NOT_IMPLEMENTED,
@@ -283,6 +427,13 @@ where
         Ok(invoice) => invoice,
         Err(error) => return domain_error_response(error, instance),
     };
+    let stored = match storable_value(&invoice, "invoice", &instance) {
+        Ok(value) => value,
+        Err(response) => return *response,
+    };
+    if let Some(key) = key {
+        record_response(state.idempotency_store(), key, fp, stored).await;
+    }
     (StatusCode::CREATED, Json(invoice)).into_response()
 }
 
@@ -377,6 +528,10 @@ where
 /// `POST /api/v1/invoices/{id}/lines` — adds a line to a draft
 /// invoice.
 ///
+/// Returns `201` with the created line. Supports `Idempotency-Key`
+/// like [`create_invoice`]: a repeated request with the same key and
+/// body replays the original `201`.
+///
 /// Requires the `invoice/update` grant in the invoice's profile.
 pub async fn add_invoice_line<R, A, I>(
     State(state): State<AppState<ContactServiceImpl<R, A>, I>>,
@@ -395,6 +550,29 @@ where
         Ok(id) => id,
         Err(response) => return *response,
     };
+    let key = match idempotency_key(&headers, &instance) {
+        Ok(key) => key,
+        Err(response) => return *response,
+    };
+    let fp = fingerprint(
+        "POST /api/v1/invoices/{id}/lines",
+        &(invoice_id.as_uuid(), &body),
+    );
+    if let Some(key) = &key {
+        match replay_if_seen(
+            state.idempotency_store(),
+            key,
+            fp,
+            StatusCode::CREATED,
+            &instance,
+        )
+        .await
+        {
+            Ok(Some(response)) => return response,
+            Ok(None) => {}
+            Err(response) => return *response,
+        }
+    }
     let Some(api_auth) = &state.auth else {
         return problem_response(
             StatusCode::NOT_IMPLEMENTED,
@@ -427,10 +605,18 @@ where
         Ok(line) => line,
         Err(error) => return domain_error_response(error, instance),
     };
+    let stored = match storable_value(&line, "invoice line", &instance) {
+        Ok(value) => value,
+        Err(response) => return *response,
+    };
+    if let Some(key) = key {
+        record_response(state.idempotency_store(), key, fp, stored).await;
+    }
     (StatusCode::CREATED, Json(line)).into_response()
 }
 
 /// `POST /api/v1/invoices/{id}/issue` — issues a draft invoice.
+/// Supports `Idempotency-Key` like [`create_invoice`].
 /// Requires the `invoice/update` grant.
 pub async fn issue_invoice<R, A, I>(
     State(state): State<AppState<ContactServiceImpl<R, A>, I>>,
@@ -452,7 +638,8 @@ where
 }
 
 /// `POST /api/v1/invoices/{id}/void` — voids a draft or issued
-/// invoice (idempotent). Requires the `invoice/update` grant.
+/// invoice (idempotent). Supports `Idempotency-Key` like
+/// [`create_invoice`]. Requires the `invoice/update` grant.
 pub async fn void_invoice<R, A, I>(
     State(state): State<AppState<ContactServiceImpl<R, A>, I>>,
     auth: Option<Extension<RequestAuth>>,
@@ -518,6 +705,10 @@ where
 /// `POST /api/v1/invoices/{id}/payments` — records a payment.
 ///
 /// A fully-covering payment transitions the invoice to `Paid`.
+/// Returns `201` with the recorded payment. Supports `Idempotency-Key`
+/// like [`create_invoice`]: a repeated request with the same key and
+/// body replays the original `201`.
+///
 /// Requires the `invoice/update` grant in the invoice's profile.
 pub async fn record_payment<R, A, I>(
     State(state): State<AppState<ContactServiceImpl<R, A>, I>>,
@@ -536,6 +727,29 @@ where
         Ok(id) => id,
         Err(response) => return *response,
     };
+    let key = match idempotency_key(&headers, &instance) {
+        Ok(key) => key,
+        Err(response) => return *response,
+    };
+    let fp = fingerprint(
+        "POST /api/v1/invoices/{id}/payments",
+        &(invoice_id.as_uuid(), &body),
+    );
+    if let Some(key) = &key {
+        match replay_if_seen(
+            state.idempotency_store(),
+            key,
+            fp,
+            StatusCode::CREATED,
+            &instance,
+        )
+        .await
+        {
+            Ok(Some(response)) => return response,
+            Ok(None) => {}
+            Err(response) => return *response,
+        }
+    }
     let Some(api_auth) = &state.auth else {
         return problem_response(
             StatusCode::NOT_IMPLEMENTED,
@@ -566,6 +780,13 @@ where
         Ok(payment) => payment,
         Err(error) => return domain_error_response(error, instance),
     };
+    let stored = match storable_value(&payment, "payment", &instance) {
+        Ok(value) => value,
+        Err(response) => return *response,
+    };
+    if let Some(key) = key {
+        record_response(state.idempotency_store(), key, fp, stored).await;
+    }
     (StatusCode::CREATED, Json(payment)).into_response()
 }
 
@@ -622,6 +843,9 @@ where
 /// (idempotent). If the reversal leaves a `Paid` invoice with a
 /// balance, the invoice reopens to `Issued`.
 ///
+/// Supports `Idempotency-Key` like [`create_invoice`]: a repeated
+/// request with the same key replays the original `200`.
+///
 /// Requires the `invoice/update` grant in the invoice's profile.
 pub async fn reverse_payment<R, A, I>(
     State(state): State<AppState<ContactServiceImpl<R, A>, I>>,
@@ -639,6 +863,26 @@ where
         Ok(id) => id,
         Err(response) => return *response,
     };
+    let key = match idempotency_key(&headers, &instance) {
+        Ok(key) => key,
+        Err(response) => return *response,
+    };
+    let fp = fingerprint("POST /api/v1/payments/{id}/reverse", &payment_id.as_uuid());
+    if let Some(key) = &key {
+        match replay_if_seen(
+            state.idempotency_store(),
+            key,
+            fp,
+            StatusCode::OK,
+            &instance,
+        )
+        .await
+        {
+            Ok(Some(response)) => return response,
+            Ok(None) => {}
+            Err(response) => return *response,
+        }
+    }
     let Some(api_auth) = &state.auth else {
         return problem_response(
             StatusCode::NOT_IMPLEMENTED,
@@ -666,5 +910,12 @@ where
         Ok(payment) => payment,
         Err(error) => return domain_error_response(error, instance),
     };
+    let stored = match storable_value(&payment, "payment", &instance) {
+        Ok(value) => value,
+        Err(response) => return *response,
+    };
+    if let Some(key) = key {
+        record_response(state.idempotency_store(), key, fp, stored).await;
+    }
     (StatusCode::OK, Json(payment)).into_response()
 }

@@ -192,8 +192,9 @@ matches production.
   `total` counts the returned items, not the profile's
   full invoice/payment corpus — there is no
   unfiltered count query yet.
-- **No idempotency keys on billing writes.** Unlike
-  contacts and email, the billing endpoints do not
-  accept `Idempotency-Key` — a retried `POST` creates
-  a second invoice/payment. Clients should reconcile
-  via the list endpoints before retrying.
+- **Idempotency keys on billing writes.** All `POST`
+  billing endpoints accept `Idempotency-Key` (a UUID):
+  a repeated request with the same key and payload
+  replays the original response; the same key with a
+  different payload is a `409`. Keys are scoped per
+  route. (FIX-02, 2026-10-22.)
