@@ -42,6 +42,7 @@ use crm_domain::audit::{fingerprint, RateLimitBucket, SecurityEvent};
 use crm_domain::error::DomainError;
 use crm_domain::ids::{ActorId, AgencyId, ClientProfileId};
 use crm_domain::observability::{AnomalySignal, AnomalySink, TraceEvent, Tracer};
+use crm_domain::repositories::MaintenanceRepository;
 use crm_domain::security::{Action, Scope, SessionToken};
 use crm_domain::services::{ActionContext, AuthenticationService, AuthorizationService};
 
@@ -384,6 +385,95 @@ pub(crate) fn rate_limited(instance: &str, detail: &str, retry_after_secs: u64) 
         .insert(axum::http::header::RETRY_AFTER, value);
     response
 }
+
+/// Renders a `503` `problem+json` for maintenance mode with a
+/// `Retry-After` hint in seconds.
+fn maintenance_unavailable(
+    instance: &str,
+    reason: Option<&str>,
+    retry_after_secs: u64,
+) -> Response {
+    let detail = match reason {
+        Some(reason) if !reason.is_empty() => {
+            format!("service in maintenance mode: {reason}; try again later")
+        }
+        _ => "service in maintenance mode; try again later".to_owned(),
+    };
+    let mut response = problem_response(
+        StatusCode::SERVICE_UNAVAILABLE,
+        "Service unavailable",
+        detail,
+        instance.to_owned(),
+    );
+    let value = retry_after_secs
+        .to_string()
+        .parse()
+        .expect("retry-after seconds are a valid header value");
+    response
+        .headers_mut()
+        .insert(axum::http::header::RETRY_AFTER, value);
+    response
+}
+
+/// Maintenance-mode enforcement for mutating API endpoints (task FIX-06).
+///
+/// While maintenance mode is enabled, every `POST`/`PUT`/`PATCH`/`DELETE`
+/// on `/api/v1/*` is rejected with `503` `problem+json` and a `Retry-After`
+/// hint. Reads (`GET`/`HEAD`) pass through untouched so status pages,
+/// dashboards and the login flow stay usable.
+///
+/// Two paths are excluded so the instance can always leave maintenance
+/// mode: `PUT /api/v1/admin/maintenance` (the toggle itself) and
+/// `POST /api/v1/auth/login` (an operator whose session expired needs a
+/// fresh token to call the toggle).
+///
+/// The check is one indexed singleton read (`maintenance_state WHERE
+/// id = 1`) per mutating request; a missing row reads as disabled. A
+/// storage error fails closed to `503`: maintenance mode is a safety
+/// gate, and the excluded toggle path stays reachable so an operator
+/// can always recover.
+pub(crate) async fn maintenance_middleware(
+    State(api_auth): State<ApiAuth>,
+    request: Request,
+    next: Next,
+) -> Response {
+    const WRITE_METHODS: [Method; 4] = [Method::POST, Method::PUT, Method::PATCH, Method::DELETE];
+    if !WRITE_METHODS.contains(request.method()) {
+        return next.run(request).await;
+    }
+    // Exclusions: the toggle and the login needed to reach it.
+    // Match on the path suffix: when this middleware runs on the
+    // nested `/api` router, the URI may or may not carry the prefix
+    // depending on how the router was composed (notably in tests).
+    const EXCLUDED: [(&str, Method); 2] = [
+        ("/v1/admin/maintenance", Method::PUT),
+        ("/v1/auth/login", Method::POST),
+    ];
+    let path = request.uri().path();
+    if EXCLUDED
+        .iter()
+        .any(|(suffix, method)| path.ends_with(suffix) && request.method() == *method)
+    {
+        return next.run(request).await;
+    }
+    let (instance, _) = request_id(request.headers());
+    let enabled = match api_auth.maintenance.get().await {
+        Ok(Some(mode)) => (mode.is_enabled(), mode.reason().map(str::to_owned)),
+        Ok(None) => (false, None),
+        Err(_) => return maintenance_unavailable(&instance, None, MAINTENANCE_RETRY_AFTER_SECS),
+    };
+    if enabled.0 {
+        return maintenance_unavailable(
+            &instance,
+            enabled.1.as_deref(),
+            MAINTENANCE_RETRY_AFTER_SECS,
+        );
+    }
+    next.run(request).await
+}
+
+/// `Retry-After` hint (seconds) on maintenance-mode `503` responses.
+const MAINTENANCE_RETRY_AFTER_SECS: u64 = 60;
 
 /// Flood mitigation for mutating API endpoints (task 17-PERF-02).
 ///

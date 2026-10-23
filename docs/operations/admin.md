@@ -130,12 +130,21 @@ settings can never be written for another agency.
 
 ## Maintenance mode and health
 
-Maintenance mode is an **operational signal, not an
-enforcement gate** in this slice: toggling it records
-the state with a reason and an audit event, but no
-middleware rejects traffic while it is enabled.
-Operators use it to coordinate with external
-maintenance (deployments, database work).
+Maintenance mode is an **enforcement gate** (task FIX-06): while it
+is enabled, every mutating request (`POST`/`PUT`/`PATCH`/`DELETE`)
+on `/api/v1/*` is rejected with `503 Service Unavailable`
+(`application/problem+json`) and a `Retry-After: 60` hint. Reads
+(`GET`/`HEAD`) keep working, so status pages, dashboards and the
+login flow stay usable during a maintenance window.
+
+Two paths are excluded so the instance can always leave maintenance
+mode: `PUT /api/v1/admin/maintenance` (the toggle itself, still
+behind the `system/manage` grant) and `POST /api/v1/auth/login`
+(an operator whose session expired needs a fresh token to call the
+toggle). The check is one indexed singleton read
+(`maintenance_state WHERE id = 1`) per mutating request; a missing
+row reads as disabled. A storage error fails closed to `503` — the
+toggle path stays reachable so an operator can always recover.
 
 System health folds the configured health reporters
 through the pure `summarize_health()` — the worst
@@ -253,10 +262,10 @@ below are documented behavior, not defects:
   taken from the acting staff member's record, never
   from the request body — settings cannot be written
   for another agency.
-- **Maintenance mode is advisory.** Toggling it
-  records state and an audit event, but no
-  middleware rejects traffic while enabled. Do not
-  rely on it as an access control.
+- **Maintenance mode is enforced.** While enabled, mutating
+  requests return `503` with `Retry-After: 60`; reads pass through.
+  The toggle (`PUT /api/v1/admin/maintenance`) and login stay
+  reachable so the instance can always leave maintenance mode.
 - **Health is staff-only.** `GET /admin/health`
   requires the `system/read` grant; the public
   liveness/readiness probes stay on `/healthz` and
@@ -286,8 +295,6 @@ below are documented behavior, not defects:
 - **No invitation tokens or self-service accept.**
   Acceptance is staff-mediated; token verification is
   a future service-layer concern.
-- **Maintenance mode is advisory only** — no
-  request enforcement while enabled.
 - **Lifecycle trackers, not executors.** Backups,
   exports, and upgrades record state transitions;
   the actual work happens outside this slice.
