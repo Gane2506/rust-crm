@@ -196,5 +196,7 @@ matches production.
   billing endpoints accept `Idempotency-Key` (a UUID):
   a repeated request with the same key and payload
   replays the original response; the same key with a
-  different payload is a `409`. Keys are scoped per
-  route. (FIX-02, 2026-10-22.)
+  different payload is a `409`. A key identifies one
+  operation — reusing it on a different route is also
+  a `409`. The replay check runs after authorization.
+  (FIX-02, 2026-10-22.)

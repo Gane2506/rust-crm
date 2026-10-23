@@ -4,9 +4,11 @@
 //! All `POST` endpoints accept the `Idempotency-Key` header (a UUID):
 //! a repeated request with the same key and payload replays the
 //! original response instead of executing again; the same key with a
-//! different payload is a `409`. Keys are scoped per route, so a key
-//! used on `POST /api/v1/invoices` never collides with one used on
-//! `POST /api/v1/invoices/{id}/payments`.
+//! different payload is a `409`. A key identifies one operation: the
+//! route is part of the fingerprint, so reusing a key on a different
+//! route is also a `409`, never a silent replay of the other route's
+//! response. The replay check runs after authorization, so a stored
+//! response is only visible to a caller authorized for the operation.
 //!
 //! * `POST /api/v1/invoices` — creates a draft invoice (`201`).
 //! * `GET /api/v1/invoices?client_profile_id=…` — lists invoices,
@@ -306,21 +308,6 @@ where
         InvoiceTransition::Void => "POST /api/v1/invoices/{id}/void",
     };
     let fp = fingerprint(route, &invoice_id.as_uuid());
-    if let Some(key) = &key {
-        match replay_if_seen(
-            state.idempotency_store(),
-            key,
-            fp,
-            StatusCode::OK,
-            &instance,
-        )
-        .await
-        {
-            Ok(Some(response)) => return response,
-            Ok(None) => {}
-            Err(response) => return *response,
-        }
-    }
     let Some(api_auth) = &state.auth else {
         return problem_response(
             StatusCode::NOT_IMPLEMENTED,
@@ -337,6 +324,24 @@ where
         Ok(ctx) => ctx,
         Err(response) => return *response,
     };
+    // The idempotency replay runs AFTER authorization: the stored
+    // response must only be visible to a caller authorized for
+    // this operation.
+    if let Some(key) = &key {
+        match replay_if_seen(
+            state.idempotency_store(),
+            key,
+            fp,
+            StatusCode::OK,
+            &instance,
+        )
+        .await
+        {
+            Ok(Some(response)) => return response,
+            Ok(None) => {}
+            Err(response) => return *response,
+        }
+    }
     let service = billing_service(api_auth);
     let invoice = match match transition {
         InvoiceTransition::Issue => service.issue_invoice(invoice_id, &ctx).await,
@@ -381,21 +386,6 @@ where
         Err(response) => return *response,
     };
     let fp = fingerprint("POST /api/v1/invoices", &body);
-    if let Some(key) = &key {
-        match replay_if_seen(
-            state.idempotency_store(),
-            key,
-            fp,
-            StatusCode::CREATED,
-            &instance,
-        )
-        .await
-        {
-            Ok(Some(response)) => return response,
-            Ok(None) => {}
-            Err(response) => return *response,
-        }
-    }
     let Some(api_auth) = &state.auth else {
         return problem_response(
             StatusCode::NOT_IMPLEMENTED,
@@ -413,6 +403,24 @@ where
         Ok(ctx) => ctx,
         Err(response) => return *response,
     };
+    // The idempotency replay runs AFTER authorization: the stored
+    // response must only be visible to a caller authorized for
+    // this operation.
+    if let Some(key) = &key {
+        match replay_if_seen(
+            state.idempotency_store(),
+            key,
+            fp,
+            StatusCode::CREATED,
+            &instance,
+        )
+        .await
+        {
+            Ok(Some(response)) => return response,
+            Ok(None) => {}
+            Err(response) => return *response,
+        }
+    }
     let service = billing_service(api_auth);
     let invoice = match service
         .create_invoice(
@@ -558,21 +566,6 @@ where
         "POST /api/v1/invoices/{id}/lines",
         &(invoice_id.as_uuid(), &body),
     );
-    if let Some(key) = &key {
-        match replay_if_seen(
-            state.idempotency_store(),
-            key,
-            fp,
-            StatusCode::CREATED,
-            &instance,
-        )
-        .await
-        {
-            Ok(Some(response)) => return response,
-            Ok(None) => {}
-            Err(response) => return *response,
-        }
-    }
     let Some(api_auth) = &state.auth else {
         return problem_response(
             StatusCode::NOT_IMPLEMENTED,
@@ -589,6 +582,24 @@ where
         Ok(ctx) => ctx,
         Err(response) => return *response,
     };
+    // The idempotency replay runs AFTER authorization: the stored
+    // response must only be visible to a caller authorized for
+    // this operation.
+    if let Some(key) = &key {
+        match replay_if_seen(
+            state.idempotency_store(),
+            key,
+            fp,
+            StatusCode::CREATED,
+            &instance,
+        )
+        .await
+        {
+            Ok(Some(response)) => return response,
+            Ok(None) => {}
+            Err(response) => return *response,
+        }
+    }
     let service = billing_service(api_auth);
     let line = match service
         .add_line(
@@ -735,21 +746,6 @@ where
         "POST /api/v1/invoices/{id}/payments",
         &(invoice_id.as_uuid(), &body),
     );
-    if let Some(key) = &key {
-        match replay_if_seen(
-            state.idempotency_store(),
-            key,
-            fp,
-            StatusCode::CREATED,
-            &instance,
-        )
-        .await
-        {
-            Ok(Some(response)) => return response,
-            Ok(None) => {}
-            Err(response) => return *response,
-        }
-    }
     let Some(api_auth) = &state.auth else {
         return problem_response(
             StatusCode::NOT_IMPLEMENTED,
@@ -766,6 +762,24 @@ where
         Ok(ctx) => ctx,
         Err(response) => return *response,
     };
+    // The idempotency replay runs AFTER authorization: the stored
+    // response must only be visible to a caller authorized for
+    // this operation.
+    if let Some(key) = &key {
+        match replay_if_seen(
+            state.idempotency_store(),
+            key,
+            fp,
+            StatusCode::CREATED,
+            &instance,
+        )
+        .await
+        {
+            Ok(Some(response)) => return response,
+            Ok(None) => {}
+            Err(response) => return *response,
+        }
+    }
     let service = billing_service(api_auth);
     let payment = match service
         .record_payment(
@@ -868,21 +882,6 @@ where
         Err(response) => return *response,
     };
     let fp = fingerprint("POST /api/v1/payments/{id}/reverse", &payment_id.as_uuid());
-    if let Some(key) = &key {
-        match replay_if_seen(
-            state.idempotency_store(),
-            key,
-            fp,
-            StatusCode::OK,
-            &instance,
-        )
-        .await
-        {
-            Ok(Some(response)) => return response,
-            Ok(None) => {}
-            Err(response) => return *response,
-        }
-    }
     let Some(api_auth) = &state.auth else {
         return problem_response(
             StatusCode::NOT_IMPLEMENTED,
@@ -905,6 +904,24 @@ where
         Ok(ctx) => ctx,
         Err(response) => return *response,
     };
+    // The idempotency replay runs AFTER authorization: the stored
+    // response must only be visible to a caller authorized for
+    // this operation.
+    if let Some(key) = &key {
+        match replay_if_seen(
+            state.idempotency_store(),
+            key,
+            fp,
+            StatusCode::OK,
+            &instance,
+        )
+        .await
+        {
+            Ok(Some(response)) => return response,
+            Ok(None) => {}
+            Err(response) => return *response,
+        }
+    }
     let service = billing_service(api_auth);
     let payment = match service.reverse_payment(payment_id, &ctx).await {
         Ok(payment) => payment,

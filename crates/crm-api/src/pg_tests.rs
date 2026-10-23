@@ -3409,6 +3409,66 @@ async fn pg_billing_idempotency_key_reuse_across_routes_conflicts() {
     drop_db(&admin_url, &db_name, pool).await;
 }
 
+#[tokio::test]
+async fn pg_billing_malformed_idempotency_key_returns_422() {
+    let Some((pool, admin_url, db_name)) = fresh_db().await else {
+        eprintln!(
+            "pg_billing_malformed_idempotency_key_returns_422: DATABASE_URL not set, skipping"
+        );
+        return;
+    };
+    let router = pg_router(&pool);
+    let profile = uuid::Uuid::new_v4();
+    let (token, _, _) = seed_billing_user(&pool, &router, profile, "biller5@example.com").await;
+
+    let (status, _) = read_json(
+        router
+            .oneshot(post_invoices(
+                invoice_body(profile),
+                Some("not-a-uuid"),
+                &token,
+            ))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+
+    drop_db(&admin_url, &db_name, pool).await;
+}
+
+#[tokio::test]
+async fn pg_billing_issue_invoice_idempotent() {
+    let Some((pool, admin_url, db_name)) = fresh_db().await else {
+        eprintln!("pg_billing_issue_invoice_idempotent: DATABASE_URL not set, skipping");
+        return;
+    };
+    let router = pg_router(&pool);
+    let profile = uuid::Uuid::new_v4();
+    let (token, _, _) = seed_billing_user(&pool, &router, profile, "biller6@example.com").await;
+    let invoice_id = seed_invoice_with_line(&router, profile, &token).await;
+
+    let key = IdempotencyKey::generate().to_string();
+    let issue = || {
+        Request::builder()
+            .method("POST")
+            .uri(format!("/api/v1/invoices/{invoice_id}/issue"))
+            .header(header::AUTHORIZATION, format!("Bearer {token}"))
+            .header(IDEMPOTENCY_KEY_HEADER, &key)
+            .body(Body::empty())
+            .expect("test request builds")
+    };
+    let (first_status, first) =
+        read_json(router.clone().oneshot(issue()).await.expect("oneshot")).await;
+    let (second_status, second) = read_json(router.oneshot(issue()).await.expect("oneshot")).await;
+    assert_eq!(first_status, StatusCode::OK);
+    assert_eq!(second_status, StatusCode::OK);
+    assert_eq!(first, second, "replay returns the identical response");
+    assert_eq!(first["status"], "Issued");
+
+    drop_db(&admin_url, &db_name, pool).await;
+}
+
 fn create_pool_body(profile: uuid::Uuid) -> serde_json::Value {
     serde_json::json!({
         "client_profile_id": profile,
