@@ -776,6 +776,22 @@ where
         None => api,
     };
 
+    // Maintenance-mode enforcement (task FIX-06): while maintenance is
+    // enabled, mutating endpoints return 503. Installed outside the
+    // rate limiter so a flood during maintenance gets the maintenance
+    // response, and outside the auth middleware so the check runs
+    // before session lookups. The toggle (`PUT
+    // /api/v1/admin/maintenance`) and login (`POST /api/v1/auth/login`)
+    // are excluded so the instance can always leave maintenance mode.
+    // Only when `ApiAuth` is configured.
+    let api = match state.auth.clone() {
+        Some(api_auth) => api.layer(middleware::from_fn_with_state(
+            api_auth,
+            auth::maintenance_middleware,
+        )),
+        None => api,
+    };
+
     // Defensive security headers on every API response — successes,
     // `problem+json` errors, 401s, 403s and 429s alike. Applied as the
     // outermost API layer, after the auth and rate-limit middleware;

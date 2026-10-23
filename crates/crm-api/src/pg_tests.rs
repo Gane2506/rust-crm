@@ -4234,3 +4234,213 @@ async fn pg_campaign_conversion_recording() {
 
     drop_db(&admin_url, &db_name, pool).await;
 }
+
+/// Seeds a staff user with `system/manage` + `system/read` at agency
+/// scope (for the maintenance toggle) plus contact read/create for
+/// `profile`, then logs in over HTTP.
+///
+/// Returns `(token, staff_id, agency_id)`.
+async fn seed_maintenance_admin(
+    pool: &PgPool,
+    router: &axum::Router,
+    profile: uuid::Uuid,
+    email: &str,
+) -> (String, StaffId, AgencyId) {
+    let agency_id = AgencyId::new();
+    let now = chrono::Utc::now();
+    let phc = hash_password(TEST_PASSWORD.as_bytes())
+        .await
+        .expect("hash test password");
+    let staff_id = StaffId::new();
+    PgStaffRepository::new(pool.clone())
+        .create(StaffUser {
+            staff_id,
+            agency_id,
+            email: email.to_owned(),
+            display_name: "Maintenance Admin".to_owned(),
+            status: StaffStatus::Active,
+            credential: Some(
+                PasswordCredential::new(phc, now).expect("test credential is PHC-shaped"),
+            ),
+            created_at: now,
+            updated_at: now,
+        })
+        .await
+        .expect("create staff user");
+    let grant_repo = PgGrantRepository::new(pool.clone());
+    // System grants at agency scope for the maintenance endpoints.
+    for operation in [Operation::Read, Operation::Manage] {
+        grant_repo
+            .assign(
+                staff_id,
+                Grant {
+                    grant_id: GrantId::new(),
+                    action: Action {
+                        resource: Resource::System,
+                        operation,
+                    },
+                    scope: Scope::Agency { agency_id },
+                },
+            )
+            .await
+            .expect("assign system grant");
+    }
+    // Contact grants so the mutating/read probes have authorized targets.
+    let scope = Scope::ClientProfile {
+        agency_id,
+        client_profile_id: ClientProfileId::from(profile),
+    };
+    for operation in [Operation::Read, Operation::Create] {
+        grant_repo
+            .assign(
+                staff_id,
+                Grant {
+                    grant_id: GrantId::new(),
+                    action: Action {
+                        resource: Resource::Contact,
+                        operation,
+                    },
+                    scope,
+                },
+            )
+            .await
+            .expect("assign contact grant");
+    }
+    let (status, body) = read_json(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/auth/login")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        serde_json::json!({ "email": email, "password": TEST_PASSWORD })
+                            .to_string(),
+                    ))
+                    .expect("login request builds"),
+            )
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "seed login must succeed");
+    let token = body["token"].as_str().expect("token in body").to_owned();
+    (token, staff_id, agency_id)
+}
+
+fn put_maintenance(token: &str, enabled: bool) -> Request<Body> {
+    Request::builder()
+        .method("PUT")
+        .uri("/api/v1/admin/maintenance")
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .body(Body::from(
+            serde_json::json!({ "enabled": enabled, "reason": "test maintenance window" })
+                .to_string(),
+        ))
+        .expect("test request builds")
+}
+
+/// Maintenance mode enforcement (FIX-06): while enabled, mutating
+/// requests are `503` with a `Retry-After` hint; reads keep working;
+/// the toggle and login stay reachable; disabling restores writes.
+#[tokio::test]
+async fn pg_maintenance_mode_blocks_writes_not_reads() {
+    let Some((pool, admin_url, db_name)) = fresh_db().await else {
+        eprintln!("skipping Postgres API test: DATABASE_URL is not set");
+        return;
+    };
+    let router = pg_router(&pool);
+    let profile = uuid::Uuid::new_v4();
+    let (token, _, _) = seed_maintenance_admin(&pool, &router, profile, "maint@example.com").await;
+
+    // Baseline: writes work while maintenance is disabled.
+    let (status, _) = read_json(
+        router
+            .clone()
+            .oneshot(post_contacts(contact_body(profile), None, &token))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "baseline write works");
+
+    // Enable maintenance.
+    let (status, _) = read_json(
+        router
+            .clone()
+            .oneshot(put_maintenance(&token, true))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "enable maintenance");
+
+    // Mutating request is rejected with 503 + Retry-After.
+    let response = router
+        .clone()
+        .oneshot(post_contacts(contact_body(profile), None, &token))
+        .await
+        .expect("oneshot");
+    assert_eq!(
+        response.status(),
+        StatusCode::SERVICE_UNAVAILABLE,
+        "write blocked during maintenance"
+    );
+    assert!(
+        response.headers().contains_key(header::RETRY_AFTER),
+        "503 carries Retry-After"
+    );
+    let (status, body) = read_json(response).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert!(
+        body["detail"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("maintenance"),
+        "problem detail names maintenance: {body}"
+    );
+
+    // Reads still work.
+    let (status, _) = read_json(
+        router
+            .clone()
+            .oneshot(get(
+                format!("/api/v1/contacts?client_profile_id={profile}"),
+                &token,
+            ))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "reads work during maintenance");
+
+    // The toggle itself stays reachable: disable maintenance.
+    let (status, _) = read_json(
+        router
+            .clone()
+            .oneshot(put_maintenance(&token, false))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "disable maintenance");
+
+    // Writes work again.
+    let (status, _) = read_json(
+        router
+            .clone()
+            .oneshot(post_contacts(
+                contact_body_with_email(profile, "after@example.com"),
+                None,
+                &token,
+            ))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "writes restored");
+
+    drop_db(&admin_url, &db_name, pool).await;
+}
