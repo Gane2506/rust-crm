@@ -200,3 +200,13 @@ matches production.
   operation — reusing it on a different route is also
   a `409`. The replay check runs after authorization.
   (FIX-02, 2026-10-22.)
+- **Concurrency guards.** `record_payment` is atomic:
+  it locks the invoice row (`SELECT ... FOR UPDATE`),
+  validates coverage against the latest payments, and
+  marks the invoice paid when covered — all in one
+  transaction. Concurrent payments serialize on the
+  lock; the loser fails validation instead of
+  over-applying. `add_line`, `issue`, and `void` use an
+  atomic conditional update (`WHERE status = ANY(...)`)
+  so a concurrent transition surfaces a `409` instead
+  of a lost update. (FIX-03, 2026-10-22.)

@@ -1062,6 +1062,18 @@ pub trait InvoiceRepository {
         client_profile_id: crate::ids::ClientProfileId,
         limit: u64,
     ) -> impl Future<Output = Result<Vec<crate::billing::Invoice>, DomainError>> + Send + 'a;
+
+    /// Persists invoice changes only if the invoice is currently in
+    /// one of `expected_status` (FIX-03): the status check and the
+    /// update happen in a single atomic `UPDATE ... WHERE status =
+    /// ANY(...)`. Returns [`DomainError::ConcurrencyConflict`] if the
+    /// status changed concurrently (another writer transitioned it
+    /// first), [`DomainError::NotFound`] if the invoice does not exist.
+    fn update_if_status<'a>(
+        &'a self,
+        invoice: crate::billing::Invoice,
+        expected_status: &'a [crate::billing::InvoiceStatus],
+    ) -> impl Future<Output = Result<crate::billing::Invoice, DomainError>> + Send + 'a;
 }
 
 /// Persistence port for payments (task 12-BILL-01).
@@ -1091,6 +1103,20 @@ pub trait PaymentRepository {
     fn reverse<'a>(
         &'a self,
         payment: crate::billing::Payment,
+    ) -> impl Future<Output = Result<crate::billing::Payment, DomainError>> + Send + 'a;
+
+    /// Records a payment atomically (FIX-03): locks the invoice row
+    /// (`SELECT ... FOR UPDATE`), re-reads its payments inside the
+    /// same transaction, and inserts only if the payment does not
+    /// exceed the remaining balance. When the payment covers the
+    /// total, the invoice is marked paid in the same transaction.
+    /// Concurrent calls serialize on the invoice row — the loser sees
+    /// the winner's payment and fails validation instead of
+    /// over-applying.
+    fn record_guarded<'a>(
+        &'a self,
+        payment: crate::billing::Payment,
+        invoice: &'a crate::billing::Invoice,
     ) -> impl Future<Output = Result<crate::billing::Payment, DomainError>> + Send + 'a;
 }
 
