@@ -50,6 +50,7 @@ leptos_router = { version = "0.8" }
 sha2 = { version = "0.10" }
 # HTTP client for the Leptos CSR app (WASM); used by crm-web to call crm-api.
 gloo-net = { version = "0.7" }
+web-sys = { version = "0.3", features = ["Window", "Storage"] }
 # Argon2id password hashing (03-SEC-02). MIT/Apache-2.0, both on the
 # license allow-list. Default features (alloc/getrandom/rand) provide
 # `SaltString::generate(&mut OsRng)`; verification is constant-time via

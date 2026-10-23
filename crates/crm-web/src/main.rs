@@ -40,19 +40,66 @@ mod theme;
 mod ui;
 mod ui_styles;
 
+/// `sessionStorage` key for the bearer token. Session scope (not local)
+/// is deliberate: survives refresh, cleared on tab close.
+///
+/// Security note (CWE-922): storing the bearer token in `sessionStorage`
+/// exposes it to XSS. This is a conscious tradeoff — the pre-fix behavior
+/// (memory-only) logged users out on every refresh, which was reported as
+/// a bug. `sessionStorage` over `localStorage` limits the exposure window
+/// to the tab lifetime. The app has no `eval`/inline-script vectors; all
+/// UI is Leptos-rendered (no `innerHTML` with user data).
+const TOKEN_STORAGE_KEY: &str = "crm.auth.token";
+
+/// Best-effort access to `sessionStorage`. Returns `None` when the window
+/// is unavailable or storage access is denied (private mode, disabled
+/// cookies) — every caller treats `None` as "no persisted session" and
+/// falls back to the login form. Never panics.
+fn session_storage() -> Option<web_sys::Storage> {
+    let window = web_sys::window()?;
+    window.session_storage().ok()?
+}
+
+/// Reads the persisted bearer token, if any. Returns `None` when storage
+/// is unavailable, denied, or empty — the login form handles that case.
+fn restore_token() -> Option<String> {
+    let storage = session_storage()?;
+    storage.get_item(TOKEN_STORAGE_KEY).ok()?
+}
+
+/// Persists the bearer token to `sessionStorage`. Best-effort: a storage
+/// failure just means the next refresh will ask for login again.
+fn persist_token(token: &str) {
+    if let Some(storage) = session_storage() {
+        let _ = storage.set_item(TOKEN_STORAGE_KEY, token);
+    }
+}
+
+/// Removes the bearer token from `sessionStorage` on logout.
+fn clear_token() {
+    if let Some(storage) = session_storage() {
+        let _ = storage.remove_item(TOKEN_STORAGE_KEY);
+    }
+}
+
 /// Root application: login gate plus the authenticated shell.
 ///
-/// The bearer token lives in a Leptos signal (memory only — it is never
-/// persisted). Until login succeeds, the login form is the whole app; the
-/// router (and every route in it) only renders for authenticated sessions.
+/// The bearer token lives in a Leptos signal, persisted to `sessionStorage`
+/// so a page refresh keeps the session. `sessionStorage` (not
+/// `localStorage`) is the deliberate choice: the token survives reloads
+/// but is cleared when the tab closes, limiting the XSS exposure window
+/// vs. a persistent store. Until login succeeds, the login form is the
+/// whole app; the router (and every route in it) only renders for
+/// authenticated sessions.
 #[component]
 fn App() -> impl IntoView {
     // Design-token foundation (UI2-01): injected once; every v2 component
     // references var(--token). Also provides the dark-mode context.
     provide_theme_mode();
 
-    // `None` = not logged in; `Some(token)` = bearer token in memory.
-    let token = RwSignal::new(None::<String>);
+    // `None` = not logged in; `Some(token)` = bearer token. Restored from
+    // `sessionStorage` on init so refreshes don't log the user out.
+    let token = RwSignal::new(restore_token());
 
     // Branding (UI2-03): fetch the public theme on mount (the login page
     // is themed too) and re-fetch after login; inject as a `<style>`
@@ -77,6 +124,7 @@ fn App() -> impl IntoView {
     };
     apply_branding();
     let on_logged_in = UiValueHandler::new(move |new_token: String| {
+        persist_token(&new_token);
         token.set(Some(new_token));
         apply_branding();
     });
@@ -87,6 +135,7 @@ fn App() -> impl IntoView {
                 logout(&current).await.ok();
             });
         }
+        clear_token();
         token.set(None);
     });
 
