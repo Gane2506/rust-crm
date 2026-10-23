@@ -146,13 +146,17 @@ impl<R, T, H, RM, A> AgentServiceImpl<R, T, H, RM, A> {
     /// errors or reports no membership. Person-specific gates are not
     /// used here: the run carries no designated approver, so the role
     /// is the policy.
+    ///
+    /// Returns the decided gate so the caller can persist it on the
+    /// run (FIX-04): the decision, decider, and decision time must
+    /// survive, not be dropped with the local.
     async fn decide_gate(
         &self,
         ctx: &ActionContext,
         client_profile_id: ClientProfileId,
         decision: ApprovalDecision,
         reason: String,
-    ) -> Result<(), DomainError>
+    ) -> Result<ApprovalGate, DomainError>
     where
         RM: RoleMembership + Send + Sync,
     {
@@ -165,7 +169,7 @@ impl<R, T, H, RM, A> AgentServiceImpl<R, T, H, RM, A> {
         }
         let mut gate = ApprovalGate::for_role(APPROVER_ROLE.to_owned())?;
         gate.decide(ctx.actor_id, decision, reason)?;
-        Ok(())
+        Ok(gate)
     }
 }
 
@@ -225,13 +229,17 @@ where
         ctx: &ActionContext,
     ) -> Result<AgentRun, DomainError> {
         let mut run = self.load_scoped_run(run_id, ctx).await?;
-        self.decide_gate(
-            ctx,
-            run.client_profile_id,
-            ApprovalDecision::Approved,
-            String::new(),
-        )
-        .await?;
+        let gate = self
+            .decide_gate(
+                ctx,
+                run.client_profile_id,
+                ApprovalDecision::Approved,
+                String::new(),
+            )
+            .await?;
+        // Persist the decided gate on the run: the decision, decider,
+        // and decision time are part of the audit trail (FIX-04).
+        run.approval_gate = Some(gate);
         run.approve()?;
         let run = self.runs.update(run).await?;
         // Approve any pending approval-gated tool calls on the run: the
@@ -265,8 +273,12 @@ where
         // actor so the gate's reason invariant holds. The actor is
         // recorded as `decided_by` for review.
         let reason = format!("denied by {}", ctx.actor_id);
-        self.decide_gate(ctx, run.client_profile_id, ApprovalDecision::Denied, reason)
+        let gate = self
+            .decide_gate(ctx, run.client_profile_id, ApprovalDecision::Denied, reason)
             .await?;
+        // Persist the decided gate on the run: the decision, decider,
+        // and decision time are part of the audit trail (FIX-04).
+        run.approval_gate = Some(gate);
         run.reject()?;
         let run = self.runs.update(run).await?;
         self.audit_agent(

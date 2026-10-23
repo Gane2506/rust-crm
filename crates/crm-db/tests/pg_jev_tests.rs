@@ -383,6 +383,101 @@ async fn agent_service_full_lifecycle_with_approval() {
 }
 
 #[tokio::test]
+async fn agent_service_approval_gate_persists_decision() {
+    let (pool, admin_url, db_name) = fresh_db().await;
+    let profile = ClientProfileId::new();
+    ensure_profile(&pool, profile).await;
+
+    let staff = make_staff(&pool, "gatekeeper@example.com").await;
+    link_profile_agency(&pool, profile, staff.agency_id).await;
+    grant_agent_run(
+        &pool,
+        staff.staff_id,
+        staff.agency_id,
+        profile,
+        Operation::Approve,
+    )
+    .await;
+    let actor = ActorId::from(staff.staff_id);
+    let ctx = ctx_for(actor, Some(profile));
+    let service = test_service(&pool);
+    let runs = PgAgentRunRepository::new(pool.clone());
+
+    // Approve path: the decided gate (decision, decider, time) must
+    // survive a round-trip through the database.
+    let run = service
+        .start_run(new_run_input(profile), &ctx)
+        .await
+        .expect("start run");
+    let run = service
+        .request_approval(run.run_id, &ctx)
+        .await
+        .expect("request approval");
+    assert!(run.approval_gate.is_none(), "no gate before decision");
+
+    let before = Utc::now().round_subsecs(6);
+    let run = service
+        .approve_step(run.run_id, &ctx)
+        .await
+        .expect("approve");
+    let gate = run
+        .approval_gate
+        .as_ref()
+        .expect("gate persisted on approve");
+    assert_eq!(
+        gate.decision,
+        Some(crm_domain::jev::ApprovalDecision::Approved)
+    );
+    assert_eq!(gate.decided_by, Some(actor));
+    let decided_at = gate.decided_at.expect("decided_at set");
+    assert!(decided_at >= before, "decided_at is the decision time");
+
+    // Read it back from the database: the gate must round-trip.
+    let fetched = runs.get(run.run_id).await.expect("get run");
+    let gate = fetched
+        .approval_gate
+        .as_ref()
+        .expect("gate survives reload");
+    assert_eq!(
+        gate.decision,
+        Some(crm_domain::jev::ApprovalDecision::Approved)
+    );
+    assert_eq!(gate.decided_by, Some(actor));
+    assert_eq!(gate.decided_at, Some(decided_at));
+
+    // Deny path: same persistence guarantees.
+    let run = service
+        .start_run(new_run_input(profile), &ctx)
+        .await
+        .expect("start run");
+    let run = service
+        .request_approval(run.run_id, &ctx)
+        .await
+        .expect("request approval");
+    let run = service.deny_step(run.run_id, &ctx).await.expect("deny");
+    let gate = run.approval_gate.as_ref().expect("gate persisted on deny");
+    assert_eq!(
+        gate.decision,
+        Some(crm_domain::jev::ApprovalDecision::Denied)
+    );
+    assert_eq!(gate.decided_by, Some(actor));
+    assert!(gate.decided_at.is_some());
+    assert!(gate.reason.is_some(), "deny carries a reason");
+
+    let fetched = runs.get(run.run_id).await.expect("get run");
+    assert_eq!(
+        fetched
+            .approval_gate
+            .as_ref()
+            .expect("deny gate survives reload")
+            .decision,
+        Some(crm_domain::jev::ApprovalDecision::Denied)
+    );
+
+    drop_db(&admin_url, &db_name, pool).await;
+}
+
+#[tokio::test]
 async fn agent_service_wrong_actor_approval_rejected() {
     let (pool, admin_url, db_name) = fresh_db().await;
     let profile = ClientProfileId::new();

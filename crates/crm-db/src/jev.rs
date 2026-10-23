@@ -18,7 +18,9 @@ use uuid::Uuid;
 
 use crm_domain::error::DomainError;
 use crm_domain::ids::{ActorId, AgentRunId, ClientProfileId, HandoffId, StaffId, ToolCallId};
-use crm_domain::jev::{AgentRun, AgentRunStatus, FallbackChain, Handoff, ToolCall, ToolCallStatus};
+use crm_domain::jev::{
+    AgentRun, AgentRunStatus, ApprovalGate, FallbackChain, Handoff, ToolCall, ToolCallStatus,
+};
 use crm_domain::repositories::{AgentRunRepository, HandoffRepository, ToolCallRepository};
 use crm_domain::services::RoleMembership;
 
@@ -78,7 +80,7 @@ fn call_status_from_str(raw: &str) -> Result<ToolCallStatus, DomainError> {
 
 /// Columns selected for an [`AgentRun`] row.
 const RUN_COLUMNS: &str = "run_id, client_profile_id, agent_kind, status, adapter_name, \
-     fallback_chain, input, output, created_at, updated_at";
+     fallback_chain, input, output, approval_gate, created_at, updated_at";
 
 /// Columns selected for a [`ToolCall`] row.
 const CALL_COLUMNS: &str = "call_id, run_id, tool_name, input, status, output, \
@@ -96,6 +98,15 @@ fn row_to_run(row: &sqlx::postgres::PgRow) -> Result<AgentRun, DomainError> {
             DomainError::Validation(format!("storage error: invalid fallback_chain: {error}"))
         })?;
     let output: Option<serde_json::Value> = row.try_get("output").map_err(map_storage_error)?;
+    let approval_gate: Option<ApprovalGate> = row
+        .try_get::<Option<serde_json::Value>, _>("approval_gate")
+        .map_err(map_storage_error)?
+        .map(|value| {
+            serde_json::from_value(value).map_err(|error| {
+                DomainError::Validation(format!("storage error: invalid approval_gate: {error}"))
+            })
+        })
+        .transpose()?;
     Ok(AgentRun {
         run_id: AgentRunId::from(
             row.try_get::<Uuid, _>("run_id")
@@ -115,6 +126,7 @@ fn row_to_run(row: &sqlx::postgres::PgRow) -> Result<AgentRun, DomainError> {
         fallback_chain,
         input: row.try_get("input").map_err(map_storage_error)?,
         output,
+        approval_gate,
         created_at: row
             .try_get::<DateTime<Utc>, _>("created_at")
             .map_err(map_storage_error)?,
@@ -191,9 +203,17 @@ impl AgentRunRepository for PgAgentRunRepository {
         let fallback_chain = serde_json::to_value(&run.fallback_chain).map_err(|error| {
             DomainError::Validation(format!("cannot serialize fallback chain: {error}"))
         })?;
+        let approval_gate = run
+            .approval_gate
+            .as_ref()
+            .map(serde_json::to_value)
+            .transpose()
+            .map_err(|error| {
+                DomainError::Validation(format!("cannot serialize approval gate: {error}"))
+            })?;
         sqlx::query(
             "INSERT INTO agent_runs (run_id, client_profile_id, agent_kind, status, adapter_name, \
-             fallback_chain, input, output, created_at, updated_at)\n             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+             fallback_chain, input, output, approval_gate, created_at, updated_at)\n             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
         )
         .bind(run.run_id.as_uuid())
         .bind(run.client_profile_id.as_uuid())
@@ -203,6 +223,7 @@ impl AgentRunRepository for PgAgentRunRepository {
         .bind(fallback_chain)
         .bind(&run.input)
         .bind(&run.output)
+        .bind(approval_gate)
         .bind(run.created_at)
         .bind(run.updated_at)
         .execute(&self.pool)
@@ -232,9 +253,17 @@ impl AgentRunRepository for PgAgentRunRepository {
         let fallback_chain = serde_json::to_value(&run.fallback_chain).map_err(|error| {
             DomainError::Validation(format!("cannot serialize fallback chain: {error}"))
         })?;
+        let approval_gate = run
+            .approval_gate
+            .as_ref()
+            .map(serde_json::to_value)
+            .transpose()
+            .map_err(|error| {
+                DomainError::Validation(format!("cannot serialize approval gate: {error}"))
+            })?;
         let result = sqlx::query(
             "UPDATE agent_runs\n             SET client_profile_id = $2, agent_kind = $3, status = $4, \
-             adapter_name = $5, fallback_chain = $6, input = $7, output = $8, updated_at = $9\n             WHERE run_id = $1",
+             adapter_name = $5, fallback_chain = $6, input = $7, output = $8, approval_gate = $9, updated_at = $10\n             WHERE run_id = $1",
         )
         .bind(run.run_id.as_uuid())
         .bind(run.client_profile_id.as_uuid())
@@ -244,6 +273,7 @@ impl AgentRunRepository for PgAgentRunRepository {
         .bind(fallback_chain)
         .bind(&run.input)
         .bind(&run.output)
+        .bind(approval_gate)
         .bind(run.updated_at)
         .execute(&self.pool)
         .await

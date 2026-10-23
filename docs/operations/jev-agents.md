@@ -104,6 +104,9 @@ Two gate shapes:
 Decision accountability: `decide()` records `decided_by` and
 `decided_at` on the gate, and a second call is rejected — an
 approval can never be silently reversed. Denials require a reason.
+The decided gate is persisted on the run (`agent_runs.approval_gate`
+JSONB, FIX-04) and returned on run reads, so the decision, decider,
+and decision time are part of the durable audit trail.
 
 **Approving a run approves its pending gated tool calls.** When a
 human approves the run (`approve_step`), the service also approves

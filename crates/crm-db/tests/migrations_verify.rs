@@ -89,7 +89,7 @@ const MIGRATED_TABLES: &[&str] = &[
 
 /// Migration versions the chain currently ships, in apply order.
 const MIGRATED_VERSIONS: &[i64] = &[
-    1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18,
+    1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19,
 ];
 
 /// Reads the applied versions from the sqlx migration journal.

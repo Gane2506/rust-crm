@@ -83,6 +83,10 @@ pub struct AgentRun {
     pub input: Value,
     /// Output payload, set on completion.
     pub output: Option<Value>,
+    /// The human approval gate decision, once made (FIX-04). Set when
+    /// a run-level approval is decided via [`ApprovalGate::decide`];
+    /// `None` while no decision has been recorded.
+    pub approval_gate: Option<ApprovalGate>,
     /// When the run was created.
     pub created_at: DateTime<Utc>,
     /// When the run was last updated.
@@ -141,6 +145,7 @@ impl AgentRun {
             fallback_chain,
             input,
             output: None,
+            approval_gate: None,
             created_at: now,
             updated_at: now,
         })
