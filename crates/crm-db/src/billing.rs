@@ -248,6 +248,47 @@ impl InvoiceRepository for PgInvoiceRepository {
         Ok(invoice)
     }
 
+    async fn update_if_status(
+        &self,
+        invoice: Invoice,
+        expected_status: &[InvoiceStatus],
+    ) -> Result<Invoice, DomainError> {
+        // The status predicate is part of the UPDATE itself, so the
+        // check and the write are atomic: a concurrent transition
+        // wins or loses here, never silently overwrites.
+        let expected: Vec<String> = expected_status
+            .iter()
+            .map(|status| invoice_status_as_str(*status).to_owned())
+            .collect();
+        let result = sqlx::query(
+            "UPDATE invoices\n             SET status = $2, updated_at = $3\n             WHERE invoice_id = $1 AND status = ANY($4)",
+        )
+        .bind(invoice.invoice_id.as_uuid())
+        .bind(invoice_status_as_str(invoice.status))
+        .bind(invoice.updated_at)
+        .bind(expected)
+        .execute(&self.pool)
+        .await
+        .map_err(map_storage_error)?;
+        if result.rows_affected() == 0 {
+            // Distinguish "no such invoice" from "status moved".
+            let exists = sqlx::query("SELECT 1 FROM invoices WHERE invoice_id = $1")
+                .bind(invoice.invoice_id.as_uuid())
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(map_storage_error)?;
+            if exists.is_none() {
+                return Err(DomainError::NotFound {
+                    kind: "invoice".to_owned(),
+                    id: invoice.invoice_id.to_string(),
+                });
+            }
+            return Err(DomainError::ConcurrencyConflict);
+        }
+        self.insert_new_lines(&invoice).await?;
+        Ok(invoice)
+    }
+
     async fn list_by_profile(
         &self,
         client_profile_id: ClientProfileId,
@@ -376,6 +417,83 @@ impl PaymentRepository for PgPaymentRepository {
                 id: payment.payment_id.to_string(),
             });
         }
+        Ok(payment)
+    }
+
+    async fn record_guarded(
+        &self,
+        payment: Payment,
+        invoice: &Invoice,
+    ) -> Result<Payment, DomainError> {
+        let mut tx = self.pool.begin().await.map_err(map_storage_error)?;
+        // Lock the invoice row: concurrent `record_guarded` calls (and
+        // concurrent status updates) serialize here. The lock is held
+        // until commit, so the payments read below are the latest
+        // committed state at the moment we act.
+        let locked = sqlx::query("SELECT status FROM invoices WHERE invoice_id = $1 FOR UPDATE")
+            .bind(payment.invoice_id.as_uuid())
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(map_storage_error)?;
+        let Some(locked) = locked else {
+            return Err(DomainError::NotFound {
+                kind: "invoice".to_owned(),
+                id: payment.invoice_id.to_string(),
+            });
+        };
+        let locked_status = invoice_status_from_str(
+            locked
+                .try_get::<String, _>("status")
+                .map_err(map_storage_error)?
+                .as_str(),
+        )?;
+        // Re-read the payments inside the transaction.
+        let rows = sqlx::query(&format!(
+            "SELECT {PAYMENT_COLUMNS} FROM payments\n             WHERE invoice_id = $1\n             ORDER BY recorded_at ASC"
+        ))
+        .bind(payment.invoice_id.as_uuid())
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(map_storage_error)?;
+        let payments: Vec<Payment> = rows.iter().map(row_to_payment).collect::<Result<_, _>>()?;
+        // Coverage check against the locked state: a payment that would
+        // exceed the remaining balance is rejected here, so two
+        // concurrent payments can never over-apply.
+        let due = invoice.remaining_due(&payments)?;
+        if payment.amount.amount() > due.amount() {
+            return Err(DomainError::Validation(format!(
+                "payment of {} exceeds the remaining balance of {}",
+                payment.amount.amount(),
+                due.amount()
+            )));
+        }
+        sqlx::query(
+            "INSERT INTO payments (payment_id, invoice_id, amount, currency, status, recorded_at)\n             VALUES ($1, $2, $3, $4, $5, $6)",
+        )
+        .bind(payment.payment_id.as_uuid())
+        .bind(payment.invoice_id.as_uuid())
+        .bind(payment.amount.amount())
+        .bind(payment.amount.currency())
+        .bind(payment_status_as_str(payment.status))
+        .bind(payment.recorded_at)
+        .execute(&mut *tx)
+        .await
+        .map_err(map_storage_error)?;
+        // Mark paid when this payment covers the total, in the same
+        // transaction — no window for a second writer to see a covered
+        // invoice that is still `Issued`.
+        let mut payments = payments;
+        payments.push(payment.clone());
+        let due = invoice.remaining_due(&payments)?;
+        if due.amount() == 0 && locked_status == InvoiceStatus::Issued {
+            sqlx::query("UPDATE invoices\n             SET status = 'paid', updated_at = $2\n             WHERE invoice_id = $1")
+                .bind(payment.invoice_id.as_uuid())
+                .bind(Utc::now())
+                .execute(&mut *tx)
+                .await
+                .map_err(map_storage_error)?;
+        }
+        tx.commit().await.map_err(map_storage_error)?;
         Ok(payment)
     }
 }

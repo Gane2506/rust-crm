@@ -15,8 +15,9 @@ use std::future::Future;
 
 use crm_domain::audit::{ActionResult, PermissionDecision};
 use crm_domain::billing::{
-    Invoice, InvoiceLine, Money, Payment, BILLING_INVOICE_CREATED, BILLING_INVOICE_ISSUED,
-    BILLING_INVOICE_VOIDED, BILLING_LINE_ADDED, BILLING_PAYMENT_RECORDED, BILLING_PAYMENT_REVERSED,
+    Invoice, InvoiceLine, InvoiceStatus, Money, Payment, BILLING_INVOICE_CREATED,
+    BILLING_INVOICE_ISSUED, BILLING_INVOICE_VOIDED, BILLING_LINE_ADDED, BILLING_PAYMENT_RECORDED,
+    BILLING_PAYMENT_REVERSED,
 };
 use crm_domain::error::DomainError;
 use crm_domain::ids::{ClientProfileId, InvoiceId, PaymentId};
@@ -150,7 +151,14 @@ where
         async move {
             let mut invoice = self.scoped_invoice(input.invoice_id, ctx).await?;
             invoice.add_line(input.description, input.quantity, input.unit_price)?;
-            let invoice = self.invoices.update(invoice).await?;
+            // Guarded on `Draft`: a concurrent issue/void that
+            // transitioned the invoice first turns this into a
+            // `ConcurrencyConflict` instead of adding a line to a
+            // non-draft invoice (FIX-03).
+            let invoice = self
+                .invoices
+                .update_if_status(invoice, &[InvoiceStatus::Draft])
+                .await?;
             // Re-hydrate the freshly appended line from the persisted
             // invoice so the returned id is the database-assigned one.
             let line = invoice.lines.last().cloned().ok_or_else(|| {
@@ -175,7 +183,13 @@ where
         async move {
             let mut invoice = self.scoped_invoice(invoice_id, ctx).await?;
             invoice.issue()?;
-            let invoice = self.invoices.update(invoice).await?;
+            // Guarded on `Draft`: a concurrent transition turns this
+            // into a `ConcurrencyConflict` instead of a lost update
+            // (FIX-03).
+            let invoice = self
+                .invoices
+                .update_if_status(invoice, &[InvoiceStatus::Draft])
+                .await?;
             self.audit_billing(
                 ctx,
                 BILLING_INVOICE_ISSUED,
@@ -194,8 +208,18 @@ where
     ) -> impl Future<Output = Result<Invoice, DomainError>> + Send + 'a {
         async move {
             let mut invoice = self.scoped_invoice(invoice_id, ctx).await?;
+            // Capture the pre-transition status: `void()` accepts
+            // `Draft` and `Issued` (and is idempotent on `Void`), so
+            // the guard must allow whichever of those we saw.
+            let expected_status = invoice.status;
             invoice.void()?;
-            let invoice = self.invoices.update(invoice).await?;
+            // Guarded on the observed status: a concurrent transition
+            // turns this into a `ConcurrencyConflict` instead of a lost
+            // update (FIX-03).
+            let invoice = self
+                .invoices
+                .update_if_status(invoice, &[expected_status])
+                .await?;
             self.audit_billing(
                 ctx,
                 BILLING_INVOICE_VOIDED,
@@ -224,26 +248,12 @@ where
             }
             // `record` rejects zero amounts; nothing is persisted yet.
             let payment = Payment::record(input.invoice_id, input.amount)?;
-            // Coverage check before persisting: a payment that would
-            // exceed the remaining balance is rejected.
-            let payments = self.payments.list_by_invoice(input.invoice_id).await?;
-            let due = invoice.remaining_due(&payments)?;
-            if payment.amount.amount() > due.amount() {
-                return Err(DomainError::Validation(format!(
-                    "payment of {} exceeds the remaining balance of {}",
-                    payment.amount.amount(),
-                    due.amount()
-                )));
-            }
-            let payment = self.payments.record(payment).await?;
-            // Re-read the persisted state, then transition the invoice
-            // to `Paid` when the payment covers the total.
-            let payments = self.payments.list_by_invoice(input.invoice_id).await?;
-            let mut invoice = self.invoices.get(input.invoice_id).await?;
-            if invoice.remaining_due(&payments)?.amount() == 0 {
-                invoice.mark_paid()?;
-                self.invoices.update(invoice).await?;
-            }
+            // Atomic read-check-write: the repository locks the invoice
+            // row, validates coverage against the latest payments, and
+            // marks the invoice paid when covered — all in one
+            // transaction. Concurrent payments serialize on the lock
+            // instead of over-applying (FIX-03).
+            let payment = self.payments.record_guarded(payment, &invoice).await?;
             self.audit_billing(
                 ctx,
                 BILLING_PAYMENT_RECORDED,

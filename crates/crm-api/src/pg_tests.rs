@@ -3512,6 +3512,92 @@ async fn pg_billing_replay_without_grant_is_denied() {
     drop_db(&admin_url, &db_name, pool).await;
 }
 
+#[tokio::test]
+async fn pg_billing_concurrent_payments_do_not_over_apply() {
+    let Some((pool, admin_url, db_name)) = fresh_db().await else {
+        eprintln!(
+            "pg_billing_concurrent_payments_do_not_over_apply: DATABASE_URL not set, skipping"
+        );
+        return;
+    };
+    let router = pg_router(&pool);
+    let profile = uuid::Uuid::new_v4();
+    let (token, _, _) = seed_billing_user(&pool, &router, profile, "biller8@example.com").await;
+    // $100.00 invoice, issued.
+    let invoice_id = seed_invoice_with_line(&router, profile, &token).await;
+    let (status, _) = read_json(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/v1/invoices/{invoice_id}/issue"))
+                    .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .expect("test request builds"),
+            )
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Two $60.00 payments race: the invoice only has $100.00 of
+    // balance, so exactly one must win. The `FOR UPDATE` row lock in
+    // `record_guarded` serializes them; the loser sees the winner's
+    // payment and fails validation instead of over-applying.
+    let pay = || {
+        let body = serde_json::json!({ "amount": { "amount": 6000, "currency": "USD" } });
+        Request::builder()
+            .method("POST")
+            .uri(format!("/api/v1/invoices/{invoice_id}/payments"))
+            .header(header::CONTENT_TYPE, "application/json")
+            .header(header::AUTHORIZATION, format!("Bearer {token}"))
+            .body(Body::from(body.to_string()))
+            .expect("test request builds")
+    };
+    let (first, second) = tokio::join!(
+        read_json(router.clone().oneshot(pay()).await.expect("oneshot")),
+        read_json(router.clone().oneshot(pay()).await.expect("oneshot")),
+    );
+    let (first_status, _) = first;
+    let (second_status, _) = second;
+    let mut statuses = [first_status, second_status];
+    statuses.sort();
+    assert_eq!(
+        statuses,
+        [StatusCode::CREATED, StatusCode::UNPROCESSABLE_ENTITY],
+        "exactly one payment wins the race"
+    );
+
+    // Total applied is $60.00, never $120.00.
+    let (status, listed) = read_json(
+        router
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!("/api/v1/invoices/{invoice_id}/payments"))
+                    .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .expect("test request builds"),
+            )
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let total: i64 = listed["payments"]
+        .as_array()
+        .expect("payments array")
+        .iter()
+        .filter(|p| p["status"] == "Recorded")
+        .map(|p| p["amount"]["amount"].as_i64().expect("amount"))
+        .sum();
+    assert_eq!(total, 6000, "no over-application");
+
+    drop_db(&admin_url, &db_name, pool).await;
+}
+
 fn create_pool_body(profile: uuid::Uuid) -> serde_json::Value {
     serde_json::json!({
         "client_profile_id": profile,
