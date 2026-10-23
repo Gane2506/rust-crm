@@ -3078,6 +3078,440 @@ fn post_campaign_action(campaign_id: &str, action: &str, token: &str) -> Request
         .expect("test request builds")
 }
 
+/// Seeds an active staff user with invoice create/read/update grants
+/// for `profile` (on top of the contact grants from
+/// [`seed_authed_user`]), then logs in over HTTP to obtain a real
+/// bearer token.
+///
+/// Returns `(token, staff_id, agency_id)`.
+async fn seed_billing_user(
+    pool: &PgPool,
+    router: &axum::Router,
+    profile: uuid::Uuid,
+    email: &str,
+) -> (String, StaffId, AgencyId) {
+    let (token, staff_id, agency_id) = seed_authed_user(pool, router, profile, email).await;
+    let grant_repo = PgGrantRepository::new(pool.clone());
+    let scope = Scope::ClientProfile {
+        agency_id,
+        client_profile_id: ClientProfileId::from(profile),
+    };
+    for operation in [Operation::Create, Operation::Read, Operation::Update] {
+        grant_repo
+            .assign(
+                staff_id,
+                Grant {
+                    grant_id: GrantId::new(),
+                    action: Action {
+                        resource: Resource::Invoice,
+                        operation,
+                    },
+                    scope,
+                },
+            )
+            .await
+            .expect("assign invoice grant");
+    }
+    (token, staff_id, agency_id)
+}
+
+fn invoice_body(profile: uuid::Uuid) -> serde_json::Value {
+    serde_json::json!({
+        "client_profile_id": profile,
+        "currency": "USD"
+    })
+}
+
+fn invoice_line_body() -> serde_json::Value {
+    serde_json::json!({
+        "description": "Consulting",
+        "quantity": 1,
+        "unit_price": { "amount": 10000, "currency": "USD" }
+    })
+}
+
+fn payment_body() -> serde_json::Value {
+    serde_json::json!({
+        "amount": { "amount": 5000, "currency": "USD" }
+    })
+}
+
+fn post_invoices(body: serde_json::Value, key: Option<&str>, token: &str) -> Request<Body> {
+    let mut builder = Request::builder()
+        .method("POST")
+        .uri("/api/v1/invoices")
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::AUTHORIZATION, format!("Bearer {token}"));
+    if let Some(key) = key {
+        builder = builder.header(IDEMPOTENCY_KEY_HEADER, key);
+    }
+    builder
+        .body(Body::from(body.to_string()))
+        .expect("test request builds")
+}
+
+fn post_invoice_lines(
+    invoice_id: &str,
+    body: serde_json::Value,
+    key: Option<&str>,
+    token: &str,
+) -> Request<Body> {
+    let mut builder = Request::builder()
+        .method("POST")
+        .uri(format!("/api/v1/invoices/{invoice_id}/lines"))
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::AUTHORIZATION, format!("Bearer {token}"));
+    if let Some(key) = key {
+        builder = builder.header(IDEMPOTENCY_KEY_HEADER, key);
+    }
+    builder
+        .body(Body::from(body.to_string()))
+        .expect("test request builds")
+}
+
+fn post_invoice_payments(
+    invoice_id: &str,
+    body: serde_json::Value,
+    key: Option<&str>,
+    token: &str,
+) -> Request<Body> {
+    let mut builder = Request::builder()
+        .method("POST")
+        .uri(format!("/api/v1/invoices/{invoice_id}/payments"))
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::AUTHORIZATION, format!("Bearer {token}"));
+    if let Some(key) = key {
+        builder = builder.header(IDEMPOTENCY_KEY_HEADER, key);
+    }
+    builder
+        .body(Body::from(body.to_string()))
+        .expect("test request builds")
+}
+
+/// Creates an invoice with one $100.00 line, returning its id.
+async fn seed_invoice_with_line(router: &axum::Router, profile: uuid::Uuid, token: &str) -> String {
+    let (status, invoice) = read_json(
+        router
+            .clone()
+            .oneshot(post_invoices(invoice_body(profile), None, token))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let invoice_id = invoice["invoice_id"]
+        .as_str()
+        .expect("invoice id")
+        .to_owned();
+    let (status, _) = read_json(
+        router
+            .clone()
+            .oneshot(post_invoice_lines(
+                &invoice_id,
+                invoice_line_body(),
+                None,
+                token,
+            ))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    invoice_id
+}
+
+#[tokio::test]
+async fn pg_billing_invoice_create_idempotent() {
+    let Some((pool, admin_url, db_name)) = fresh_db().await else {
+        eprintln!("pg_billing_invoice_create_idempotent: DATABASE_URL not set, skipping");
+        return;
+    };
+    let router = pg_router(&pool);
+    let profile = uuid::Uuid::new_v4();
+    let (token, _, _) = seed_billing_user(&pool, &router, profile, "biller@example.com").await;
+
+    let key = IdempotencyKey::generate().to_string();
+    let body = invoice_body(profile);
+    let (first_status, first) = read_json(
+        router
+            .clone()
+            .oneshot(post_invoices(body.clone(), Some(&key), &token))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    let (second_status, second) = read_json(
+        router
+            .clone()
+            .oneshot(post_invoices(body, Some(&key), &token))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(first_status, StatusCode::CREATED);
+    assert_eq!(second_status, StatusCode::CREATED);
+    assert_eq!(first, second, "replay returns the identical response");
+
+    // Exactly one invoice exists for the profile.
+    let (status, listed) = read_json(
+        router
+            .oneshot(get(
+                format!("/api/v1/invoices?client_profile_id={profile}"),
+                &token,
+            ))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(listed["total"], 1, "one invoice despite two posts");
+
+    drop_db(&admin_url, &db_name, pool).await;
+}
+
+#[tokio::test]
+async fn pg_billing_payment_record_idempotent() {
+    let Some((pool, admin_url, db_name)) = fresh_db().await else {
+        eprintln!("pg_billing_payment_record_idempotent: DATABASE_URL not set, skipping");
+        return;
+    };
+    let router = pg_router(&pool);
+    let profile = uuid::Uuid::new_v4();
+    let (token, _, _) = seed_billing_user(&pool, &router, profile, "biller2@example.com").await;
+    let invoice_id = seed_invoice_with_line(&router, profile, &token).await;
+
+    let key = IdempotencyKey::generate().to_string();
+    let body = payment_body();
+    let (first_status, first) = read_json(
+        router
+            .clone()
+            .oneshot(post_invoice_payments(
+                &invoice_id,
+                body.clone(),
+                Some(&key),
+                &token,
+            ))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    let (second_status, second) = read_json(
+        router
+            .clone()
+            .oneshot(post_invoice_payments(&invoice_id, body, Some(&key), &token))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(first_status, StatusCode::CREATED);
+    assert_eq!(second_status, StatusCode::CREATED);
+    assert_eq!(first, second, "replay returns the identical response");
+
+    // Exactly one payment exists for the invoice.
+    let (status, listed) = read_json(
+        router
+            .oneshot(get(
+                format!("/api/v1/invoices/{invoice_id}/payments"),
+                &token,
+            ))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(listed["total"], 1, "one payment despite two posts");
+
+    drop_db(&admin_url, &db_name, pool).await;
+}
+
+#[tokio::test]
+async fn pg_billing_idempotency_key_different_body_conflicts() {
+    let Some((pool, admin_url, db_name)) = fresh_db().await else {
+        eprintln!(
+            "pg_billing_idempotency_key_different_body_conflicts: DATABASE_URL not set, skipping"
+        );
+        return;
+    };
+    let router = pg_router(&pool);
+    let profile = uuid::Uuid::new_v4();
+    let (token, _, _) = seed_billing_user(&pool, &router, profile, "biller3@example.com").await;
+
+    let key = IdempotencyKey::generate().to_string();
+    let (status, _) = read_json(
+        router
+            .clone()
+            .oneshot(post_invoices(invoice_body(profile), Some(&key), &token))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let mut other_body = invoice_body(profile);
+    other_body["currency"] = serde_json::json!("EUR");
+    let (status, problem) = read_json(
+        router
+            .oneshot(post_invoices(other_body, Some(&key), &token))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(problem["status"], 409);
+
+    drop_db(&admin_url, &db_name, pool).await;
+}
+
+#[tokio::test]
+async fn pg_billing_idempotency_key_reuse_across_routes_conflicts() {
+    let Some((pool, admin_url, db_name)) = fresh_db().await else {
+        eprintln!("pg_billing_idempotency_key_reuse_across_routes_conflicts: DATABASE_URL not set, skipping");
+        return;
+    };
+    let router = pg_router(&pool);
+    let profile = uuid::Uuid::new_v4();
+    let (token, _, _) = seed_billing_user(&pool, &router, profile, "biller4@example.com").await;
+    let invoice_id = seed_invoice_with_line(&router, profile, &token).await;
+
+    // The same key on two different billing routes is a conflict, not a
+    // replay: the fingerprint is scoped per route, so reusing a key across
+    // operations surfaces a 409 instead of silently replaying the wrong
+    // response. Keys identify a single operation.
+    let key = IdempotencyKey::generate().to_string();
+    let (status, _) = read_json(
+        router
+            .clone()
+            .oneshot(post_invoices(invoice_body(profile), Some(&key), &token))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, payment) = read_json(
+        router
+            .oneshot(post_invoice_payments(
+                &invoice_id,
+                payment_body(),
+                Some(&key),
+                &token,
+            ))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CONFLICT,
+        "same key on a different route is a conflict: {payment}"
+    );
+
+    drop_db(&admin_url, &db_name, pool).await;
+}
+
+#[tokio::test]
+async fn pg_billing_malformed_idempotency_key_returns_422() {
+    let Some((pool, admin_url, db_name)) = fresh_db().await else {
+        eprintln!(
+            "pg_billing_malformed_idempotency_key_returns_422: DATABASE_URL not set, skipping"
+        );
+        return;
+    };
+    let router = pg_router(&pool);
+    let profile = uuid::Uuid::new_v4();
+    let (token, _, _) = seed_billing_user(&pool, &router, profile, "biller5@example.com").await;
+
+    let (status, _) = read_json(
+        router
+            .oneshot(post_invoices(
+                invoice_body(profile),
+                Some("not-a-uuid"),
+                &token,
+            ))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+
+    drop_db(&admin_url, &db_name, pool).await;
+}
+
+#[tokio::test]
+async fn pg_billing_issue_invoice_idempotent() {
+    let Some((pool, admin_url, db_name)) = fresh_db().await else {
+        eprintln!("pg_billing_issue_invoice_idempotent: DATABASE_URL not set, skipping");
+        return;
+    };
+    let router = pg_router(&pool);
+    let profile = uuid::Uuid::new_v4();
+    let (token, _, _) = seed_billing_user(&pool, &router, profile, "biller6@example.com").await;
+    let invoice_id = seed_invoice_with_line(&router, profile, &token).await;
+
+    let key = IdempotencyKey::generate().to_string();
+    let issue = || {
+        Request::builder()
+            .method("POST")
+            .uri(format!("/api/v1/invoices/{invoice_id}/issue"))
+            .header(header::AUTHORIZATION, format!("Bearer {token}"))
+            .header(IDEMPOTENCY_KEY_HEADER, &key)
+            .body(Body::empty())
+            .expect("test request builds")
+    };
+    let (first_status, first) =
+        read_json(router.clone().oneshot(issue()).await.expect("oneshot")).await;
+    let (second_status, second) = read_json(router.oneshot(issue()).await.expect("oneshot")).await;
+    assert_eq!(first_status, StatusCode::OK);
+    assert_eq!(second_status, StatusCode::OK);
+    assert_eq!(first, second, "replay returns the identical response");
+    assert_eq!(first["status"], "Issued");
+
+    drop_db(&admin_url, &db_name, pool).await;
+}
+
+#[tokio::test]
+async fn pg_billing_replay_without_grant_is_denied() {
+    let Some((pool, admin_url, db_name)) = fresh_db().await else {
+        eprintln!("pg_billing_replay_without_grant_is_denied: DATABASE_URL not set, skipping");
+        return;
+    };
+    let router = pg_router(&pool);
+    let profile = uuid::Uuid::new_v4();
+    let (token, _, _) = seed_billing_user(&pool, &router, profile, "biller7@example.com").await;
+    // A second user with no invoice grants at all.
+    let (unprivileged, _, _) =
+        seed_authed_user(&pool, &router, profile, "intruder@example.com").await;
+
+    // Authorized user creates an invoice with a key.
+    let key = IdempotencyKey::generate().to_string();
+    let (status, _) = read_json(
+        router
+            .clone()
+            .oneshot(post_invoices(invoice_body(profile), Some(&key), &token))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    // The unprivileged user replays the same key+body: authorization runs
+    // before the replay check, so this is denied, not replayed.
+    let (status, _) = read_json(
+        router
+            .oneshot(post_invoices(
+                invoice_body(profile),
+                Some(&key),
+                &unprivileged,
+            ))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    drop_db(&admin_url, &db_name, pool).await;
+}
+
 fn create_pool_body(profile: uuid::Uuid) -> serde_json::Value {
     serde_json::json!({
         "client_profile_id": profile,
