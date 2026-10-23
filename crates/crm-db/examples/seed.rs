@@ -1197,10 +1197,16 @@ async fn seed_admin(pool: &sqlx::PgPool) -> Result<bool, DomainError> {
 const SEED_DEV_ENV: &str = "CRM_SEED_DEV";
 
 /// Seeds the demo staff user with a dev-only password credential and
-/// grants for the demo profile. Idempotent: an existing email is skipped.
+/// grants for the demo profile. Idempotent: an existing email is skipped
+/// for user creation, but missing grants are still added (FIX-05).
 async fn seed_staff(pool: &sqlx::PgPool, agency_id: AgencyId) -> Result<bool, DomainError> {
     let staff_repo = PgStaffRepository::new(pool.clone());
-    if staff_repo.find_by_email(DEMO_STAFF_EMAIL).await?.is_some() {
+    let grant_repo = PgGrantRepository::new(pool.clone());
+    if let Some(user) = staff_repo.find_by_email(DEMO_STAFF_EMAIL).await? {
+        // Existing demo user (e.g. from an earlier seed): ensure the
+        // profile/asset/audit grants are present without duplicating
+        // anything already assigned.
+        ensure_profile_asset_audit_grants(&grant_repo, user.staff_id, agency_id).await?;
         return Ok(false);
     }
     let now = chrono::Utc::now();
@@ -1218,7 +1224,6 @@ async fn seed_staff(pool: &sqlx::PgPool, agency_id: AgencyId) -> Result<bool, Do
     let user = staff_repo.create(user).await?;
 
     // Grants for the demo profile: full contact lifecycle for the demo.
-    let grant_repo = PgGrantRepository::new(pool.clone());
     let profile =
         ClientProfileId::from(Uuid::parse_str(DEMO_PROFILE_ID).expect("demo profile id parses"));
     let scope = Scope::ClientProfile {
@@ -1412,7 +1417,60 @@ async fn seed_staff(pool: &sqlx::PgPool, agency_id: AgencyId) -> Result<bool, Do
             )
             .await?;
     }
+    // Grants for profiles, assets, and the audit log (FIX-05): the
+    // demo user needs these to open the Profiles, Assets, and Audit
+    // pages out of the box (they 403 without grants).
+    ensure_profile_asset_audit_grants(&grant_repo, user.staff_id, agency_id).await?;
     Ok(true)
+}
+
+/// Ensures the demo user holds the profile/asset/audit grants (FIX-05).
+/// Idempotent: grants the user already holds are skipped, so re-running
+/// the seed never duplicates them.
+async fn ensure_profile_asset_audit_grants(
+    grant_repo: &PgGrantRepository,
+    staff_id: StaffId,
+    agency_id: AgencyId,
+) -> Result<(), DomainError> {
+    let existing = grant_repo.list_for_staff(staff_id).await?;
+    let profile =
+        ClientProfileId::from(Uuid::parse_str(DEMO_PROFILE_ID).expect("demo profile id parses"));
+    let profile_scope = Scope::ClientProfile {
+        agency_id,
+        client_profile_id: profile,
+    };
+    let agency_scope = Scope::Agency { agency_id };
+    // Profiles and the audit log are agency-scoped; assets are
+    // profile-scoped (matching the API authorization).
+    for (resource, operation, scope) in [
+        (Resource::ClientProfile, Operation::Read, agency_scope),
+        (Resource::ClientProfile, Operation::Create, agency_scope),
+        (Resource::Asset, Operation::Read, profile_scope),
+        (Resource::Asset, Operation::Create, profile_scope),
+        (Resource::AuditLog, Operation::Read, agency_scope),
+    ] {
+        let has = existing.iter().any(|grant| {
+            grant.action.resource == resource
+                && grant.action.operation == operation
+                && grant.scope == scope
+        });
+        if !has {
+            grant_repo
+                .assign(
+                    staff_id,
+                    Grant {
+                        grant_id: GrantId::new(),
+                        action: Action {
+                            resource,
+                            operation,
+                        },
+                        scope,
+                    },
+                )
+                .await?;
+        }
+    }
+    Ok(())
 }
 
 #[tokio::main]
