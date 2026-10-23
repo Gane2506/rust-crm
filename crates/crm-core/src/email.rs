@@ -99,6 +99,20 @@ where
     ) -> Result<EmailMessage, DomainError> {
         Self::check_scope(ctx, input.client_profile_id)?;
 
+        // Idempotent replay: a non-empty key that was already stored
+        // returns the original message instead of sending twice.
+        // Campaign launch mints deterministic keys so a re-launch after
+        // a crash resumes without re-sending to already-mailed contacts.
+        if !input.idempotency_key.is_empty() {
+            if let Some(existing) = self
+                .messages
+                .find_by_idempotency_key(input.client_profile_id, &input.idempotency_key)
+                .await?
+            {
+                return Ok(existing);
+            }
+        }
+
         // Validate and create the draft.
         let mut message = EmailMessage::new_outbound(
             input.client_profile_id,
@@ -111,6 +125,11 @@ where
             input.body_text,
             input.body_html,
         )?;
+        message.idempotency_key = if input.idempotency_key.is_empty() {
+            None
+        } else {
+            Some(input.idempotency_key)
+        };
         message.advance_to(crm_domain::email::EmailStatus::Queued)?;
         let mut message = self.messages.create(message).await?;
 

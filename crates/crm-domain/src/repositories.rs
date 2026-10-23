@@ -551,6 +551,17 @@ pub trait EmailMessageRepository {
         client_profile_id: ClientProfileId,
         provider_message_id: &'a str,
     ) -> impl Future<Output = Result<Option<EmailMessage>, DomainError>> + Send + 'a;
+
+    /// Finds a message in one client profile by its caller-supplied
+    /// idempotency key. Returns `None` when no message was stored with
+    /// the key. Used by [`EmailService::send`](crate::services::EmailService::send)
+    /// to return the original message on replay instead of sending a
+    /// duplicate (campaign launch crash-recovery depends on this).
+    fn find_by_idempotency_key<'a>(
+        &'a self,
+        client_profile_id: ClientProfileId,
+        idempotency_key: &'a str,
+    ) -> impl Future<Output = Result<Option<EmailMessage>, DomainError>> + Send + 'a;
 }
 
 /// Persistence port for [`EmailThread`] records.

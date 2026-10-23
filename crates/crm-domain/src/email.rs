@@ -162,6 +162,13 @@ pub struct EmailMessage {
     /// the provider accepts the message. Used for idempotent retries
     /// and reply correlation.
     pub provider_message_id: Option<String>,
+    /// Caller-supplied idempotency key for this send. When set,
+    /// [`EmailService::send`](crate::services::EmailService::send)
+    /// returns the already-stored message instead of sending a
+    /// duplicate. Campaign launch mints deterministic keys
+    /// (`campaign-{id}-step-{id}-contact-{id}`) so a re-launch after a
+    /// crash resumes without re-sending.
+    pub idempotency_key: Option<String>,
     /// When the message was sent (outbound) or received (inbound).
     pub sent_at: Option<DateTime<Utc>>,
     /// When the record was created.
@@ -269,6 +276,7 @@ impl EmailMessage {
             direction: EmailDirection::Outbound,
             status: EmailStatus::Draft,
             provider_message_id: None,
+            idempotency_key: None,
             sent_at: None,
             created_at: Utc::now(),
         })
@@ -324,6 +332,7 @@ impl EmailMessage {
             direction: EmailDirection::Inbound,
             status: EmailStatus::Delivered,
             provider_message_id,
+            idempotency_key: None,
             sent_at: Some(received_at),
             created_at: Utc::now(),
         })

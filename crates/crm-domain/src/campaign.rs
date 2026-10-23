@@ -212,6 +212,14 @@ impl Campaign {
 
     /// Launches the campaign: `Draft → Running` or `Scheduled → Running`.
     ///
+    /// A campaign that is already `Running` may be launched again as a
+    /// resume: the transition is idempotent (`Running → Running`) so a
+    /// re-launch after a crash continues delivery instead of erroring.
+    /// The service layer skips recipients whose deterministic
+    /// idempotency keys were already sent, so a resume never
+    /// double-sends. The state machine stays forward-only: terminal
+    /// states still reject launch.
+    ///
     /// Requires at least one step — `step_count` is the number of
     /// [`CampaignStep`]s attached to the campaign, supplied by the
     /// service layer (the domain aggregate does not own the step list).
@@ -220,10 +228,10 @@ impl Campaign {
     pub fn launch(&mut self, step_count: usize) -> Result<(), DomainError> {
         if !matches!(
             self.delivery_state,
-            DeliveryState::Draft | DeliveryState::Scheduled
+            DeliveryState::Draft | DeliveryState::Scheduled | DeliveryState::Running
         ) {
             return Err(DomainError::Validation(format!(
-                "only a draft or scheduled campaign can launch (state: {:?})",
+                "only a draft, scheduled, or running (resume) campaign can launch (state: {:?})",
                 self.delivery_state
             )));
         }
@@ -726,8 +734,10 @@ mod tests {
         assert!(campaign.launch(0).is_err());
         campaign.launch(2).expect("launch with steps");
         assert_eq!(campaign.delivery_state, DeliveryState::Running);
-        // Cannot launch twice.
-        assert!(campaign.launch(2).is_err());
+        // Re-launching a Running campaign is a resume (idempotent),
+        // not an error — the service layer skips already-sent recipients.
+        campaign.launch(2).expect("re-launch resumes");
+        assert_eq!(campaign.delivery_state, DeliveryState::Running);
 
         campaign.pause().expect("pause");
         assert_eq!(campaign.delivery_state, DeliveryState::Paused);

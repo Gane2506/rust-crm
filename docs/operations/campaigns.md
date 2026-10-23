@@ -195,15 +195,18 @@ CRM_SEED_DEV=1 DATABASE_URL=postgres://postgres:postgres@localhost:5432/crm_test
 
 ## Known limitations
 
-- **Launch is not idempotent.** The deterministic idempotency keys
-  (`campaign-{id}-step-{id}-contact-{id}`) are generated but never
-  read — `EmailServiceImpl::send` ignores `NewEmailMessage.idempotency_key`
-  (replay protection lives in the HTTP layer's `IdempotencyStore`,
-  which the campaign launch path does not use). A crash mid-launch
-  leaves the campaign in its pre-launch state (the row is only
-  updated to `Running` after all sends), so re-launching re-sends
-  to contacts already mailed. Do not retry a launch that may have
-  partially sent; reconcile via `email_messages` first.
+- **Launch is crash-safe and idempotent (FIX-01).** Each step email
+  is sent with a deterministic idempotency key
+  (`campaign-{id}-step-{id}-contact-{id}`), persisted on
+  `email_messages.idempotency_key` (unique per client profile).
+  `EmailServiceImpl::send` returns the already-stored message when the
+  key was seen before, instead of sending a duplicate. The campaign
+  row is transitioned to `Running` and persisted *before* the first
+  send, and re-launching a `Running` campaign resumes (the domain
+  allows the idempotent `Running → Running` transition), skipping
+  already-sent recipients. Residual race: two launches racing the
+  check-then-create window collide on the unique index instead of
+  double-sending (one wins, the other records a storage error).
 - **Call steps are not executed.** No telephony integration
   exists; `Call` steps are recorded and skipped at launch.
 - **Wait steps are no-ops.** There is no scheduling daemon;

@@ -266,6 +266,13 @@ where
         let steps = self.campaigns.list_steps(campaign_id).await?;
         campaign.launch(steps.len())?;
 
+        // Persist `Running` BEFORE the first send. A crash mid-launch
+        // must leave the row reflecting reality: a re-launch then
+        // resumes (the domain allows `Running → Running`) and the
+        // idempotency keys on each step email skip already-sent
+        // recipients instead of duplicating them.
+        let campaign = self.campaigns.update(campaign).await?;
+
         // Resolve the audience.
         let pool = self.resolve_pool(&campaign).await?;
         let members: Vec<ContactId> = pool.map(|p| p.members).unwrap_or_default();
