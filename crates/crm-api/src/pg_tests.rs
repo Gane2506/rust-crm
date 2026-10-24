@@ -3361,6 +3361,144 @@ async fn pg_billing_concurrent_same_key_creates_one_invoice() {
 }
 
 #[tokio::test]
+async fn pg_billing_stale_claim_expires_and_self_heals() {
+    let Some((pool, admin_url, db_name)) = fresh_db().await else {
+        eprintln!("pg_billing_stale_claim_expires_and_self_heals: DATABASE_URL not set, skipping");
+        return;
+    };
+    let router = pg_router(&pool);
+    let profile = uuid::Uuid::new_v4();
+    let (token, _, _) = seed_billing_user(&pool, &router, profile, "biller-exp@example.com").await;
+
+    // A crashed winner's claim: a JSON-null sentinel backdated far
+    // past the claim TTL, with an arbitrary fingerprint (the crashed
+    // request's). Without expiry this key would be poisoned forever.
+    let idem_key = IdempotencyKey::generate();
+    let key = idem_key.to_string();
+    sqlx::query(
+        "INSERT INTO idempotency_keys (idempotency_key, fingerprint, response, created_at)
+         VALUES ($1, $2, 'null'::jsonb, now() - interval '1 hour')",
+    )
+    .bind(idem_key.as_uuid())
+    .bind(12345i64)
+    .execute(&pool)
+    .await
+    .expect("stale sentinel inserts");
+
+    // The retry wins the claim (no 409), executes the write, and
+    // records the response — the key is healed, not poisoned.
+    let body = invoice_body(profile);
+    let (status, created) = read_json(
+        router
+            .clone()
+            .oneshot(post_invoices(body.clone(), Some(&key), &token))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "stale claim expires, retry wins"
+    );
+
+    // A replay of the healed key returns the recorded response.
+    let (status, replayed) = read_json(
+        router
+            .clone()
+            .oneshot(post_invoices(body, Some(&key), &token))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(
+        created, replayed,
+        "healed key replays the recorded response"
+    );
+
+    // Exactly one invoice exists for the profile.
+    let (status, listed) = read_json(
+        router
+            .oneshot(get(
+                format!("/api/v1/invoices?client_profile_id={profile}"),
+                &token,
+            ))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(listed["total"], 1, "one invoice despite the stale sentinel");
+
+    drop_db(&admin_url, &db_name, pool).await;
+}
+
+#[tokio::test]
+async fn pg_billing_old_recorded_response_never_expires() {
+    let Some((pool, admin_url, db_name)) = fresh_db().await else {
+        eprintln!("pg_billing_old_recorded_response_never_expires: DATABASE_URL not set, skipping");
+        return;
+    };
+    let router = pg_router(&pool);
+    let profile = uuid::Uuid::new_v4();
+    let (token, _, _) = seed_billing_user(&pool, &router, profile, "biller-old@example.com").await;
+
+    // A completed request records its response under the key.
+    let idem_key = IdempotencyKey::generate();
+    let key = idem_key.to_string();
+    let body = invoice_body(profile);
+    let (status, created) = read_json(
+        router
+            .clone()
+            .oneshot(post_invoices(body.clone(), Some(&key), &token))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    // Age the recorded row far past the claim TTL: expiry must never
+    // touch a recorded response, only JSON-null sentinels.
+    sqlx::query(
+        "UPDATE idempotency_keys SET created_at = now() - interval '1 hour'
+         WHERE idempotency_key = $1",
+    )
+    .bind(idem_key.as_uuid())
+    .execute(&pool)
+    .await
+    .expect("recorded row backdates");
+
+    // The replay still returns the stored response — no new invoice,
+    // no 409.
+    let (status, replayed) = read_json(
+        router
+            .clone()
+            .oneshot(post_invoices(body, Some(&key), &token))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(created, replayed, "old recorded response still replays");
+
+    let (status, listed) = read_json(
+        router
+            .oneshot(get(
+                format!("/api/v1/invoices?client_profile_id={profile}"),
+                &token,
+            ))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(listed["total"], 1, "one invoice despite the aged row");
+
+    drop_db(&admin_url, &db_name, pool).await;
+}
+
+#[tokio::test]
 async fn pg_billing_payment_record_idempotent() {
     let Some((pool, admin_url, db_name)) = fresh_db().await else {
         eprintln!("pg_billing_payment_record_idempotent: DATABASE_URL not set, skipping");

@@ -43,6 +43,7 @@ use crm_core::memory::{
 use crm_core::{IdempotencyKey, Pagination};
 use crm_db::postgres::{
     PgAuditRepository, PgAuditService, PgContactRepository, PgIdempotencyStore,
+    IDEMPOTENCY_CLAIM_TTL,
 };
 use crm_domain::contact::Contact;
 use crm_domain::error::DomainError;
@@ -168,6 +169,12 @@ pub trait IdempotencyStore: Clone + Send + Sync + 'static {
     /// requests with the same key cannot both win the claim, so at most
     /// one reaches the write.
     ///
+    /// A claim row whose winner crashed before recording expires after
+    /// [`IDEMPOTENCY_CLAIM_TTL`] (see the `PgIdempotencyStore` claim):
+    /// a later retry with the same key wins the claim instead of
+    /// finding the key permanently poisoned. Recorded responses never
+    /// expire.
+    ///
     /// Returns `Ok(true)` if this request won the claim (proceed with
     /// the write, then persist the response with [`record`]);
     /// `Ok(false)` if the key was already claimed by a concurrent
@@ -191,13 +198,20 @@ pub trait IdempotencyStore: Clone + Send + Sync + 'static {
     ) -> impl Future<Output = Result<(), DomainError>> + Send;
 }
 
+/// One idempotency entry: request fingerprint, recorded response body
+/// (JSON null = claimed but not yet recorded), and insertion time for
+/// stale-claim expiry.
+type MemoryIdempotencyEntry = (u64, serde_json::Value, std::time::Instant);
+
 /// In-memory idempotency store for the vertical-slice unit tests.
 ///
 /// Entries do not survive restarts; the production server persists them
-/// with [`PgIdempotencyStore`].
+/// with [`PgIdempotencyStore`]. Each entry tracks its insertion time so
+/// stale claim sentinels expire on the same [`IDEMPOTENCY_CLAIM_TTL`]
+/// bound as the Postgres store.
 #[derive(Debug, Clone, Default)]
 pub struct MemoryIdempotencyStore {
-    inner: Arc<RwLock<HashMap<IdempotencyKey, (u64, serde_json::Value)>>>,
+    inner: Arc<RwLock<HashMap<IdempotencyKey, MemoryIdempotencyEntry>>>,
 }
 
 impl IdempotencyStore for MemoryIdempotencyStore {
@@ -208,14 +222,14 @@ impl IdempotencyStore for MemoryIdempotencyStore {
     ) -> Result<Option<serde_json::Value>, DomainError> {
         match self.inner.read().await.get(key) {
             None => Ok(None),
-            Some((stored_fingerprint, body)) if *stored_fingerprint == fingerprint => {
-                // A JSON null body is a claim row, not a recorded
-                // response: the winner has not finished writing yet.
-                if body.is_null() {
-                    Ok(None)
-                } else {
-                    Ok(Some(body.clone()))
-                }
+            // A JSON null body is a claim row, not a recorded response:
+            // the winner has not finished writing yet, so there is no
+            // recorded body to conflict with — the fingerprint check
+            // below applies only to recorded responses. A stale
+            // sentinel heals in `claim`; a fresh one loses there.
+            Some((_, body, _)) if body.is_null() => Ok(None),
+            Some((stored_fingerprint, body, _)) if *stored_fingerprint == fingerprint => {
+                Ok(Some(body.clone()))
             }
             Some(_) => Err(DomainError::Conflict(
                 "idempotency key was already used with a different request body".to_owned(),
@@ -224,18 +238,45 @@ impl IdempotencyStore for MemoryIdempotencyStore {
     }
 
     async fn claim(&self, key: &IdempotencyKey, fingerprint: u64) -> Result<bool, DomainError> {
-        // The write lock spans check-and-insert, so the claim is atomic
-        // in-process: two concurrent claims cannot both win.
+        // The write lock spans check-and-expire-and-insert, so the
+        // claim is atomic in-process: two concurrent claims cannot
+        // both win.
         let mut map = self.inner.write().await;
         match map.get(key) {
             None => {
                 // Claim row: JSON null sentinel means "claimed,
                 // response not yet recorded". `lookup` treats it as
                 // `Ok(None)`; `record` overwrites it with the real body.
-                map.insert(*key, (fingerprint, serde_json::Value::Null));
+                map.insert(
+                    *key,
+                    (
+                        fingerprint,
+                        serde_json::Value::Null,
+                        std::time::Instant::now(),
+                    ),
+                );
                 Ok(true)
             }
-            Some((stored_fingerprint, _)) if *stored_fingerprint != fingerprint => {
+            // A stale sentinel is a winner that crashed between claim
+            // and record: expire it and win the claim, mirroring the
+            // Postgres store's TTL expiry. This arm runs before the
+            // fingerprint check deliberately — a crashed winner's key
+            // must heal for a retry, and recorded responses are never
+            // expired (the `is_null` guard).
+            Some((_, body, claimed_at))
+                if body.is_null() && claimed_at.elapsed() >= IDEMPOTENCY_CLAIM_TTL =>
+            {
+                map.insert(
+                    *key,
+                    (
+                        fingerprint,
+                        serde_json::Value::Null,
+                        std::time::Instant::now(),
+                    ),
+                );
+                Ok(true)
+            }
+            Some((stored_fingerprint, _, _)) if *stored_fingerprint != fingerprint => {
                 Err(DomainError::Conflict(
                     "idempotency key was already used with a different request body".to_owned(),
                 ))
@@ -250,7 +291,10 @@ impl IdempotencyStore for MemoryIdempotencyStore {
         fingerprint: u64,
         body: serde_json::Value,
     ) -> Result<(), DomainError> {
-        self.inner.write().await.insert(key, (fingerprint, body));
+        self.inner
+            .write()
+            .await
+            .insert(key, (fingerprint, body, std::time::Instant::now()));
         Ok(())
     }
 }
@@ -263,15 +307,13 @@ impl IdempotencyStore for PgIdempotencyStore {
     ) -> Result<Option<serde_json::Value>, DomainError> {
         match self.get(key).await? {
             None => Ok(None),
-            Some((stored_fingerprint, body)) if stored_fingerprint == fingerprint => {
-                // A JSON null body is a claim row, not a recorded
-                // response: the winner has not finished writing yet.
-                if body.is_null() {
-                    Ok(None)
-                } else {
-                    Ok(Some(body))
-                }
-            }
+            // A JSON null body is a claim row, not a recorded response:
+            // the winner has not finished writing yet, so there is no
+            // recorded body to conflict with — the fingerprint check
+            // below applies only to recorded responses. A stale
+            // sentinel heals in `claim`; a fresh one loses there.
+            Some((_, body)) if body.is_null() => Ok(None),
+            Some((stored_fingerprint, body)) if stored_fingerprint == fingerprint => Ok(Some(body)),
             Some(_) => Err(DomainError::Conflict(
                 "idempotency key was already used with a different request body".to_owned(),
             )),
@@ -482,8 +524,11 @@ where
                 }
             }
             // Winner never recorded (crashed mid-write, or slower than
-            // the window): 409, not a duplicate write. The client
-            // retries with a fresh key.
+            // the window): 409, not a duplicate write. The key is not
+            // permanently poisoned — once the claim outlives its TTL,
+            // a later retry with the same key expires the stale
+            // sentinel and wins the claim. The client retries with a
+            // fresh key, or retries the same key after the TTL.
             Err(Box::new(problem_response(
                 StatusCode::CONFLICT,
                 "Idempotency conflict",
