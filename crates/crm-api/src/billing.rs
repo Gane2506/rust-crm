@@ -139,8 +139,12 @@ fn fingerprint(route: &str, payload: &impl Serialize) -> u64 {
 /// by the atomic claim in `claim_or_replay`: concurrent requests with
 /// the same key cannot both reach the write, and this `record`
 /// overwrites the winner's claim row with the real response.
-async fn record_response<I>(store: &I, key: IdempotencyKey, fp: u64, body: serde_json::Value)
-where
+pub(crate) async fn record_response<I>(
+    store: &I,
+    key: IdempotencyKey,
+    fp: u64,
+    body: serde_json::Value,
+) where
     I: IdempotencyStore,
 {
     if let Err(error) = store.record(key, fp, body).await {

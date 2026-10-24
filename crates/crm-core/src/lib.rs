@@ -75,6 +75,11 @@ pub mod feed;
 /// [`billing`](crm_domain::billing) domain.
 pub mod billing;
 
+/// Branding service: agency theme reads (empty theme at version 0 when
+/// never set) and writes with the pinned audit event, over the
+/// [`branding`](crm_domain::branding) domain.
+pub mod branding;
+
 /// Contract signing service: template rendering, signature
 /// collection with forensic evidence, and the payment gate over the
 /// [`signing`](crm_domain::signing) domain and the

@@ -4545,3 +4545,203 @@ async fn pg_maintenance_mode_blocks_writes_not_reads() {
 
     drop_db(&admin_url, &db_name, pool).await;
 }
+
+/// Seeds a staff user with `AgencySettings:Manage` at agency scope and
+/// logs them in, for the branding endpoints (HARD-02).
+async fn seed_branding_admin(pool: &PgPool, router: &axum::Router, email: &str) -> String {
+    let agency_id = AgencyId::new();
+    let now = chrono::Utc::now();
+    let phc = hash_password(TEST_PASSWORD.as_bytes())
+        .await
+        .expect("hash test password");
+    let staff_id = StaffId::new();
+    PgStaffRepository::new(pool.clone())
+        .create(StaffUser {
+            staff_id,
+            agency_id,
+            email: email.to_owned(),
+            display_name: "Branding Admin".to_owned(),
+            status: StaffStatus::Active,
+            credential: Some(
+                PasswordCredential::new(phc, now).expect("test credential is PHC-shaped"),
+            ),
+            created_at: now,
+            updated_at: now,
+        })
+        .await
+        .expect("create staff user");
+    PgGrantRepository::new(pool.clone())
+        .assign(
+            staff_id,
+            Grant {
+                grant_id: GrantId::new(),
+                action: Action {
+                    resource: Resource::AgencySettings,
+                    operation: Operation::Manage,
+                },
+                scope: Scope::Agency { agency_id },
+            },
+        )
+        .await
+        .expect("assign branding grant");
+    let (status, body) = read_json(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/auth/login")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        serde_json::json!({ "email": email, "password": TEST_PASSWORD })
+                            .to_string(),
+                    ))
+                    .expect("login request builds"),
+            )
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "seed login must succeed");
+    body["token"].as_str().expect("token in body").to_owned()
+}
+
+fn put_branding(body: serde_json::Value, key: &str, token: &str) -> Request<Body> {
+    Request::builder()
+        .method("PUT")
+        .uri("/api/v1/branding")
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .header(IDEMPOTENCY_KEY_HEADER, key)
+        .body(Body::from(body.to_string()))
+        .expect("test request builds")
+}
+
+/// Branding idempotency (HARD-02): the same Idempotency-Key twice
+/// returns the stored response without bumping the version again.
+#[tokio::test]
+async fn pg_branding_idempotent_replay_does_not_bump_version() {
+    let Some((pool, admin_url, db_name)) = fresh_db().await else {
+        eprintln!(
+            "pg_branding_idempotent_replay_does_not_bump_version: DATABASE_URL not set, skipping"
+        );
+        return;
+    };
+    let router = pg_router(&pool);
+    let token = seed_branding_admin(&pool, &router, "brand@example.com").await;
+
+    let key = IdempotencyKey::generate().to_string();
+    let body = serde_json::json!({ "primary": "oklch(0.55 0.2 250)" });
+    let (first_status, first) = read_json(
+        router
+            .clone()
+            .oneshot(put_branding(body.clone(), &key, &token))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(first_status, StatusCode::OK, "first branding write");
+    assert_eq!(first["version"], 1, "first write creates version 1");
+
+    // Same key + same body: stored response, no version bump.
+    let (second_status, second) = read_json(
+        router
+            .clone()
+            .oneshot(put_branding(body, &key, &token))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(second_status, StatusCode::OK, "replay returns 200");
+    assert_eq!(
+        second, first,
+        "replay returns the identical stored response"
+    );
+
+    let (status, current) = read_json(
+        router
+            .clone()
+            .oneshot(get_unauthenticated("/api/v1/branding".to_string()))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "branding read");
+    assert_eq!(current["version"], 1, "version did not bump on replay");
+
+    // A fresh key still writes: version 2.
+    let fresh_key = IdempotencyKey::generate().to_string();
+    let (status, third) = read_json(
+        router
+            .clone()
+            .oneshot(put_branding(
+                serde_json::json!({ "primary": "oklch(0.6 0.2 250)" }),
+                &fresh_key,
+                &token,
+            ))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "fresh key writes");
+    assert_eq!(third["version"], 2, "fresh key bumps the version");
+
+    drop_db(&admin_url, &db_name, pool).await;
+}
+
+/// Branding concurrent idempotency (HARD-02): two simultaneous updates
+/// with the same key produce exactly one version bump; the loser
+/// replays the winner's response.
+#[tokio::test]
+async fn pg_branding_concurrent_same_key_bumps_once() {
+    let Some((pool, admin_url, db_name)) = fresh_db().await else {
+        eprintln!("pg_branding_concurrent_same_key_bumps_once: DATABASE_URL not set, skipping");
+        return;
+    };
+    let router = pg_router(&pool);
+    let token = seed_branding_admin(&pool, &router, "brand2@example.com").await;
+
+    let key = IdempotencyKey::generate().to_string();
+    let body = serde_json::json!({ "primary": "oklch(0.55 0.2 250)" });
+    let (first, second) = tokio::join!(
+        read_json(
+            router
+                .clone()
+                .oneshot(put_branding(body.clone(), &key, &token))
+                .await
+                .expect("oneshot")
+        ),
+        read_json(
+            router
+                .clone()
+                .oneshot(put_branding(body, &key, &token))
+                .await
+                .expect("oneshot")
+        ),
+    );
+    let (first_status, first) = first;
+    let (second_status, second) = second;
+    assert_eq!(first_status, StatusCode::OK, "winner writes");
+    assert_eq!(
+        second_status,
+        StatusCode::OK,
+        "loser replays the winner's 200"
+    );
+    assert_eq!(first, second, "both callers see the identical response");
+
+    let (status, current) = read_json(
+        router
+            .clone()
+            .oneshot(get_unauthenticated("/api/v1/branding".to_string()))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "branding read");
+    assert_eq!(
+        current["version"], 1,
+        "exactly one version bump for concurrent same-key writes"
+    );
+
+    drop_db(&admin_url, &db_name, pool).await;
+}
