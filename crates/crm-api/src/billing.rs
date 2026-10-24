@@ -58,7 +58,8 @@ use crm_domain::services::{AuditService, BillingService, NewInvoice, NewInvoiceL
 
 use crate::auth::{resolve_context, RequestAuth};
 use crate::contacts::{
-    domain_error_response, idempotency_key, request_id, AppState, IdempotencyStore,
+    claim_or_replay, domain_error_response, idempotency_key, request_id, AppState, ClaimOutcome,
+    IdempotencyStore,
 };
 use crate::problem_response;
 use crm_core::memory::ContactServiceImpl;
@@ -131,33 +132,13 @@ fn fingerprint(route: &str, payload: &impl Serialize) -> u64 {
     hasher.finish()
 }
 
-/// Replays the stored response when `key` was already seen with the same
-/// fingerprint. Returns `Ok(None)` for a fresh key; a key seen with a
-/// different payload is a `409` response, never a silent replay.
-async fn replay_if_seen<I>(
-    store: &I,
-    key: &IdempotencyKey,
-    fp: u64,
-    status: StatusCode,
-    instance: &str,
-) -> Result<Option<Response>, Box<Response>>
-where
-    I: IdempotencyStore,
-{
-    match store.lookup(key, fp).await {
-        Ok(Some(stored)) => Ok(Some((status, Json(stored)).into_response())),
-        Ok(None) => Ok(None),
-        // The error side is boxed: `axum::http::Response` is a large type
-        // and returning it by value trips `clippy::result_large_err`.
-        Err(error) => Err(Box::new(domain_error_response(error, instance.to_owned()))),
-    }
-}
-
 /// Persists an idempotent response after a successful write. The write
 /// already happened, so a persistence failure is logged loudly instead
 /// of failing the request the client is waiting on — losing the
-/// response would be worse than losing the replay. Making the write
-/// and the idempotency record atomic is a later hardening task.
+/// response would be worse than losing the replay. The write is guarded
+/// by the atomic claim in `claim_or_replay`: concurrent requests with
+/// the same key cannot both reach the write, and this `record`
+/// overwrites the winner's claim row with the real response.
 async fn record_response<I>(store: &I, key: IdempotencyKey, fp: u64, body: serde_json::Value)
 where
     I: IdempotencyStore,
@@ -328,7 +309,7 @@ where
     // response must only be visible to a caller authorized for
     // this operation.
     if let Some(key) = &key {
-        match replay_if_seen(
+        match claim_or_replay(
             state.idempotency_store(),
             key,
             fp,
@@ -337,8 +318,8 @@ where
         )
         .await
         {
-            Ok(Some(response)) => return response,
-            Ok(None) => {}
+            Ok(ClaimOutcome::Replay(response)) => return response,
+            Ok(ClaimOutcome::Won) => {}
             Err(response) => return *response,
         }
     }
@@ -407,7 +388,7 @@ where
     // response must only be visible to a caller authorized for
     // this operation.
     if let Some(key) = &key {
-        match replay_if_seen(
+        match claim_or_replay(
             state.idempotency_store(),
             key,
             fp,
@@ -416,8 +397,8 @@ where
         )
         .await
         {
-            Ok(Some(response)) => return response,
-            Ok(None) => {}
+            Ok(ClaimOutcome::Replay(response)) => return response,
+            Ok(ClaimOutcome::Won) => {}
             Err(response) => return *response,
         }
     }
@@ -586,7 +567,7 @@ where
     // response must only be visible to a caller authorized for
     // this operation.
     if let Some(key) = &key {
-        match replay_if_seen(
+        match claim_or_replay(
             state.idempotency_store(),
             key,
             fp,
@@ -595,8 +576,8 @@ where
         )
         .await
         {
-            Ok(Some(response)) => return response,
-            Ok(None) => {}
+            Ok(ClaimOutcome::Replay(response)) => return response,
+            Ok(ClaimOutcome::Won) => {}
             Err(response) => return *response,
         }
     }
@@ -766,7 +747,7 @@ where
     // response must only be visible to a caller authorized for
     // this operation.
     if let Some(key) = &key {
-        match replay_if_seen(
+        match claim_or_replay(
             state.idempotency_store(),
             key,
             fp,
@@ -775,8 +756,8 @@ where
         )
         .await
         {
-            Ok(Some(response)) => return response,
-            Ok(None) => {}
+            Ok(ClaimOutcome::Replay(response)) => return response,
+            Ok(ClaimOutcome::Won) => {}
             Err(response) => return *response,
         }
     }
@@ -908,7 +889,7 @@ where
     // response must only be visible to a caller authorized for
     // this operation.
     if let Some(key) = &key {
-        match replay_if_seen(
+        match claim_or_replay(
             state.idempotency_store(),
             key,
             fp,
@@ -917,8 +898,8 @@ where
         )
         .await
         {
-            Ok(Some(response)) => return response,
-            Ok(None) => {}
+            Ok(ClaimOutcome::Replay(response)) => return response,
+            Ok(ClaimOutcome::Won) => {}
             Err(response) => return *response,
         }
     }
