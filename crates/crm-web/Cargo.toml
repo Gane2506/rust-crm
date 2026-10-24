@@ -10,6 +10,7 @@ leptos.workspace = true
 leptos_router.workspace = true
 gloo-net.workspace = true
 web-sys.workspace = true
+wasm-bindgen.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 # Contact shape for API (de)serialization; wasm-compatible deps only.

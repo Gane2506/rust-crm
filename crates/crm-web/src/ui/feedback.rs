@@ -164,6 +164,12 @@ static NEXT_TOAST_ID: AtomicU64 = AtomicU64::new(1);
 
 /// Pushes a toast onto `toasts`.
 ///
+/// Identical toasts (same title, description, and variant) already on
+/// screen are coalesced: a duplicate push is dropped instead of
+/// stacking — and re-announcing — the same message. Rapid identical
+/// updates (e.g. a retry loop reporting the same failure) therefore
+/// announce once, not once per attempt.
+///
 /// # Props (arguments)
 /// - `toasts`: the [`Toasts`] signal.
 /// - `title` / `description`: content.
@@ -174,14 +180,23 @@ pub fn push_toast(
     description: Option<String>,
     variant: ToastVariant,
 ) {
+    let title = title.into();
     let id = NEXT_TOAST_ID.fetch_add(1, Ordering::Relaxed);
     toasts.update(|list| {
-        list.push(Toast {
-            id,
-            title: title.into(),
-            description,
-            variant,
-        });
+        // Coalesce: an identical toast already visible means the screen
+        // reader has announced this message; stacking another copy
+        // would spam the announcement without adding information.
+        let duplicate = list
+            .iter()
+            .any(|t| t.title == title && t.description == description && t.variant == variant);
+        if !duplicate {
+            list.push(Toast {
+                id,
+                title,
+                description,
+                variant,
+            });
+        }
     });
 }
 
@@ -201,10 +216,13 @@ fn toast_accent(variant: ToastVariant) -> (&'static str, IconName) {
 
 /// Fixed bottom-right toast stack.
 ///
-/// # Props
-/// - `toasts`: the [`Toasts`] signal.
-/// - `on_dismiss`: optional extra callback invoked with the toast id on
-///   manual dismissal.
+/// The container itself is deliberately NOT a live region: each toast
+/// carries its own `role` (`status`, or `alert` for errors), so a new
+/// toast announces itself exactly once. A live container wrapping live
+/// toasts is a nested live region — screen readers announce the
+/// addition twice and may re-read the whole stack on every change.
+/// `aria-atomic` on each toast makes the reader speak the title and
+/// description together.
 #[component]
 pub fn Toaster(
     toasts: Toasts,
@@ -212,7 +230,6 @@ pub fn Toaster(
 ) -> impl IntoView {
     view! {
         <div
-            aria-live="polite"
             style="position: fixed; bottom: 1rem; right: 1rem; z-index: 100; display: flex; flex-direction: column; gap: 0.5rem; width: min(22rem, calc(100vw - 2rem));"
         >
             <For
@@ -221,6 +238,13 @@ pub fn Toaster(
                 children=move |toast| {
                     let id = toast.id;
                     let (accent, icon) = toast_accent(toast.variant);
+                    // Errors are assertive (`alert`); everything else is
+                    // polite (`status`) so it never interrupts the user.
+                    let role = if toast.variant == ToastVariant::Error {
+                        "alert"
+                    } else {
+                        "status"
+                    };
                     let dismiss = move |_| {
                         dismiss_toast(toasts, id);
                         if let Some(handler) = on_dismiss {
@@ -229,7 +253,8 @@ pub fn Toaster(
                     };
                     view! {
                         <div
-                            role="status"
+                            role=role
+                            aria-atomic="true"
                             class="crm-toast-in"
                             style={format!(
                                 "display: flex; gap: 0.625rem; align-items: flex-start; padding: 0.875rem 1rem; \
