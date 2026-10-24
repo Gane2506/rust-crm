@@ -2,9 +2,12 @@
 //! Overlay primitives: [`Dialog`] (signal-driven modal) and
 //! [`DropdownMenu`] (button + popover menu).
 //!
-//! Token-driven surfaces; no positioning JavaScript.
+//! Token-driven surfaces; no positioning JavaScript. Dialog focus
+//! management uses `web-sys` DOM APIs directly.
 
 use leptos::prelude::*;
+use wasm_bindgen::JsCast;
+use web_sys::HtmlElement;
 
 use super::callback::{UiHandler, UiValueHandler};
 use super::icon::{Icon, IconName};
@@ -13,7 +16,118 @@ use super::icon::{Icon, IconName};
 // Dialog
 // ---------------------------------------------------------------------------
 
+/// CSS selector for keyboard-focusable descendants of a dialog panel.
+///
+/// `:not([disabled])` covers native controls; the `tabindex` branch
+/// covers custom focusables, excluding explicitly unfocusable ones.
+const FOCUSABLE_SELECTOR: &str = "a[href], button:not([disabled]), \
+    input:not([disabled]), select:not([disabled]), textarea:not([disabled]), \
+    [tabindex]:not([tabindex=\"-1\"])";
+
+/// The app's `document`, or `None` when the DOM is unavailable.
+///
+/// Mirrors the `session_storage()` helper in `main.rs`: every DOM
+/// access degrades to a no-op instead of panicking.
+fn document() -> Option<web_sys::Document> {
+    web_sys::window()?.document()
+}
+
+/// The currently rendered dialog panel, if any.
+///
+/// Panels carry `data-crm-dialog-panel`; the app renders at most one
+/// dialog at a time, so the first match is the open dialog.
+fn dialog_panel() -> Option<web_sys::Element> {
+    document()?.query_selector("[data-crm-dialog-panel]").ok()?
+}
+
+/// Keyboard-focusable, visible descendants of `panel`, in tab order.
+///
+/// Hidden elements (`display: none` → null `offset_parent`) and
+/// explicitly unfocusable ones (`tabindex="-1"`, including natively
+/// focusable elements opted out via the attribute) are excluded.
+/// `position: fixed` elements report a null `offset_parent` too, but
+/// dialog content is statically positioned inside the fixed backdrop,
+/// so the backdrop (a positioned ancestor) is their offset parent.
+fn focusable_in(panel: &web_sys::Element) -> Vec<web_sys::HtmlElement> {
+    let Ok(list) = panel.query_selector_all(FOCUSABLE_SELECTOR) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for i in 0..list.length() {
+        let Some(node) = list.item(i) else { continue };
+        let Ok(el) = node.dyn_into::<web_sys::HtmlElement>() else {
+            continue;
+        };
+        if el.has_attribute("disabled") || el.tab_index() < 0 {
+            continue;
+        }
+        if el.offset_parent().is_none() {
+            continue;
+        }
+        out.push(el);
+    }
+    out
+}
+
+/// Moves focus to the first focusable element in `panel`, or to the
+/// panel itself (it carries `tabindex="-1"`) when there is none.
+fn focus_first_in(panel: &web_sys::Element) {
+    match focusable_in(panel).first() {
+        Some(el) => {
+            let _ = el.focus();
+        }
+        None => {
+            if let Ok(panel) = panel.clone().dyn_into::<web_sys::HtmlElement>() {
+                let _ = panel.focus();
+            }
+        }
+    }
+}
+
+/// Cycles Tab / Shift+Tab within `panel` (focus trap).
+///
+/// Focus wraps from last to first (and back) instead of escaping to
+/// the page behind the dialog. When nothing inside the dialog has
+/// focus yet, Tab enters at the first element. With no focusable
+/// elements at all, Tab is swallowed so focus stays in the dialog.
+fn trap_tab(panel: &web_sys::Element, ev: &leptos::ev::KeyboardEvent) {
+    let focusable = focusable_in(panel);
+    if focusable.is_empty() {
+        ev.prevent_default();
+        return;
+    }
+    let current = document()
+        .and_then(|doc| doc.active_element())
+        .and_then(|el| el.dyn_into::<HtmlElement>().ok());
+    let idx = current
+        .as_ref()
+        .and_then(|el| focusable.iter().position(|f| f == el));
+    let next = if ev.shift_key() {
+        match idx {
+            Some(0) | None => focusable.len() - 1,
+            Some(i) => i - 1,
+        }
+    } else {
+        match idx {
+            Some(i) if i + 1 >= focusable.len() => 0,
+            Some(i) => i + 1,
+            None => 0,
+        }
+    };
+    ev.prevent_default();
+    let _ = focusable[next].focus();
+}
+
 /// Modal dialog with overlay.
+///
+/// Focus management (WAI-APG dialog pattern):
+/// - On open, focus moves to the first focusable element inside the
+///   dialog (or the panel itself when there is none).
+/// - Tab / Shift+Tab cycles within the dialog; focus cannot escape
+///   to the page behind it.
+/// - Escape closes the dialog when `close_on_escape` (default true).
+/// - On close, focus returns to the element that had focus when the
+///   dialog opened (the trigger), whatever closed the dialog.
 ///
 /// # Props
 /// - `open`: controls visibility.
@@ -38,6 +152,34 @@ pub fn Dialog(
             handler.call();
         }
     });
+    // The opener is a DOM element (`!Send`), so it lives in local
+    // `StoredValue` storage — it only ever matters on this thread.
+    // The effect below runs after each render: on open it records the
+    // focused element and moves focus in; on close it restores focus
+    // to the opener, covering every close path (backdrop, X button,
+    // Escape, programmatic) with one hook.
+    let opener = StoredValue::new_local(None::<web_sys::HtmlElement>);
+    Effect::new(move |_| {
+        if open.get() {
+            if let Some(panel) = dialog_panel() {
+                if let Some(active) = document().and_then(|doc| doc.active_element()) {
+                    if let Ok(el) = active.dyn_into::<web_sys::HtmlElement>() {
+                        opener.update_value(|slot| *slot = Some(el));
+                    }
+                }
+                focus_first_in(&panel);
+            }
+        } else {
+            opener.with_value(|slot| {
+                if let Some(el) = slot {
+                    // Focusing a detached element is a harmless no-op,
+                    // so no liveness check is needed here.
+                    let _ = el.focus();
+                }
+            });
+            opener.update_value(|slot| *slot = None);
+        }
+    });
     view! {
         <Show when=move || open.get()>
             // Backdrop: plain overlay; the dialog role lives on the panel
@@ -47,29 +189,40 @@ pub fn Dialog(
                     let close = close;
                     move |_| close.call()
                 }
-                on:keydown={
-                    let close = close;
-                    move |ev: leptos::ev::KeyboardEvent| {
-                        if close_on_escape && ev.key() == "Escape" {
-                            close.call();
-                        }
-                    }
-                }
                 style="position: fixed; inset: 0; z-index: 50; display: flex; align-items: center; justify-content: center; padding: 1rem; background: oklch(0 0 0 / 0.5);"
             >
                 <div
                     role="dialog"
                     aria-modal="true"
+                    aria-labelledby=title.map(|_| "crm-dialog-title")
+                    data-crm-dialog-panel=""
                     tabindex="-1"
                     class="crm-fade-in"
                     on:click=|ev| ev.stop_propagation()
+                    on:keydown=move |ev: leptos::ev::KeyboardEvent| {
+                        match ev.key().as_str() {
+                            // Key events from dialog children bubble to
+                            // the panel, so one handler traps Tab and
+                            // closes on Escape for the whole dialog.
+                            "Tab" => {
+                                if let Some(panel) = dialog_panel() {
+                                    trap_tab(&panel, &ev);
+                                }
+                            }
+                            "Escape" if close_on_escape => close.call(),
+                            _ => {}
+                        }
+                    }
                     style="width: 100%; max-width: 28rem; background: var(--card); color: var(--card-foreground); border: 1px solid var(--border); border-radius: var(--radius-lg); box-shadow: 0 24px 64px oklch(0 0 0 / 0.24);"
                 >
                     <div style="display: flex; align-items: center; justify-content: space-between; padding: 1.25rem 1.5rem 0;">
                         {title
                             .map(|t| {
                                 view! {
-                                    <h2 style="margin: 0; font-size: 1.125rem; font-weight: 600; letter-spacing: -0.01em;">
+                                    <h2
+                                        id="crm-dialog-title"
+                                        style="margin: 0; font-size: 1.125rem; font-weight: 600; letter-spacing: -0.01em;"
+                                    >
                                         {t}
                                     </h2>
                                 }
