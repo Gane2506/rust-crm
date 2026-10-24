@@ -625,6 +625,17 @@ impl AuditService for PgAuditService {
     }
 }
 
+/// Time-to-live for an idempotency claim row.
+///
+/// A claim's write + record normally completes in milliseconds to
+/// seconds, so five minutes is generous: it only ever fires when the
+/// winner crashed (or its process died) between `claim` and `record`.
+/// Only JSON-null sentinel rows expire — a recorded response is never
+/// deleted, so replays of completed requests are unaffected. Shared
+/// with the in-memory store (in `crm-api`) so both backends expire
+/// claims on the same bound.
+pub const IDEMPOTENCY_CLAIM_TTL: std::time::Duration = std::time::Duration::from_secs(5 * 60);
+
 /// Persistent store for idempotent HTTP responses.
 ///
 /// Maps an [`IdempotencyKey`] to the request fingerprint and response body
@@ -688,11 +699,38 @@ impl PgIdempotencyStore {
     /// conflict, the existing row's fingerprint decides: a different
     /// fingerprint is a `Conflict`; the same fingerprint means another
     /// request already claimed (returns `false`).
+    ///
+    /// Stale claims self-heal: the claim first deletes a JSON-null
+    /// sentinel for the key whose `created_at` (migration `0002`,
+    /// `DEFAULT now()`) is older than [`IDEMPOTENCY_CLAIM_TTL`] — the
+    /// winner crashed between claim and record, so the key would
+    /// otherwise be poisoned forever. Recorded responses are never
+    /// deleted, so a completed request's replay is unaffected.
+    ///
+    /// The delete and the insert are separate statements, not a CTE:
+    /// in a data-modifying CTE the `INSERT ... ON CONFLICT` check
+    /// still sees a row the same statement's DELETE just removed
+    /// (shared snapshot), so the insert would conflict with a row
+    /// that no longer exists and the claim would always lose. The
+    /// insert's unique constraint is the atomic arbiter — if two
+    /// concurrent claims both delete the expired sentinel, exactly
+    /// one insert wins and the other conflicts.
     pub async fn claim_key(
         &self,
         key: &IdempotencyKey,
         fingerprint: u64,
     ) -> Result<bool, DomainError> {
+        sqlx::query(
+            "DELETE FROM idempotency_keys
+             WHERE idempotency_key = $1
+               AND response = 'null'::jsonb
+               AND created_at < now() - make_interval(secs => $2)",
+        )
+        .bind(key.as_uuid())
+        .bind(IDEMPOTENCY_CLAIM_TTL.as_secs_f64())
+        .execute(&self.pool)
+        .await
+        .map_err(map_storage_error)?;
         let inserted = sqlx::query(
             "INSERT INTO idempotency_keys (idempotency_key, fingerprint, response)
              VALUES ($1, $2, 'null'::jsonb)
@@ -708,9 +746,10 @@ impl PgIdempotencyStore {
         }
         // Lost the race: the existing row decides.
         match self.get(key).await? {
-            // No row (deleted between INSERT and SELECT — no code path
-            // deletes, so this is defensive): treat as lost; the
-            // caller's poll loop resolves it.
+            // No row (a concurrent claim expired and replaced it
+            // between INSERT and SELECT, and the replacement is not
+            // yet visible): treat as lost; the caller's poll loop
+            // resolves it.
             None => Ok(false),
             Some((stored_fingerprint, _)) if stored_fingerprint != fingerprint => {
                 Err(DomainError::Conflict(
