@@ -93,4 +93,20 @@ Statuses: TODO / IN_PROGRESS / BLOCKED / DONE. Never mark DONE without linked co
 | 16-ADMIN-03 | DONE | issue #105 / PR #106 (merge `843e86e`) | | Admin: verify + operationalize (security review clean; admin runbook; seed step 16; CodeRabbit 2 items fixed) |
 | 17-PERF-01 | DONE | issue #107 / PR #108 (merge `c5e296b`) | | Hardening: limit capping (13 endpoints), pool timeouts, performance.md (476 tests) |
 | 17-PERF-02 | DONE | issue #109 / PR #110 (merge `23691e1`) | | Request timeouts (30s, 504) + write rate limiting (429 + Retry-After); 482 tests; CodeRabbit 2 items fixed |
-| 17-PERF-03 | IN_PROGRESS | issue #111 / branch `task/17-PERF-03` | | Hardening: load benchmarks and final release pass |
+| 17-PERF-03 | DONE | issue #111 / PR #112 | | Hardening: load benchmarks and final release pass; 482 tests; manifest COMPLETE |
+| UI2-01 | DONE | issue #113 / PR #114 (merge `38403e8`) | | shadcn oklch token system + v2 component library (46 SVG icons, button/card/badge/form/feedback/overlay/table/tabs/bento) |
+| UI2-02 | DONE | issue #115 / PR #116 (merge `b6bc0d6`) | | All views reskinned onto v2, bento dashboard, dark-mode ThemeToggle; ComingSoon placeholders for Mail/Campaigns/Agents/Workflows/Forms/Billing/Signing/Calls/Analytics/Admin by design |
+| UI2-03 | DONE | issue #117 / PR #118 (merge `479d7de`) | | Branding studio end-to-end (BrandingTheme domain, migration 0017 JSONB snapshots, GET public + PUT AgencySettings:Manage) |
+| UI2-04 | DONE | issue #119 / PR #120 (merge `4636fa9`) | | 10 per-feature screenshots in docs/images/ui2/; README UI gallery |
+| UI3-01 | DONE | issue #121 / PR #122 (merge `99b0e0c`) | | 16-style UI pack, 100% Rust; fixed real bug: saved branding colors never applied since UI2-03 (style-tag order); rustls-webpki 0.103.16 / webpki-roots 1.0.10 security fix |
+| FIX-01 | DONE | issue #123 / PR #129 (merge `1e5900d`) | | Campaign launch idempotency (migration 0018, email_messages.idempotency_key + partial unique index) |
+| FIX-02 | DONE | issue #124 / PR #130 (merge `6e9df87`) | | Billing Idempotency-Key on all 6 write endpoints (UUID, 422 malformed, 409 on fingerprint/route mismatch); replay after authorization |
+| FIX-03 | DONE | issue #125 / PR #131 (merge `6c4120d`) | | Billing check-then-act races closed (record_guarded FOR UPDATE, update_if_status atomic conditional UPDATE; 409 ConcurrencyConflict) |
+| FIX-04 | DONE | issue #126 / PR #132 (merge `dab3a70`) | | Jev ApprovalGate persistence (AgentRun.approval_gate, migration 0019 JSONB; request_approval clears prior gate) |
+| FIX-05 | DONE | issue #127 / PR #133 (merge `f8833c8`) | | Seed demo grants — exactly 5 (ClientProfile Read+Create, Asset Read+Create, AuditLog Read), deduped via ensure_profile_asset_audit_grants |
+| FIX-06 | DONE | issue #128 / PR #134 (merge `cccdb4c`) | | Maintenance mode enforcement (503 + Retry-After: 60 on mutating /api/v1/*; suffix-matched exclusions for the toggle + login; storage errors fail closed) |
+| SESSION-01 | DONE | issue #135 / PR #136 (merge `7e83450`) | | Bearer token persisted to sessionStorage (web-sys directly, never panics on denied storage); fixes refresh-logs-out |
+| HARD-01 | DONE | issue #137 / PR #138 (merge `a556c71`) | | Atomic idempotency claim (INSERT...ON CONFLICT DO NOTHING, JSON-null sentinel, loser polls ~5s and replays); 515 tests |
+| HARD-02 | DONE | issue #139 / PR #140 (merge `60eb47f`) | | BrandingServiceImpl in crm-core + PUT /api/v1/branding wired to claim_or_replay; 517 tests |
+| HARD-03 | DONE | issue #141 / PR #142 (merge `b9f1ba8`) | | Toaster live-region fix (per-toast role=status, Error role=alert, aria-atomic, identical pushes coalesced) + Dialog WAI-APG focus management |
+| HARD-04 | DONE | issue #143 / PR #144 (merge `b8801a9`) | | Idempotency claim expiry (5-min TTL, stale sentinels self-heal; lookup no longer conflicts on sentinels; delete+insert must be separate statements — CTE snapshot gotcha); 519 tests |
