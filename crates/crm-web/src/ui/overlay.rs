@@ -32,14 +32,6 @@ fn document() -> Option<web_sys::Document> {
     web_sys::window()?.document()
 }
 
-/// The currently rendered dialog panel, if any.
-///
-/// Panels carry `data-crm-dialog-panel`; the app renders at most one
-/// dialog at a time, so the first match is the open dialog.
-fn dialog_panel() -> Option<web_sys::Element> {
-    document()?.query_selector("[data-crm-dialog-panel]").ok()?
-}
-
 /// Keyboard-focusable, visible descendants of `panel`, in tab order.
 ///
 /// Hidden elements (`display: none` → null `offset_parent`) and
@@ -159,9 +151,16 @@ pub fn Dialog(
     // to the opener, covering every close path (backdrop, X button,
     // Escape, programmatic) with one hook.
     let opener = StoredValue::new_local(None::<web_sys::HtmlElement>);
+    // Per-instance panel reference: focus management reads this
+    // dialog's own panel, never a document-wide query — two dialogs
+    // open at once each manage their own focus. `NodeRef` is `Copy`,
+    // so the effect and the keydown handler can both hold it. The
+    // effect runs after each render, so the ref is populated whenever
+    // `open` is true.
+    let panel_ref = NodeRef::<leptos::html::Div>::new();
     Effect::new(move |_| {
         if open.get() {
-            if let Some(panel) = dialog_panel() {
+            if let Some(panel) = panel_ref.get() {
                 if let Some(active) = document().and_then(|doc| doc.active_element()) {
                     if let Ok(el) = active.dyn_into::<web_sys::HtmlElement>() {
                         opener.update_value(|slot| *slot = Some(el));
@@ -192,10 +191,10 @@ pub fn Dialog(
                 style="position: fixed; inset: 0; z-index: 50; display: flex; align-items: center; justify-content: center; padding: 1rem; background: oklch(0 0 0 / 0.5);"
             >
                 <div
+                    node_ref=panel_ref
                     role="dialog"
                     aria-modal="true"
                     aria-labelledby=title.map(|_| "crm-dialog-title")
-                    data-crm-dialog-panel=""
                     tabindex="-1"
                     class="crm-fade-in"
                     on:click=|ev| ev.stop_propagation()
@@ -205,7 +204,7 @@ pub fn Dialog(
                             // the panel, so one handler traps Tab and
                             // closes on Escape for the whole dialog.
                             "Tab" => {
-                                if let Some(panel) = dialog_panel() {
+                                if let Some(panel) = panel_ref.get() {
                                     trap_tab(&panel, &ev);
                                 }
                             }
