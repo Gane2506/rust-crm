@@ -678,6 +678,48 @@ impl PgIdempotencyStore {
         .map_err(map_storage_error)?;
         Ok(())
     }
+
+    /// Atomically claims `key` for `fingerprint`.
+    ///
+    /// Inserts a claim row with a JSON null response sentinel — the
+    /// column is `NOT NULL`, but JSON null is a valid JSONB value, so
+    /// no migration is needed — using `ON CONFLICT DO NOTHING`.
+    /// `rows_affected() == 1` means this caller won the claim. On
+    /// conflict, the existing row's fingerprint decides: a different
+    /// fingerprint is a `Conflict`; the same fingerprint means another
+    /// request already claimed (returns `false`).
+    pub async fn claim_key(
+        &self,
+        key: &IdempotencyKey,
+        fingerprint: u64,
+    ) -> Result<bool, DomainError> {
+        let inserted = sqlx::query(
+            "INSERT INTO idempotency_keys (idempotency_key, fingerprint, response)
+             VALUES ($1, $2, 'null'::jsonb)
+             ON CONFLICT (idempotency_key) DO NOTHING",
+        )
+        .bind(key.as_uuid())
+        .bind(fingerprint as i64)
+        .execute(&self.pool)
+        .await
+        .map_err(map_storage_error)?;
+        if inserted.rows_affected() == 1 {
+            return Ok(true);
+        }
+        // Lost the race: the existing row decides.
+        match self.get(key).await? {
+            // No row (deleted between INSERT and SELECT — no code path
+            // deletes, so this is defensive): treat as lost; the
+            // caller's poll loop resolves it.
+            None => Ok(false),
+            Some((stored_fingerprint, _)) if stored_fingerprint != fingerprint => {
+                Err(DomainError::Conflict(
+                    "idempotency key was already used with a different request body".to_owned(),
+                ))
+            }
+            Some(_) => Ok(false),
+        }
+    }
 }
 
 /// A domain event staged in the transactional outbox.

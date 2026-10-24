@@ -145,18 +145,44 @@ impl AppState<PgContactService, PgIdempotencyStore> {
 /// recorded for it, so `Idempotency-Key` replays survive restarts. A
 /// present key with a *different* fingerprint is a
 /// [`DomainError::Conflict`], never a silent replay.
+///
+/// A key can also be *claimed* before its response is recorded (see
+/// [`claim`]): a claim row reserves the key so concurrent requests with
+/// the same key cannot both reach the write. [`lookup`] reports a
+/// claimed-but-unrecorded key as `Ok(None)` — the caller proceeds to
+/// [`claim`], which is the atomic step.
 pub trait IdempotencyStore: Clone + Send + Sync + 'static {
     /// Returns the stored response body for a seen key whose fingerprint
-    /// matches, `Ok(None)` for a fresh key, or [`DomainError::Conflict`]
-    /// when the key was already used with a different request body.
+    /// matches, `Ok(None)` for a fresh key or a claimed-but-unrecorded
+    /// key, or [`DomainError::Conflict`] when the key was already used
+    /// with a different request body.
     fn lookup(
         &self,
         key: &IdempotencyKey,
         fingerprint: u64,
     ) -> impl Future<Output = Result<Option<serde_json::Value>, DomainError>> + Send;
 
+    /// Atomically claims `key` for this request's fingerprint.
+    ///
+    /// The claim closes the lookup-then-record race: two concurrent
+    /// requests with the same key cannot both win the claim, so at most
+    /// one reaches the write.
+    ///
+    /// Returns `Ok(true)` if this request won the claim (proceed with
+    /// the write, then persist the response with [`record`]);
+    /// `Ok(false)` if the key was already claimed by a concurrent
+    /// request with the same fingerprint (the caller must poll
+    /// [`lookup`] for the winner's recorded response instead of
+    /// executing a duplicate write); or [`DomainError::Conflict`] when
+    /// the key was already used with a different fingerprint.
+    fn claim(
+        &self,
+        key: &IdempotencyKey,
+        fingerprint: u64,
+    ) -> impl Future<Output = Result<bool, DomainError>> + Send;
+
     /// Stores a response body for later replay, replacing any previous
-    /// entry for the key.
+    /// entry for the key (including a claim row left by [`claim`]).
     fn record(
         &self,
         key: IdempotencyKey,
@@ -183,11 +209,38 @@ impl IdempotencyStore for MemoryIdempotencyStore {
         match self.inner.read().await.get(key) {
             None => Ok(None),
             Some((stored_fingerprint, body)) if *stored_fingerprint == fingerprint => {
-                Ok(Some(body.clone()))
+                // A JSON null body is a claim row, not a recorded
+                // response: the winner has not finished writing yet.
+                if body.is_null() {
+                    Ok(None)
+                } else {
+                    Ok(Some(body.clone()))
+                }
             }
             Some(_) => Err(DomainError::Conflict(
                 "idempotency key was already used with a different request body".to_owned(),
             )),
+        }
+    }
+
+    async fn claim(&self, key: &IdempotencyKey, fingerprint: u64) -> Result<bool, DomainError> {
+        // The write lock spans check-and-insert, so the claim is atomic
+        // in-process: two concurrent claims cannot both win.
+        let mut map = self.inner.write().await;
+        match map.get(key) {
+            None => {
+                // Claim row: JSON null sentinel means "claimed,
+                // response not yet recorded". `lookup` treats it as
+                // `Ok(None)`; `record` overwrites it with the real body.
+                map.insert(*key, (fingerprint, serde_json::Value::Null));
+                Ok(true)
+            }
+            Some((stored_fingerprint, _)) if *stored_fingerprint != fingerprint => {
+                Err(DomainError::Conflict(
+                    "idempotency key was already used with a different request body".to_owned(),
+                ))
+            }
+            Some(_) => Ok(false),
         }
     }
 
@@ -210,11 +263,23 @@ impl IdempotencyStore for PgIdempotencyStore {
     ) -> Result<Option<serde_json::Value>, DomainError> {
         match self.get(key).await? {
             None => Ok(None),
-            Some((stored_fingerprint, body)) if stored_fingerprint == fingerprint => Ok(Some(body)),
+            Some((stored_fingerprint, body)) if stored_fingerprint == fingerprint => {
+                // A JSON null body is a claim row, not a recorded
+                // response: the winner has not finished writing yet.
+                if body.is_null() {
+                    Ok(None)
+                } else {
+                    Ok(Some(body))
+                }
+            }
             Some(_) => Err(DomainError::Conflict(
                 "idempotency key was already used with a different request body".to_owned(),
             )),
         }
+    }
+
+    async fn claim(&self, key: &IdempotencyKey, fingerprint: u64) -> Result<bool, DomainError> {
+        self.claim_key(key, fingerprint).await
     }
 
     async fn record(
@@ -350,6 +415,86 @@ pub(crate) fn domain_error_response(error: DomainError, instance: String) -> Res
     problem_response(status, title, error.to_string(), instance)
 }
 
+/// Outcome of attempting to claim an idempotency key.
+pub(crate) enum ClaimOutcome {
+    /// This request won the claim: execute the write, then persist the
+    /// response with [`IdempotencyStore::record`] (which overwrites the
+    /// claim row with the real body).
+    Won,
+    /// Another request already recorded (or recorded during the poll):
+    /// return this response instead of executing a duplicate write.
+    Replay(Response),
+}
+
+/// Atomically claims `key` for this request, or replays the stored or
+/// in-flight winner's response.
+///
+/// Call AFTER authorization (the stored response must only be visible
+/// to an authorized caller) and BEFORE the write. The claim closes the
+/// lookup-then-record race: two concurrent requests with the same key
+/// cannot both reach the write.
+///
+/// - Already recorded with the same fingerprint: `Replay` immediately.
+/// - Fresh key: claims it and returns `Won`.
+/// - Claimed but not yet recorded by a concurrent winner: polls
+///   `lookup` for up to ~5s (50ms intervals) for the winner's response;
+///   replays it if it appears, otherwise 409 (never a duplicate write).
+/// - Key used with a different fingerprint: 409.
+///
+/// The error side is boxed: `axum::http::Response` is a large type and
+/// returning it by value trips `clippy::result_large_err`.
+pub(crate) async fn claim_or_replay<I>(
+    store: &I,
+    key: &IdempotencyKey,
+    fp: u64,
+    status: StatusCode,
+    instance: &str,
+) -> Result<ClaimOutcome, Box<Response>>
+where
+    I: IdempotencyStore,
+{
+    // Fast path: already fully recorded.
+    if let Some(stored) = match store.lookup(key, fp).await {
+        Ok(stored) => stored,
+        Err(error) => return Err(Box::new(domain_error_response(error, instance.to_owned()))),
+    } {
+        return Ok(ClaimOutcome::Replay((status, Json(stored)).into_response()));
+    }
+    // Fresh key: atomic claim.
+    match store.claim(key, fp).await {
+        Ok(true) => Ok(ClaimOutcome::Won),
+        Ok(false) => {
+            // Lost the race: the winner is mid-write. Poll for its
+            // recorded response; never execute a duplicate write.
+            const POLL_ATTEMPTS: usize = 100;
+            const POLL_INTERVAL_MS: u64 = 50;
+            for _ in 0..POLL_ATTEMPTS {
+                tokio::time::sleep(std::time::Duration::from_millis(POLL_INTERVAL_MS)).await;
+                match store.lookup(key, fp).await {
+                    Ok(Some(stored)) => {
+                        return Ok(ClaimOutcome::Replay((status, Json(stored)).into_response()));
+                    }
+                    // Winner still writing; keep polling.
+                    Ok(None) => {}
+                    Err(error) => {
+                        return Err(Box::new(domain_error_response(error, instance.to_owned())));
+                    }
+                }
+            }
+            // Winner never recorded (crashed mid-write, or slower than
+            // the window): 409, not a duplicate write. The client
+            // retries with a fresh key.
+            Err(Box::new(problem_response(
+                StatusCode::CONFLICT,
+                "Idempotency conflict",
+                "the idempotency key is claimed by an unfinished concurrent request".to_owned(),
+                instance.to_owned(),
+            )))
+        }
+        Err(error) => Err(Box::new(domain_error_response(error, instance.to_owned()))),
+    }
+}
+
 /// `POST /api/v1/contacts` — creates a contact.
 ///
 /// Returns `201` with the created contact. When `Idempotency-Key` is
@@ -408,6 +553,24 @@ where
         Ok(ctx) => ctx,
         Err(response) => return *response,
     };
+    // Atomic claim AFTER authorization: a failed (unauthorized) attempt
+    // must not leave a stuck claim row blocking a later authorized retry
+    // with the same key.
+    if let Some(key) = &key {
+        match claim_or_replay(
+            state.idempotency_store(),
+            key,
+            fp,
+            StatusCode::CREATED,
+            &instance,
+        )
+        .await
+        {
+            Ok(ClaimOutcome::Replay(response)) => return response,
+            Ok(ClaimOutcome::Won) => {}
+            Err(response) => return *response,
+        }
+    }
     let contact = match state
         .contact_service()
         .create_contact(
@@ -438,8 +601,10 @@ where
     if let Some(key) = key {
         // The contact is already created: failing the request now would
         // lose the 201 the client needs, so a persistence failure is
-        // logged loudly instead. Making the contact write and the
-        // idempotency record atomic is a later hardening task.
+        // logged loudly instead. The write is guarded by the atomic
+        // claim in `claim_or_replay`: concurrent requests with the same
+        // key cannot both reach the write, and this `record` overwrites
+        // the winner's claim row with the real response.
         if let Err(error) = state.idempotency.record(key, fp, response_value).await {
             tracing::warn!(%error, "idempotency response could not be persisted");
         }

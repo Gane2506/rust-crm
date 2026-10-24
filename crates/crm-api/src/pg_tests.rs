@@ -3297,6 +3297,70 @@ async fn pg_billing_invoice_create_idempotent() {
 }
 
 #[tokio::test]
+async fn pg_billing_concurrent_same_key_creates_one_invoice() {
+    let Some((pool, admin_url, db_name)) = fresh_db().await else {
+        eprintln!(
+            "pg_billing_concurrent_same_key_creates_one_invoice: DATABASE_URL not set, skipping"
+        );
+        return;
+    };
+    let router = pg_router(&pool);
+    let profile = uuid::Uuid::new_v4();
+    let (token, _, _) = seed_billing_user(&pool, &router, profile, "biller9@example.com").await;
+
+    // Two simultaneous creates with the SAME Idempotency-Key: the atomic
+    // claim lets exactly one reach the write; the loser polls for the
+    // winner's recorded response and replays its 201 instead of
+    // creating a duplicate invoice.
+    let key = IdempotencyKey::generate().to_string();
+    let body = invoice_body(profile);
+    let (first, second) = tokio::join!(
+        read_json(
+            router
+                .clone()
+                .oneshot(post_invoices(body.clone(), Some(&key), &token))
+                .await
+                .expect("oneshot")
+        ),
+        read_json(
+            router
+                .clone()
+                .oneshot(post_invoices(body, Some(&key), &token))
+                .await
+                .expect("oneshot")
+        ),
+    );
+    let (first_status, first) = first;
+    let (second_status, second) = second;
+    assert_eq!(first_status, StatusCode::CREATED, "winner creates");
+    assert_eq!(
+        second_status,
+        StatusCode::CREATED,
+        "loser replays the winner's 201"
+    );
+    assert_eq!(first, second, "both callers see the identical invoice");
+
+    // Exactly one invoice exists for the profile.
+    let (status, listed) = read_json(
+        router
+            .oneshot(get(
+                format!("/api/v1/invoices?client_profile_id={profile}"),
+                &token,
+            ))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        listed["total"], 1,
+        "one invoice despite two concurrent posts"
+    );
+
+    drop_db(&admin_url, &db_name, pool).await;
+}
+
+#[tokio::test]
 async fn pg_billing_payment_record_idempotent() {
     let Some((pool, admin_url, db_name)) = fresh_db().await else {
         eprintln!("pg_billing_payment_record_idempotent: DATABASE_URL not set, skipping");
