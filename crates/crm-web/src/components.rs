@@ -52,8 +52,9 @@ pub fn EmptyState(message: &'static str) -> impl IntoView {
 ///
 /// # Props
 /// - `message`: human-readable failure description (never includes PII —
-///   callers pass [`ApiError`](crate::api::ApiError)'s display string,
-///   which the client keeps secret-free).
+///   callers pass [`ApiError::friendly_message`](crate::api::ApiError::friendly_message),
+///   never the raw `Display` string, which is server-shaped and can
+///   carry opaque ids).
 /// - `on_retry`: when `Some`, renders a Retry button wired to it.
 #[component]
 pub fn ErrorAlert(message: String, #[prop(optional)] on_retry: Option<UiHandler>) -> impl IntoView {

@@ -77,7 +77,7 @@ pub fn AssetsPage(token: String) -> impl IntoView {
             {move || match profile_options.get() {
                 None => view! { <Loading label="profiles" /> }.into_any(),
                 Some(Err(error)) => {
-                    view! { <ErrorAlert message=error.to_string() /> }.into_any()
+                    view! { <ErrorAlert message=error.friendly_message() /> }.into_any()
                 }
                 Some(Ok(options)) if options.is_empty() => {
                     view! { <EmptyState message="Create a client profile first." /> }.into_any()
@@ -165,7 +165,7 @@ fn AssetBrowser(token: String, selected: RwSignal<String>) -> impl IntoView {
                     {move || match assets.get() {
                         None => view! { <Loading label="assets" /> }.into_any(),
                         Some(Err(error)) => {
-                            view! { <ErrorAlert message=error.to_string() on_retry={retry} /> }
+                            view! { <ErrorAlert message=error.friendly_message() on_retry={retry} /> }
                                 .into_any()
                         }
                         Some(Ok(page)) if page.assets.is_empty() => {
@@ -284,7 +284,7 @@ fn AssetRegisterForm(token: String, profile_id: String, on_registered: UiHandler
                     status.set(Some(Ok(message)));
                     on_registered.call();
                 }
-                Err(error) => status.set(Some(Err(error.to_string()))),
+                Err(error) => status.set(Some(Err(error.friendly_message()))),
             }
             submitting.set(false);
         });
@@ -385,7 +385,7 @@ fn AssetRow(asset: Asset, token: String, on_archived: UiHandler) -> impl IntoVie
         spawn_local(async move {
             match archive_asset(&asset_id, &token).await {
                 Ok(_) => on_archived.call(),
-                Err(error) => archive_error.set(Some(error.to_string())),
+                Err(error) => archive_error.set(Some(error.friendly_message())),
             }
             working.set(false);
         });

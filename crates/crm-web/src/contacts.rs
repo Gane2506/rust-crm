@@ -82,7 +82,7 @@ pub fn ContactsPage(token: String) -> impl IntoView {
                     view! { <Loading label="contacts" /> }.into_any()
                 }
                 Some(Err(error)) => {
-                    view! { <ErrorAlert message=error.to_string() on_retry={retry} /> }.into_any()
+                    view! { <ErrorAlert message=error.friendly_message() on_retry={retry} /> }.into_any()
                 }
                 Some(Ok(page)) if page.contacts.is_empty() => {
                     view! { <EmptyState message="No contacts yet." /> }.into_any()
@@ -195,7 +195,7 @@ fn ContactForm(token: String, on_created: UiHandler) -> impl IntoView {
                 Err(ApiError::Api { status: 409, .. }) => {
                     status.set(Some(FormStatus::Duplicate));
                 }
-                Err(error) => status.set(Some(FormStatus::Error(error.to_string()))),
+                Err(error) => status.set(Some(FormStatus::Error(error.friendly_message()))),
             }
             submitting.set(false);
         });
@@ -371,10 +371,13 @@ mod tests {
 /// - `id`: the contact UUID from the route.
 #[component]
 pub fn ContactDetail(token: String, id: String) -> impl IntoView {
+    // Bumped to refetch the contact (manual retry after a failed load).
+    let reload = RwSignal::new(0u32);
     let contact = RwSignal::new(None::<Result<Contact, ApiError>>);
     {
         let token = token.clone();
         Effect::new(move |_| {
+            reload.get();
             if id.is_empty() {
                 return;
             }
@@ -386,6 +389,10 @@ pub fn ContactDetail(token: String, id: String) -> impl IntoView {
             });
         });
     }
+
+    // Retry for a failed load, matching `ProfileDetail` (AUDIT-12): a
+    // nonexistent contact used to show the error with no way to retry.
+    let retry = UiHandler::new(move || reload.update(|n| *n = n.wrapping_add(1)));
 
     view! {
         <section aria-label="Contact detail">
@@ -404,7 +411,7 @@ pub fn ContactDetail(token: String, id: String) -> impl IntoView {
             {move || match contact.get() {
                 None => view! { <Loading label="contact" /> }.into_any(),
                 Some(Err(error)) => {
-                    view! { <ErrorAlert message=error.to_string() /> }.into_any()
+                    view! { <ErrorAlert message=error.friendly_message() on_retry={retry} /> }.into_any()
                 }
                 Some(Ok(c)) => {
                     let variant = lifecycle_badge(&c.lifecycle);
@@ -549,7 +556,7 @@ pub fn MergePage(token: String) -> impl IntoView {
                             .to_string(),
                     )));
                 }
-                Err(error) => status.set(Some(Err(error.to_string()))),
+                Err(error) => status.set(Some(Err(error.friendly_message()))),
             }
             submitting.set(false);
         });

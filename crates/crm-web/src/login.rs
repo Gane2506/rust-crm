@@ -64,7 +64,7 @@ pub fn LoginForm(on_logged_in: UiValueHandler<String>) -> impl IntoView {
                         "Invalid email or password.".to_string(),
                     )));
                 }
-                Err(error) => status.set(Some(LoginStatus::Error(error.to_string()))),
+                Err(error) => status.set(Some(LoginStatus::Error(error.friendly_message()))),
             }
             submitting.set(false);
         });

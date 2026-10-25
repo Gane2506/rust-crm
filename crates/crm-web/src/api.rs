@@ -108,6 +108,78 @@ impl fmt::Display for ApiError {
     }
 }
 
+impl ApiError {
+    /// Human-readable message for display in the UI.
+    ///
+    /// The [`Display`](fmt::Display) string is server-shaped
+    /// ("server error 404: Not found — not found: contact '…'") and can
+    /// carry opaque ids, so it must never be rendered. This maps the
+    /// common shapes to plain language in the one place every page
+    /// shares: `404` → not found, `403` → no access, `422` → the
+    /// field-level message with the "validation failed: " server prefix
+    /// stripped. Anything unrecognized falls back to a generic message
+    /// rather than leaking server text.
+    ///
+    /// The raw error is still logged to the browser console (via
+    /// `leptos::logging::error!`, which is `eprintln!` on the host)
+    /// so the detail stays available for debugging.
+    #[must_use]
+    pub fn friendly_message(&self) -> String {
+        leptos::logging::error!("ApiError hidden from UI: {self}");
+        match self {
+            ApiError::Transport(_) => {
+                "We couldn't reach the server. Check your connection and try again."
+                    .to_string()
+            }
+            ApiError::Api {
+                status,
+                title: _,
+                detail,
+            } => match status {
+                401 => "Your session may have expired. Please log in again.".to_string(),
+                403 => {
+                    "You don't have access to do that. Ask your agency admin for the right permission."
+                        .to_string()
+                }
+                404 => {
+                    "We couldn't find that record. It may have been deleted, or the link may be wrong."
+                        .to_string()
+                }
+                409 => plain_detail(detail, "conflict: ").unwrap_or_else(|| {
+                    "That conflicts with an existing record. Please check and try again."
+                        .to_string()
+                }),
+                422 => plain_detail(detail, "validation failed: ").unwrap_or_else(|| {
+                    "Please check the details you entered and try again.".to_string()
+                }),
+                _ => "Something went wrong on our side. Please try again.".to_string(),
+            },
+        }
+    }
+}
+
+/// Turns a server `detail` string into a display sentence: strips the
+/// known machine prefix (e.g. "validation failed: "), capitalizes the
+/// first letter, and ends with a period. Returns `None` when the
+/// detail is empty (or only the prefix), so the caller can fall back
+/// to a status-level message instead of showing a bare prefix.
+fn plain_detail(detail: &str, prefix: &str) -> Option<String> {
+    let stripped = detail.strip_prefix(prefix).unwrap_or(detail).trim();
+    if stripped.is_empty() {
+        return None;
+    }
+    let mut sentence = String::with_capacity(stripped.len() + 1);
+    let mut chars = stripped.chars();
+    if let Some(first) = chars.next() {
+        sentence.extend(first.to_uppercase());
+    }
+    sentence.push_str(chars.as_str());
+    if !sentence.ends_with(['.', '?', '!']) {
+        sentence.push('.');
+    }
+    Some(sentence)
+}
+
 /// Builds an [`ApiError::Api`] from a non-2xx response, preferring the
 /// decoded `application/problem+json` body and falling back to the HTTP
 /// status text when the body is not a problem document.
@@ -701,5 +773,122 @@ pub async fn update_branding(
             .map_err(|error| ApiError::Transport(format!("invalid branding response: {error}")))
     } else {
         Err(api_error_from_response(&response).await)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Builds an [`ApiError::Api`] the way [`api_error_from_response`]
+    /// does, so the mapping is tested against real server shapes.
+    fn api(status: u16, title: &str, detail: &str) -> ApiError {
+        ApiError::Api {
+            status,
+            title: title.to_string(),
+            detail: detail.to_string(),
+        }
+    }
+
+    #[test]
+    fn not_found_never_leaks_the_id() {
+        let message = api(
+            404,
+            "Not found",
+            "not found: contact '00000000-0000-0000-0000-000000000000'",
+        )
+        .friendly_message();
+        assert_eq!(
+            message,
+            "We couldn't find that record. It may have been deleted, or the link may be wrong."
+        );
+        assert!(!message.contains("00000000"));
+    }
+
+    #[test]
+    fn forbidden_becomes_an_access_message() {
+        let message = api(
+            403,
+            "Forbidden",
+            "the authenticated caller lacks the grant for this action",
+        )
+        .friendly_message();
+        assert_eq!(
+            message,
+            "You don't have access to do that. Ask your agency admin for the right permission."
+        );
+        assert!(!message.contains("grant"));
+    }
+
+    #[test]
+    fn unauthorized_points_at_the_session() {
+        assert_eq!(
+            api(401, "Unauthorized", "unauthorized").friendly_message(),
+            "Your session may have expired. Please log in again."
+        );
+    }
+
+    #[test]
+    fn validation_strips_the_server_prefix() {
+        assert_eq!(
+            api(
+                422,
+                "Validation failed",
+                "validation failed: emails[0] is not a valid email address"
+            )
+            .friendly_message(),
+            "Emails[0] is not a valid email address."
+        );
+    }
+
+    #[test]
+    fn validation_without_a_detail_falls_back() {
+        assert_eq!(
+            api(422, "Validation failed", "").friendly_message(),
+            "Please check the details you entered and try again."
+        );
+    }
+
+    #[test]
+    fn conflict_strips_its_prefix() {
+        assert_eq!(
+            api(409, "Conflict", "conflict: asset is already archived").friendly_message(),
+            "Asset is already archived."
+        );
+    }
+
+    #[test]
+    fn transport_becomes_a_connection_message() {
+        assert_eq!(
+            ApiError::Transport("TypeError: NetworkError".to_string()).friendly_message(),
+            "We couldn't reach the server. Check your connection and try again."
+        );
+    }
+
+    #[test]
+    fn unknown_status_never_shows_server_text() {
+        let message =
+            api(500, "Internal Server Error", "database connection refused").friendly_message();
+        assert_eq!(
+            message,
+            "Something went wrong on our side. Please try again."
+        );
+        assert!(!message.contains("database"));
+    }
+
+    #[test]
+    fn plain_detail_keeps_existing_punctuation() {
+        assert_eq!(
+            plain_detail(
+                "validation failed: name must not be empty.",
+                "validation failed: "
+            ),
+            Some("Name must not be empty.".to_string())
+        );
+        assert_eq!(plain_detail("", "validation failed: "), None);
+        assert_eq!(
+            plain_detail("validation failed: ", "validation failed: "),
+            None
+        );
     }
 }
