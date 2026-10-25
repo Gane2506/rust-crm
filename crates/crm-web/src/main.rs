@@ -280,6 +280,56 @@ fn is_mobile() -> bool {
         .unwrap_or(false)
 }
 
+/// Whether the browser reports a macOS platform (AUDIT-11).
+///
+/// Read from the user-agent string — `navigator.platform()` is
+/// deprecated in the web platform, and the user agent still
+/// reports `Macintosh` on macOS (including iPadOS in desktop mode,
+/// where an external keyboard's ⌘K genuinely works). `false` when
+/// the window or the user agent is unavailable — the Ctrl+K label
+/// and handler are the safe default.
+fn is_macos() -> bool {
+    web_sys::window()
+        .and_then(|w| w.navigator().user_agent().ok())
+        .map(|ua| ua.contains("Macintosh"))
+        .unwrap_or(false)
+}
+
+/// The palette-shortcut label shown on the TopBar search button
+/// (AUDIT-11): `⌘K` on macOS, `Ctrl+K` elsewhere. The global
+/// handler listens for the matching modifier on each platform, so
+/// the badge always names the shortcut that actually works.
+fn palette_shortcut_label() -> &'static str {
+    if is_macos() {
+        "⌘K"
+    } else {
+        "Ctrl+K"
+    }
+}
+
+/// Whether a keydown's target is an editable control (AUDIT-11).
+///
+/// A palette shortcut must never hijack typing: while focus is in
+/// an `<input>`, `<textarea>`, `<select>`, or a `contenteditable`
+/// element, ⌘K/Ctrl+K stays an ordinary keystroke for that control
+/// (e.g. a text field's own shortcuts). Tag names come back
+/// upper-case from the DOM; a `contenteditable` attribute present
+/// with an empty value means editable, `"false"` means not.
+fn is_editable_target(ev: &web_sys::KeyboardEvent) -> bool {
+    let Some(target) = ev.target() else {
+        return false;
+    };
+    let Ok(el) = target.dyn_into::<web_sys::Element>() else {
+        return false;
+    };
+    match el.tag_name().as_str() {
+        "INPUT" | "TEXTAREA" | "SELECT" => true,
+        _ => el
+            .get_attribute("contenteditable")
+            .is_some_and(|v| v.is_empty() || v.eq_ignore_ascii_case("true")),
+    }
+}
+
 /// Left navigation rail: brand mark, nav items, log-out footer.
 ///
 /// Reads the current route itself so the active item highlights.
@@ -435,8 +485,11 @@ fn Sidebar(on_logout: UiHandler, nav_open: RwSignal<bool>) -> impl IntoView {
 ///
 /// Below 640px the sidebar collapses into a drawer (AUDIT-10), so
 /// the bar gains a hamburger toggle and the search button shrinks
-/// instead of forcing overflow; the "⌘K" hint and the "Staff" label
+/// instead of forcing overflow; the shortcut hint and the "Staff" label
 /// hide at that width (classes in [`crate::theme::theme_css`]).
+/// The hint names the platform shortcut — `⌘K` on macOS, `Ctrl+K`
+/// elsewhere (AUDIT-11) — and the matching global handler lives in
+/// [`Shell`].
 ///
 /// # Props
 /// - `on_search`: opens the command palette.
@@ -480,7 +533,7 @@ fn TopBar(on_search: UiHandler, nav_open: RwSignal<bool>) -> impl IntoView {
                 <kbd class="crm-topbar-search-kbd" style="margin-left: auto; font-family: var(--font-mono); font-size: 0.6875rem; \
                             padding: 0.125rem 0.375rem; border-radius: var(--radius-sm); \
                             border: 1px solid var(--border); background: var(--card);">
-                    "⌘K"
+                    {palette_shortcut_label()}
                 </kbd>
             </button>
             <span style="margin-left: auto; display: inline-flex; align-items: center; gap: 0.5rem;">
@@ -499,7 +552,9 @@ fn TopBar(on_search: UiHandler, nav_open: RwSignal<bool>) -> impl IntoView {
 
 /// Command palette: filter-as-you-type jump list over the nav entries.
 ///
-/// Rendered in the v2 [`Dialog`]; closes on selection or Escape.
+/// Rendered in the v2 [`Dialog`]; opens from the TopBar Search button
+/// or the global ⌘K/Ctrl+K shortcut (AUDIT-11, registered in [`Shell`]);
+/// closes on selection or Escape.
 ///
 /// # Props
 /// - `open`: controls visibility.
@@ -577,6 +632,49 @@ fn CommandPalette(open: RwSignal<bool>) -> impl IntoView {
 fn Shell(token: String, on_logout: UiHandler) -> impl IntoView {
     let palette_open = RwSignal::new(false);
     let open_palette = move || palette_open.set(true);
+    // Global palette shortcut (AUDIT-11): ⌘K on macOS, Ctrl+K
+    // elsewhere. The TopBar badge advertised the shortcut but no
+    // handler existed. One window-level listener, registered once —
+    // the effect tracks no signals — so the palette opens from any
+    // authenticated page, through the same `palette_open` signal the
+    // Search button uses. Escape, the focus trap, and focus restore
+    // are untouched: they live in the Dialog's own panel handler
+    // (`ui/overlay.rs`), which this listener never intercepts.
+    Effect::new(move |_| {
+        let Some(window) = web_sys::window() else {
+            return;
+        };
+        let handler = wasm_bindgen::closure::Closure::<dyn FnMut(web_sys::KeyboardEvent)>::new(
+            move |ev: web_sys::KeyboardEvent| {
+                // Never hijack typing: ignore auto-repeats and keys
+                // pressed while focus is in an editable control.
+                if ev.repeat() || is_editable_target(&ev) {
+                    return;
+                }
+                // `key()` is layout-aware ("k" vs "K" with Shift), so
+                // compare case-insensitively. The modifier matches
+                // the badge: ⌘ on macOS, Ctrl elsewhere.
+                let modifier = if is_macos() {
+                    ev.meta_key()
+                } else {
+                    ev.ctrl_key()
+                };
+                if modifier && ev.key().eq_ignore_ascii_case("k") {
+                    // Block the browser's own Ctrl+K (focus the
+                    // address/search bar) so the palette wins.
+                    ev.prevent_default();
+                    palette_open.set(true);
+                }
+            },
+        );
+        // App-lifetime listener: the closure is intentionally leaked.
+        // `Shell` lives for the whole authenticated session, and
+        // setting an already-open palette open again is a no-op, so
+        // there is no unmount path that needs the listener removed.
+        let _ =
+            window.add_event_listener_with_callback("keydown", handler.as_ref().unchecked_ref());
+        handler.forget();
+    });
     // Mobile nav drawer (AUDIT-10): collapsed below 640px, toggled
     // by the hamburger in the TopBar.
     let nav_open = RwSignal::new(false);
