@@ -140,8 +140,12 @@ pub fn PageHeader(
     #[prop(optional)] children: Option<Children>,
 ) -> impl IntoView {
     view! {
+        // `flex-wrap` is load-bearing on narrow viewports (AUDIT-10):
+        // without it a long title plus action buttons overflow the
+        // 390px content column instead of dropping the actions below.
+        // Rows that fit stay on one line, so desktop is unchanged.
         <div style="display: flex; align-items: flex-start; justify-content: space-between; \
-                   gap: 1rem; margin-bottom: 1.25rem;">
+                   flex-wrap: wrap; gap: 1rem; margin-bottom: 1.25rem;">
             <div>
                 <h2 style="margin: 0; font-size: 1.5rem; font-weight: 700; letter-spacing: -0.02em;">
                     {title}

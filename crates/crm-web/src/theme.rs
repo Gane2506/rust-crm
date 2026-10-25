@@ -195,6 +195,52 @@ a { color: inherit; }
   .crm-bento-tile { grid-column: span min(var(--bento-col-span, 1), var(--bento-lg, 4)); }
 }
 .crm-bento-tile-interactive:hover { transform: translateY(-2px); box-shadow: 0 12px 32px oklch(0 0 0 / 0.10); }
+
+/* ---- responsive shell (AUDIT-10): collapsible navigation ---- */
+/* Desktop layout lives here (not inline) so the mobile breakpoint
+   below can override it without `!important`: inline styles beat
+   stylesheet rules, so a `display` set inline could never be hidden
+   by a media query. Desktop values match the old inline styles. */
+.crm-sidebar {
+  display: flex; flex-direction: column; width: 15rem; flex-shrink: 0;
+  height: 100vh; position: sticky; top: 0;
+  background: var(--card); border-right: 1px solid var(--border);
+}
+.crm-topbar {
+  display: flex; align-items: center; gap: 0.5rem;
+  height: 3.75rem; padding: 0 1.5rem; flex-shrink: 0;
+  background: var(--background); border-bottom: 1px solid var(--border);
+  position: sticky; top: 0; z-index: 10;
+}
+.crm-topbar-search { min-width: 14rem; }
+.crm-nav-toggle { display: none; }
+.crm-sidebar-backdrop { display: none; }
+@media (max-width: 639px) {
+  /* Hamburger appears; the rail hides until opened as a drawer. */
+  .crm-nav-toggle { display: inline-flex; }
+  .crm-sidebar { display: none; }
+  /* Drawer (45) above its backdrop (40), both below the Dialog
+     layer (50) so a command palette opened over the drawer still
+     renders on top. */
+  .crm-sidebar.crm-sidebar-open {
+    display: flex; position: fixed; left: 0; top: 0; bottom: 0; z-index: 45;
+    box-shadow: 0 24px 64px oklch(0 0 0 / 0.24);
+  }
+  .crm-sidebar-backdrop {
+    display: block; position: fixed; inset: 0; z-index: 40;
+    background: oklch(0 0 0 / 0.5);
+  }
+  /* The TopBar shrinks instead of forcing overflow: tighter padding,
+     the search button flexes with no minimum, and the keyboard hint
+     and user label hide (the search icon still names the button). */
+  .crm-topbar { padding: 0 0.75rem; }
+  .crm-topbar-search { min-width: 0; flex: 1 1 auto; }
+  .crm-topbar-search-kbd { display: none; }
+  .crm-topbar-user-label { display: none; }
+  /* `!important` is load-bearing here: `<main>` sets its padding
+     inline (AUDIT-03), and only `!important` beats an inline style. */
+  .crm-main { padding: 1rem !important; }
+}
 "#
 }
 
