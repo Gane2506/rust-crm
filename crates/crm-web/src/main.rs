@@ -475,7 +475,11 @@ fn Shell(token: String, on_logout: UiHandler) -> impl IntoView {
                 <div style="flex: 1; min-width: 0; display: flex; flex-direction: column;">
                     <TopBar on_search={UiHandler::new(open_palette)} />
                     <CommandPalette open=palette_open />
-                    <main style="flex: 1; padding: 1.5rem; max-width: 90rem; width: 100%; margin: 0 auto;">
+                    // `box-sizing: border-box` is load-bearing here: with
+                    // `width: 100%` plus 1.5rem of padding under content-box
+                    // sizing, the column rendered 48px wider than its
+                    // flex parent and overflowed the viewport (AUDIT-03).
+                    <main style="flex: 1; padding: 1.5rem; max-width: 90rem; width: 100%; box-sizing: border-box; margin: 0 auto;">
                         <Routes fallback=|| {
                             view! { <NotFound /> }
                         }>
