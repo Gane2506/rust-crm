@@ -110,3 +110,8 @@ Statuses: TODO / IN_PROGRESS / BLOCKED / DONE. Never mark DONE without linked co
 | HARD-02 | DONE | issue #139 / PR #140 (merge `60eb47f`) | | BrandingServiceImpl in crm-core + PUT /api/v1/branding wired to claim_or_replay; 517 tests |
 | HARD-03 | DONE | issue #141 / PR #142 (merge `b9f1ba8`) | | Toaster live-region fix (per-toast role=status, Error role=alert, aria-atomic, identical pushes coalesced) + Dialog WAI-APG focus management |
 | HARD-04 | DONE | issue #143 / PR #144 (merge `b8801a9`) | | Idempotency claim expiry (5-min TTL, stale sentinels self-heal; lookup no longer conflicts on sentinels; delete+insert must be separate statements — CTE snapshot gotcha); 519 tests |
+| HARD-05 | DONE | issue #145 / PR #146 (merge `c7dcbfb`) | | Bookkeeping catch-up (docs-only) — README + TASK_LEDGER current through HARD-04 |
+| HARD-06 | DONE | issue #147 / PR #148 (merge `532a46a`) | | Dialog focus per-instance NodeRef (multi-dialog correctness; removes the document-wide panel query) |
+| AUDIT-01 | DONE | issue #149 / PR #152 (merge `58b4e60`) | | Absolute wasm import (`/crm-web.js`) — full load of nested routes no longer renders a blank white page; verified live on the Mac |
+| AUDIT-02 | DONE | issue #150 / PR #154 (merge `cbcf808`) | | Demo staff gains AgencySettings:Manage (seed, idempotent) + branding save failure now shows ErrorAlert + error toast; verified live on the Mac (saved version 1–2, purple `#7c3aed`) |
+| AUDIT-03 | DONE | issue #151 / PR #153 (merge `f28a016`) | | `box-sizing: border-box` on `<main>` — 48px horizontal overflow gone at 1440px; verified live on the Mac (`scrollWidth` 1440) |
