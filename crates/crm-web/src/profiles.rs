@@ -204,24 +204,45 @@ fn ProfileRow(profile: ClientProfile) -> impl IntoView {
 
 /// Profile detail page: full record plus lifecycle actions.
 ///
+/// A fetch or transition failure never wipes the record: the error is
+/// shown as an alert above the content, and the loaded record stays
+/// visible underneath (AUDIT-08 — a failed transition used to replace
+/// the whole page with the error alert).
+///
 /// # Props
 /// - `token`: the in-memory bearer token.
 /// - `profile_id`: the profile UUID from the route.
 #[component]
 pub fn ProfileDetail(token: String, profile_id: String) -> impl IntoView {
     let reload = RwSignal::new(0u32);
-    let profile = RwSignal::new(None::<Result<ClientProfile, ApiError>>);
+    // The loaded record, kept across fetch/transition failures.
+    let profile = RwSignal::new(None::<ClientProfile>);
+    // True while a fetch is in flight; only the initial load shows a
+    // spinner — a reload keeps the previous record on screen.
+    let loading = RwSignal::new(true);
+    // The last page-level failure (fetch or transition), if any.
+    let error = RwSignal::new(Option::<String>::None);
     let working = RwSignal::new(false);
     {
         let token = token.clone();
         let profile_id = profile_id.clone();
         Effect::new(move |_| {
             reload.get();
-            profile.set(None);
+            loading.set(true);
             let token = token.clone();
             let profile_id = profile_id.clone();
             spawn_local(async move {
-                profile.set(Some(fetch_profile(&profile_id, &token).await));
+                match fetch_profile(&profile_id, &token).await {
+                    Ok(p) => {
+                        profile.set(Some(p));
+                        error.set(None);
+                    }
+                    // Display (not Debug): the user needs the server's
+                    // message, e.g. "server error 403: Forbidden — the
+                    // authenticated caller lacks the grant for this action".
+                    Err(e) => error.set(Some(e.to_string())),
+                }
+                loading.set(false);
             });
         });
     }
@@ -242,8 +263,13 @@ pub fn ProfileDetail(token: String, profile_id: String) -> impl IntoView {
             working.set(true);
             spawn_local(async move {
                 match transition_profile(&profile_id, name, &token).await {
-                    Ok(updated) => profile.set(Some(Ok(updated))),
-                    Err(error) => profile.set(Some(Err(error))),
+                    Ok(updated) => {
+                        profile.set(Some(updated));
+                        error.set(None);
+                    }
+                    // The record stays: only the error is recorded, so the
+                    // alert renders above the still-visible record.
+                    Err(e) => error.set(Some(e.to_string())),
                 }
                 working.set(false);
             });
@@ -264,12 +290,11 @@ pub fn ProfileDetail(token: String, profile_id: String) -> impl IntoView {
                     "← Back to profiles"
                 </A>
             </PageHeader>
+            {move || error.get().map(|message| view! {
+                <ErrorAlert message=message on_retry=retry />
+            })}
             {move || match profile.get() {
-                None => view! { <Loading label="profile" /> }.into_any(),
-                Some(Err(error)) => {
-                    view! { <ErrorAlert message=error.to_string() on_retry={retry} /> }.into_any()
-                }
-                Some(Ok(p)) => {
+                Some(p) => {
                     let suspend = transition.clone();
                     let reactivate = transition.clone();
                     let archive = transition.clone();
@@ -346,6 +371,11 @@ pub fn ProfileDetail(token: String, profile_id: String) -> impl IntoView {
                     }
                         .into_any()
                 }
+                // No record yet: a spinner while the first fetch is in
+                // flight, nothing once it has failed (the alert above
+                // already says what went wrong).
+                None if loading.get() => view! { <Loading label="profile" /> }.into_any(),
+                None => ().into_any(),
             }}
         </section>
     }

@@ -1425,7 +1425,7 @@ async fn seed_staff(pool: &sqlx::PgPool, agency_id: AgencyId) -> Result<bool, Do
     Ok(true)
 }
 
-/// Ensures the demo user holds the demo grants (FIX-05, AUDIT-02).
+/// Ensures the demo user holds the demo grants (FIX-05, AUDIT-02, AUDIT-08).
 /// Idempotent: grants the user already holds are skipped, so re-running
 /// the seed never duplicates them.
 async fn ensure_demo_staff_grants(
@@ -1441,18 +1441,46 @@ async fn ensure_demo_staff_grants(
         client_profile_id: profile,
     };
     let agency_scope = Scope::Agency { agency_id };
-    // Profiles, the audit log, and agency settings are agency-scoped;
-    // assets are profile-scoped (matching the API authorization).
+    // Profiles, the audit log, and agency settings are agency-scoped.
+    // Assets are profile-scoped for the demo profile (matching the API
+    // authorization) AND agency-scoped (AUDIT-09): an agency scope
+    // covers every client profile in the agency, so the demo user can
+    // register, list, and archive assets on any profile — not just the
+    // demo one. Archive requires `Asset:Update`, which the demo user
+    // previously lacked entirely.
     // AgencySettings:Manage (AUDIT-02) is what `PUT /api/v1/branding`
     // requires — without it the Branding Studio save 403s for the demo
     // user, the only login.
+    // Campaigns are agency-scoped (AUDIT-07): every campaign call 403d
+    // for the demo user because the seed never granted Campaign at all.
+    // Agency scope is required, not just sufficient — `GET
+    // /api/v1/campaigns` without a `client_profile_id` filter authorizes
+    // at agency scope, and a profile-scoped grant never covers an
+    // agency-scoped request (`Scope::covers`), so a profile-scoped
+    // Campaign grant would still 403 the unfiltered list. An
+    // agency-scoped grant covers both agency- and profile-scoped
+    // requests, so it also covers the profile-scoped handlers (create,
+    // get, launch, steps, pool members). The prospect-pool handlers
+    // authorize against `Resource::Campaign` too — there is no
+    // `Resource::ProspectPool` — so these three grants cover
+    // `POST /api/v1/prospect-pools` as well.
+    // ClientProfile:Update (AUDIT-08) is what the profile lifecycle
+    // transitions (suspend/reactivate/archive) require — without it
+    // every lifecycle button 403s for the demo user.
     for (resource, operation, scope) in [
         (Resource::ClientProfile, Operation::Read, agency_scope),
         (Resource::ClientProfile, Operation::Create, agency_scope),
+        (Resource::ClientProfile, Operation::Update, agency_scope),
         (Resource::Asset, Operation::Read, profile_scope),
         (Resource::Asset, Operation::Create, profile_scope),
+        (Resource::Asset, Operation::Read, agency_scope),
+        (Resource::Asset, Operation::Create, agency_scope),
+        (Resource::Asset, Operation::Update, agency_scope),
         (Resource::AuditLog, Operation::Read, agency_scope),
         (Resource::AgencySettings, Operation::Manage, agency_scope),
+        (Resource::Campaign, Operation::Read, agency_scope),
+        (Resource::Campaign, Operation::Create, agency_scope),
+        (Resource::Campaign, Operation::Update, agency_scope),
     ] {
         let has = existing.iter().any(|grant| {
             grant.action.resource == resource
