@@ -1441,8 +1441,13 @@ async fn ensure_demo_staff_grants(
         client_profile_id: profile,
     };
     let agency_scope = Scope::Agency { agency_id };
-    // Profiles, the audit log, and agency settings are agency-scoped;
-    // assets are profile-scoped (matching the API authorization).
+    // Profiles, the audit log, and agency settings are agency-scoped.
+    // Assets are profile-scoped for the demo profile (matching the API
+    // authorization) AND agency-scoped (AUDIT-09): an agency scope
+    // covers every client profile in the agency, so the demo user can
+    // register, list, and archive assets on any profile — not just the
+    // demo one. Archive requires `Asset:Update`, which the demo user
+    // previously lacked entirely.
     // AgencySettings:Manage (AUDIT-02) is what `PUT /api/v1/branding`
     // requires — without it the Branding Studio save 403s for the demo
     // user, the only login.
@@ -1464,6 +1469,9 @@ async fn ensure_demo_staff_grants(
         (Resource::ClientProfile, Operation::Create, agency_scope),
         (Resource::Asset, Operation::Read, profile_scope),
         (Resource::Asset, Operation::Create, profile_scope),
+        (Resource::Asset, Operation::Read, agency_scope),
+        (Resource::Asset, Operation::Create, agency_scope),
+        (Resource::Asset, Operation::Update, agency_scope),
         (Resource::AuditLog, Operation::Read, agency_scope),
         (Resource::AgencySettings, Operation::Manage, agency_scope),
         (Resource::Campaign, Operation::Read, agency_scope),
