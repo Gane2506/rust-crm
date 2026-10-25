@@ -104,48 +104,80 @@ pub fn BrandingPage(token: String) -> impl IntoView {
     // a success (AUDIT-02: the save used to fail silently while the
     // local preview still showed the new theme).
     let save_error = RwSignal::new(Option::<String>::None);
+    // The last load failure, if any — rendered as an `ErrorAlert` and
+    // announced as an error toast, so a failed load can never look like
+    // a success (AUDIT-05: the load used to fail silently while the
+    // studio showed the default theme as if it were the saved one).
+    let load_error = RwSignal::new(Option::<String>::None);
     // App-shell toast stack (provided via context in `main.rs`); `None`
     // if the page is ever rendered outside the shell — then the alert
     // above is the only feedback, which is still unmistakable.
     let toasts = use_context::<Toasts>();
 
+    // (Re)loads the saved theme from the API; used on mount and by the
+    // load-error retry. The closure only captures `Copy` signals, so it
+    // is itself `Copy` and can be shared between the `Effect` and the
+    // retry handler.
+    let load_branding = move || {
+        leptos::task::spawn_local(async move {
+            match fetch_branding().await {
+                Ok(BrandingResponse { version: v, theme }) => {
+                    load_error.set(None);
+                    status.set(String::new());
+                    version.set(v);
+                    if let Some(v) = theme.primary {
+                        primary.set(v);
+                    }
+                    if let Some(v) = theme.primary_foreground {
+                        primary_foreground.set(v);
+                    }
+                    if let Some(v) = theme.ring {
+                        ring.set(v);
+                    }
+                    if let Some(v) = theme.chart_1 {
+                        chart_1.set(v);
+                    }
+                    if let Some(v) = theme.logo_url {
+                        logo_url.set(v);
+                    }
+                    if let Some(v) = theme.radius {
+                        radius.set(v);
+                    }
+                    if let Some(v) = theme.font_family {
+                        font_family.set(v);
+                    }
+                    if let Some(v) = theme.ui_style {
+                        ui_style.set(v);
+                    }
+                }
+                Err(e) => {
+                    // Display (not Debug): "server error 403: Forbidden
+                    // — the authenticated caller lacks the grant for
+                    // this action" is what the user needs to see.
+                    let message = e.to_string();
+                    load_error.set(Some(message.clone()));
+                    status.set("Could not load branding".to_string());
+                    if let Some(toasts) = toasts {
+                        push_toast(
+                            toasts,
+                            "Branding load failed",
+                            Some(message),
+                            ToastVariant::Error,
+                        );
+                    }
+                }
+            }
+        });
+    };
+
     // Load the current theme on mount.
     {
         Effect::new(move |_| {
-            leptos::task::spawn_local(async move {
-                match fetch_branding().await {
-                    Ok(BrandingResponse { version: v, theme }) => {
-                        version.set(v);
-                        if let Some(v) = theme.primary {
-                            primary.set(v);
-                        }
-                        if let Some(v) = theme.primary_foreground {
-                            primary_foreground.set(v);
-                        }
-                        if let Some(v) = theme.ring {
-                            ring.set(v);
-                        }
-                        if let Some(v) = theme.chart_1 {
-                            chart_1.set(v);
-                        }
-                        if let Some(v) = theme.logo_url {
-                            logo_url.set(v);
-                        }
-                        if let Some(v) = theme.radius {
-                            radius.set(v);
-                        }
-                        if let Some(v) = theme.font_family {
-                            font_family.set(v);
-                        }
-                        if let Some(v) = theme.ui_style {
-                            ui_style.set(v);
-                        }
-                    }
-                    Err(e) => status.set(format!("Could not load branding: {e:?}")),
-                }
-            });
+            load_branding();
         });
     }
+
+    let on_retry_load = UiHandler::new(load_branding);
 
     let on_save = {
         let token = token.clone();
@@ -166,6 +198,9 @@ pub fn BrandingPage(token: String) -> impl IntoView {
                 match update_branding(&dto, &token).await {
                     Ok(resp) => {
                         save_error.set(None);
+                        // The save response carries the current theme, so
+                        // a stale load error is no longer true (AUDIT-05).
+                        load_error.set(None);
                         version.set(resp.version);
                         apply_branding_style(&dto_to_theme(&resp.theme));
                         apply_ui_style(resp.theme.ui_style.as_deref());
@@ -224,6 +259,12 @@ pub fn BrandingPage(token: String) -> impl IntoView {
                     "Customize your business logo, colors, and theme. Changes apply instantly across the app."
                 </p>
             </div>
+
+            {move || {
+                load_error.get().map(|message| view! {
+                    <ErrorAlert message=message on_retry=on_retry_load />
+                })
+            }}
 
             <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(20rem, 1fr)); gap: 1.5rem;">
                 <Card>
