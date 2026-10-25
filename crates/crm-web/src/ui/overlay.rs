@@ -28,7 +28,10 @@ const FOCUSABLE_SELECTOR: &str = "a[href], button:not([disabled]), \
 ///
 /// Mirrors the `session_storage()` helper in `main.rs`: every DOM
 /// access degrades to a no-op instead of panicking.
-fn document() -> Option<web_sys::Document> {
+///
+/// Shared with the mobile nav drawer (`crate::Sidebar`), which
+/// reuses the dialog focus helpers below.
+pub(crate) fn document() -> Option<web_sys::Document> {
     web_sys::window()?.document()
 }
 
@@ -63,7 +66,9 @@ fn focusable_in(panel: &web_sys::Element) -> Vec<web_sys::HtmlElement> {
 
 /// Moves focus to the first focusable element in `panel`, or to the
 /// panel itself (it carries `tabindex="-1"`) when there is none.
-fn focus_first_in(panel: &web_sys::Element) {
+///
+/// Shared with the mobile nav drawer (`crate::Sidebar`).
+pub(crate) fn focus_first_in(panel: &web_sys::Element) {
     match focusable_in(panel).first() {
         Some(el) => {
             let _ = el.focus();
@@ -82,7 +87,9 @@ fn focus_first_in(panel: &web_sys::Element) {
 /// the page behind the dialog. When nothing inside the dialog has
 /// focus yet, Tab enters at the first element. With no focusable
 /// elements at all, Tab is swallowed so focus stays in the dialog.
-fn trap_tab(panel: &web_sys::Element, ev: &leptos::ev::KeyboardEvent) {
+///
+/// Shared with the mobile nav drawer (`crate::Sidebar`).
+pub(crate) fn trap_tab(panel: &web_sys::Element, ev: &leptos::ev::KeyboardEvent) {
     let focusable = focusable_in(panel);
     if focusable.is_empty() {
         ev.prevent_default();

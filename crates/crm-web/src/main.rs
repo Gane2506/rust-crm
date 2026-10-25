@@ -13,6 +13,7 @@ use leptos::task::spawn_local;
 use leptos_router::components::{Route, Router, Routes, A};
 use leptos_router::hooks::use_location;
 use leptos_router::path;
+use wasm_bindgen::JsCast;
 
 use api::logout;
 use assets::AssetsPage;
@@ -22,6 +23,7 @@ use contacts::{ContactDetail, ContactsPage, MergePage};
 use login::LoginForm;
 use profiles::{ProfileDetail, ProfilesPage};
 use theme::{provide_theme_mode, ThemeToggle};
+use ui::overlay::{document, focus_first_in, trap_tab};
 use ui::{
     Badge, BadgeVariant, BentoGrid, BentoTile, Button, ButtonVariant, Card, CardContent,
     CardHeader, CardTitle, Dialog, Icon, IconName, Input, Skeleton, Toaster, Toasts, UiHandler,
@@ -263,21 +265,107 @@ fn is_active(pathname: &str, href: &str) -> bool {
     }
 }
 
+/// Whether the viewport is narrow enough for the mobile shell
+/// (AUDIT-10: the sidebar collapses into a drawer below 640px —
+/// the same boundary as the bento grid's `sm` breakpoint).
+///
+/// Read live from the window so a resize across the breakpoint
+/// changes behavior without a reload. `false` when the window is
+/// unavailable — the desktop rail is the safe default.
+fn is_mobile() -> bool {
+    web_sys::window()
+        .and_then(|w| w.inner_width().ok())
+        .and_then(|v| v.as_f64())
+        .map(|w| w <= 639.0)
+        .unwrap_or(false)
+}
+
 /// Left navigation rail: brand mark, nav items, log-out footer.
 ///
 /// Reads the current route itself so the active item highlights.
+/// Below 640px the rail collapses into a drawer (AUDIT-10): hidden
+/// until `nav_open`, shown as a fixed overlay with a backdrop, with
+/// the same focus management as [`Dialog`] (focus in on open, Tab
+/// trapped, Escape closes, focus restored on close) — but only while
+/// the viewport is narrow; on desktop the rail is always visible
+/// and Tab must flow through it normally.
 ///
 /// # Props
 /// - `on_logout`: revokes the session server-side, then clears the token.
+/// - `nav_open`: controls the mobile drawer.
 #[component]
-fn Sidebar(on_logout: UiHandler) -> impl IntoView {
+fn Sidebar(on_logout: UiHandler, nav_open: RwSignal<bool>) -> impl IntoView {
     let location = use_location();
+    // Close the drawer on navigation: covers nav links, the command
+    // palette, and programmatic navigation with one hook. Runs on
+    // mount too (no-op: the drawer starts closed).
+    Effect::new(move |_| {
+        location.pathname.track();
+        nav_open.set(false);
+    });
+    // Per-instance drawer reference + opener restore, mirroring
+    // `Dialog` in `ui/overlay.rs`. The effect below only manages
+    // focus while the viewport is narrow; on desktop the rail is
+    // always visible and focus must not be moved or trapped.
+    let panel_ref = NodeRef::<leptos::html::Aside>::new();
+    let opener = StoredValue::new_local(None::<web_sys::HtmlElement>);
+    Effect::new(move |_| {
+        // Read `nav_open` first: the effect must stay subscribed to
+        // it even on desktop (where it returns early below), or a
+        // desktop-to-mobile resize would leave it dormant and the
+        // drawer would open without moving focus in.
+        let open = nav_open.get();
+        if !is_mobile() {
+            return;
+        }
+        if open {
+            if let Some(panel) = panel_ref.get() {
+                if let Some(active) = document().and_then(|doc| doc.active_element()) {
+                    if let Ok(el) = active.dyn_into::<web_sys::HtmlElement>() {
+                        opener.update_value(|slot| *slot = Some(el));
+                    }
+                }
+                focus_first_in(&panel);
+            }
+        } else {
+            opener.with_value(|slot| {
+                if let Some(el) = slot {
+                    // Focusing a detached element is a harmless no-op,
+                    // so no liveness check is needed here.
+                    let _ = el.focus();
+                }
+            });
+            opener.update_value(|slot| *slot = None);
+        }
+    });
     view! {
         <aside
+            id="crm-sidebar"
             aria-label="Primary"
-            style="display: flex; flex-direction: column; width: 15rem; flex-shrink: 0; \
-                   height: 100vh; position: sticky; top: 0; \
-                   background: var(--card); border-right: 1px solid var(--border);"
+            node_ref=panel_ref
+            tabindex="-1"
+            class="crm-sidebar"
+            class:crm-sidebar-open=move || nav_open.get()
+            on:keydown=move |ev: leptos::ev::KeyboardEvent| {
+                // The drawer is only modal on a narrow viewport; on
+                // desktop the rail is always visible and Tab must
+                // flow through it normally.
+                if !is_mobile() {
+                    return;
+                }
+                match ev.key().as_str() {
+                    // Key events from nav children bubble to the
+                    // aside, so one handler traps Tab and closes on
+                    // Escape for the whole drawer.
+                    "Tab" => {
+                        if let Some(panel) = panel_ref.get() {
+                            trap_tab(&panel, &ev);
+                        }
+                    }
+                    "Escape" => nav_open.set(false),
+                    _ => {}
+                }
+            }
         >
             <div style="display: flex; align-items: center; gap: 0.625rem; padding: 1.25rem 1rem 1rem;">
                 <span style="display: inline-flex; align-items: center; justify-content: center; \
@@ -342,29 +430,54 @@ fn Sidebar(on_logout: UiHandler) -> impl IntoView {
     }
 }
 
-/// Top bar: command-palette trigger, theme toggle, user chip.
+/// Top bar: nav toggle (mobile only), command-palette trigger,
+/// theme toggle, user chip.
+///
+/// Below 640px the sidebar collapses into a drawer (AUDIT-10), so
+/// the bar gains a hamburger toggle and the search button shrinks
+/// instead of forcing overflow; the "⌘K" hint and the "Staff" label
+/// hide at that width (classes in [`crate::theme::theme_css`]).
 ///
 /// # Props
 /// - `on_search`: opens the command palette.
+/// - `nav_open`: controls the mobile drawer.
 #[component]
-fn TopBar(on_search: UiHandler) -> impl IntoView {
+fn TopBar(on_search: UiHandler, nav_open: RwSignal<bool>) -> impl IntoView {
     view! {
-        <div style="display: flex; align-items: center; gap: 0.5rem; \
-                   height: 3.75rem; padding: 0 1.5rem; flex-shrink: 0; \
-                   background: var(--background); border-bottom: 1px solid var(--border); \
-                   position: sticky; top: 0; z-index: 10;">
+        <div class="crm-topbar">
             <button
                 type="button"
+                class="crm-nav-toggle"
+                aria-label=move || if nav_open.get() { "Close navigation" } else { "Open navigation" }
+                aria-expanded=move || nav_open.get().to_string()
+                aria-controls="crm-sidebar"
+                on:click=move |_| nav_open.set(!nav_open.get_untracked())
+                style="align-items: center; justify-content: center; width: 2.25rem; height: 2.25rem; \
+                       flex-shrink: 0; border-radius: var(--radius-md); border: 1px solid var(--input); \
+                       background: var(--muted); color: var(--muted-foreground);"
+            >
+                {move || {
+                    let name = if nav_open.get() {
+                        IconName::X
+                    } else {
+                        IconName::Menu
+                    };
+                    view! { <Icon name=name size=17 /> }
+                }}
+            </button>
+            <button
+                type="button"
+                class="crm-topbar-search"
                 on:click=move |_| on_search.call()
                 style="display: inline-flex; align-items: center; gap: 0.5rem; \
-                       height: 2.25rem; padding: 0 0.75rem; min-width: 14rem; \
+                       height: 2.25rem; padding: 0 0.75rem; \
                        border-radius: var(--radius-md); border: 1px solid var(--input); \
                        background: var(--muted); color: var(--muted-foreground); \
                        font-size: 0.8125rem;"
             >
                 <Icon name=IconName::Search size=15 />
                 <span>"Search or jump to…"</span>
-                <kbd style="margin-left: auto; font-family: var(--font-mono); font-size: 0.6875rem; \
+                <kbd class="crm-topbar-search-kbd" style="margin-left: auto; font-family: var(--font-mono); font-size: 0.6875rem; \
                             padding: 0.125rem 0.375rem; border-radius: var(--radius-sm); \
                             border: 1px solid var(--border); background: var(--card);">
                     "⌘K"
@@ -378,7 +491,7 @@ fn TopBar(on_search: UiHandler) -> impl IntoView {
                              font-size: 0.75rem; font-weight: 600;" aria-hidden="true">
                     "S"
                 </span>
-                <span style="font-size: 0.8125rem; color: var(--muted-foreground);">"Staff"</span>
+                <span class="crm-topbar-user-label" style="font-size: 0.8125rem; color: var(--muted-foreground);">"Staff"</span>
             </span>
         </div>
     }
@@ -464,6 +577,9 @@ fn CommandPalette(open: RwSignal<bool>) -> impl IntoView {
 fn Shell(token: String, on_logout: UiHandler) -> impl IntoView {
     let palette_open = RwSignal::new(false);
     let open_palette = move || palette_open.set(true);
+    // Mobile nav drawer (AUDIT-10): collapsed below 640px, toggled
+    // by the hamburger in the TopBar.
+    let nav_open = RwSignal::new(false);
     // Toast stack, owned here and shared via context.
     let toasts: Toasts = RwSignal::new(Vec::new());
     provide_context(toasts);
@@ -471,15 +587,24 @@ fn Shell(token: String, on_logout: UiHandler) -> impl IntoView {
     view! {
         <Router>
             <div style="display: flex; min-height: 100vh; background: var(--background); color: var(--foreground);">
-                <Sidebar on_logout=on_logout />
+                <Sidebar on_logout=on_logout nav_open=nav_open />
+                <Show when=move || nav_open.get()>
+                    // Dimmed backdrop for the mobile drawer; hidden on
+                    // desktop by the `.crm-sidebar-backdrop` class.
+                    // Click closes the drawer.
+                    <div
+                        class="crm-sidebar-backdrop"
+                        on:click=move |_| nav_open.set(false)
+                    />
+                </Show>
                 <div style="flex: 1; min-width: 0; display: flex; flex-direction: column;">
-                    <TopBar on_search={UiHandler::new(open_palette)} />
+                    <TopBar on_search={UiHandler::new(open_palette)} nav_open=nav_open />
                     <CommandPalette open=palette_open />
                     // `box-sizing: border-box` is load-bearing here: with
                     // `width: 100%` plus 1.5rem of padding under content-box
                     // sizing, the column rendered 48px wider than its
                     // flex parent and overflowed the viewport (AUDIT-03).
-                    <main style="flex: 1; padding: 1.5rem; max-width: 90rem; width: 100%; box-sizing: border-box; margin: 0 auto;">
+                    <main class="crm-main" style="flex: 1; padding: 1.5rem; max-width: 90rem; width: 100%; box-sizing: border-box; margin: 0 auto;">
                         <Routes fallback=|| {
                             view! { <NotFound /> }
                         }>
