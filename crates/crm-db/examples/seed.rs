@@ -1446,6 +1446,19 @@ async fn ensure_demo_staff_grants(
     // AgencySettings:Manage (AUDIT-02) is what `PUT /api/v1/branding`
     // requires — without it the Branding Studio save 403s for the demo
     // user, the only login.
+    // Campaigns are agency-scoped (AUDIT-07): every campaign call 403d
+    // for the demo user because the seed never granted Campaign at all.
+    // Agency scope is required, not just sufficient — `GET
+    // /api/v1/campaigns` without a `client_profile_id` filter authorizes
+    // at agency scope, and a profile-scoped grant never covers an
+    // agency-scoped request (`Scope::covers`), so a profile-scoped
+    // Campaign grant would still 403 the unfiltered list. An
+    // agency-scoped grant covers both agency- and profile-scoped
+    // requests, so it also covers the profile-scoped handlers (create,
+    // get, launch, steps, pool members). The prospect-pool handlers
+    // authorize against `Resource::Campaign` too — there is no
+    // `Resource::ProspectPool` — so these three grants cover
+    // `POST /api/v1/prospect-pools` as well.
     for (resource, operation, scope) in [
         (Resource::ClientProfile, Operation::Read, agency_scope),
         (Resource::ClientProfile, Operation::Create, agency_scope),
@@ -1453,6 +1466,9 @@ async fn ensure_demo_staff_grants(
         (Resource::Asset, Operation::Create, profile_scope),
         (Resource::AuditLog, Operation::Read, agency_scope),
         (Resource::AgencySettings, Operation::Manage, agency_scope),
+        (Resource::Campaign, Operation::Read, agency_scope),
+        (Resource::Campaign, Operation::Create, agency_scope),
+        (Resource::Campaign, Operation::Update, agency_scope),
     ] {
         let has = existing.iter().any(|grant| {
             grant.action.resource == resource
