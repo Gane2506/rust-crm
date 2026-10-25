@@ -115,3 +115,5 @@ Statuses: TODO / IN_PROGRESS / BLOCKED / DONE. Never mark DONE without linked co
 | AUDIT-01 | DONE | issue #149 / PR #152 (merge `58b4e60`) | | Absolute wasm import (`/crm-web.js`) — full load of nested routes no longer renders a blank white page; verified live on the Mac |
 | AUDIT-02 | DONE | issue #150 / PR #154 (merge `cbcf808`) | | Demo staff gains AgencySettings:Manage (seed, idempotent) + branding save failure now shows ErrorAlert + error toast; verified live on the Mac (saved version 1–2, purple `#7c3aed`) |
 | AUDIT-03 | DONE | issue #151 / PR #153 (merge `f28a016`) | | `box-sizing: border-box` on `<main>` — 48px horizontal overflow gone at 1440px; verified live on the Mac (`scrollWidth` 1440) |
+| AUDIT-04 | DONE | issue #155 / PR #156 (merge `17d0c59`) | | Bookkeeping catch-up (docs-only) — README + TASK_LEDGER current through AUDIT-03 |
+| AUDIT-05 | DONE | issue #157 / PR #158 (merge `f237ee3`) | | Branding load failure now visible (ErrorAlert + error toast + retry, mirroring AUDIT-02; a successful save clears a stale load error) |
