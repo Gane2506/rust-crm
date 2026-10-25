@@ -151,10 +151,9 @@ pub fn BrandingPage(token: String) -> impl IntoView {
                     }
                 }
                 Err(e) => {
-                    // Display (not Debug): "server error 403: Forbidden
-                    // — the authenticated caller lacks the grant for
-                    // this action" is what the user needs to see.
-                    let message = e.to_string();
+                    // Friendly message, not the raw server text — the
+                    // alert and toast show this string as-is.
+                    let message = e.friendly_message();
                     load_error.set(Some(message.clone()));
                     status.set("Could not load branding".to_string());
                     if let Some(toasts) = toasts {
@@ -207,10 +206,9 @@ pub fn BrandingPage(token: String) -> impl IntoView {
                         status.set(format!("Saved (version {})", resp.version));
                     }
                     Err(e) => {
-                        // Display (not Debug): "server error 403: Forbidden
-                        // — the authenticated caller lacks the grant for
-                        // this action" is what the user needs to see.
-                        let message = e.to_string();
+                        // Friendly message, not the raw server text — the
+                        // alert and toast show this string as-is.
+                        let message = e.friendly_message();
                         save_error.set(Some(message.clone()));
                         status.set("Save failed".to_string());
                         if let Some(toasts) = toasts {

@@ -165,13 +165,13 @@ pub fn AuditPage(token: String) -> impl IntoView {
                         .into_any()
                 }
                 Some(Err(error)) => {
-                    view! { <ErrorAlert message=error.to_string() /> }.into_any()
+                    view! { <ErrorAlert message=error.friendly_message() /> }.into_any()
                 }
             }}
             {move || match events.get() {
                 None => view! { <Loading label="audit events" /> }.into_any(),
                 Some(Err(error)) => {
-                    view! { <ErrorAlert message=error.to_string() on_retry={retry} /> }.into_any()
+                    view! { <ErrorAlert message=error.friendly_message() on_retry={retry} /> }.into_any()
                 }
                 Some(Ok(page)) if page.events.is_empty() => {
                     view! { <EmptyState message="No audit events match." /> }.into_any()

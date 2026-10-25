@@ -62,7 +62,7 @@ pub fn ProfilesPage(token: String) -> impl IntoView {
             {move || match profiles.get() {
                 None => view! { <Loading label="profiles" /> }.into_any(),
                 Some(Err(error)) => {
-                    view! { <ErrorAlert message=error.to_string() on_retry={retry} /> }.into_any()
+                    view! { <ErrorAlert message=error.friendly_message() on_retry={retry} /> }.into_any()
                 }
                 Some(Ok(page)) if page.profiles.is_empty() => {
                     view! { <EmptyState message="No profiles yet." /> }.into_any()
@@ -128,7 +128,7 @@ fn ProfileForm(token: String, on_created: UiHandler) -> impl IntoView {
                     status.set(Some(Ok(format!("Profile created: {}", profile.name))));
                     on_created.call();
                 }
-                Err(error) => status.set(Some(Err(error.to_string()))),
+                Err(error) => status.set(Some(Err(error.friendly_message()))),
             }
             submitting.set(false);
         });
@@ -237,10 +237,10 @@ pub fn ProfileDetail(token: String, profile_id: String) -> impl IntoView {
                         profile.set(Some(p));
                         error.set(None);
                     }
-                    // Display (not Debug): the user needs the server's
-                    // message, e.g. "server error 403: Forbidden — the
-                    // authenticated caller lacks the grant for this action".
-                    Err(e) => error.set(Some(e.to_string())),
+                    // Friendly message, not the raw server text: the
+                    // user needs "You don't have access to do that.",
+                    // not "server error 403: Forbidden — …".
+                    Err(e) => error.set(Some(e.friendly_message())),
                 }
                 loading.set(false);
             });
@@ -269,7 +269,7 @@ pub fn ProfileDetail(token: String, profile_id: String) -> impl IntoView {
                     }
                     // The record stays: only the error is recorded, so the
                     // alert renders above the still-visible record.
-                    Err(e) => error.set(Some(e.to_string())),
+                    Err(e) => error.set(Some(e.friendly_message())),
                 }
                 working.set(false);
             });
