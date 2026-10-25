@@ -1204,9 +1204,9 @@ async fn seed_staff(pool: &sqlx::PgPool, agency_id: AgencyId) -> Result<bool, Do
     let grant_repo = PgGrantRepository::new(pool.clone());
     if let Some(user) = staff_repo.find_by_email(DEMO_STAFF_EMAIL).await? {
         // Existing demo user (e.g. from an earlier seed): ensure the
-        // profile/asset/audit grants are present without duplicating
-        // anything already assigned.
-        ensure_profile_asset_audit_grants(&grant_repo, user.staff_id, agency_id).await?;
+        // demo grants are present without duplicating anything already
+        // assigned.
+        ensure_demo_staff_grants(&grant_repo, user.staff_id, agency_id).await?;
         return Ok(false);
     }
     let now = chrono::Utc::now();
@@ -1417,17 +1417,18 @@ async fn seed_staff(pool: &sqlx::PgPool, agency_id: AgencyId) -> Result<bool, Do
             )
             .await?;
     }
-    // Grants for profiles, assets, and the audit log (FIX-05): the
-    // demo user needs these to open the Profiles, Assets, and Audit
-    // pages out of the box (they 403 without grants).
-    ensure_profile_asset_audit_grants(&grant_repo, user.staff_id, agency_id).await?;
+    // Grants for profiles, assets, the audit log (FIX-05), and agency
+    // settings (AUDIT-02): the demo user needs these to open the
+    // Profiles, Assets, and Audit pages and to save branding out of
+    // the box (they 403 without grants).
+    ensure_demo_staff_grants(&grant_repo, user.staff_id, agency_id).await?;
     Ok(true)
 }
 
-/// Ensures the demo user holds the profile/asset/audit grants (FIX-05).
+/// Ensures the demo user holds the demo grants (FIX-05, AUDIT-02).
 /// Idempotent: grants the user already holds are skipped, so re-running
 /// the seed never duplicates them.
-async fn ensure_profile_asset_audit_grants(
+async fn ensure_demo_staff_grants(
     grant_repo: &PgGrantRepository,
     staff_id: StaffId,
     agency_id: AgencyId,
@@ -1440,14 +1441,18 @@ async fn ensure_profile_asset_audit_grants(
         client_profile_id: profile,
     };
     let agency_scope = Scope::Agency { agency_id };
-    // Profiles and the audit log are agency-scoped; assets are
-    // profile-scoped (matching the API authorization).
+    // Profiles, the audit log, and agency settings are agency-scoped;
+    // assets are profile-scoped (matching the API authorization).
+    // AgencySettings:Manage (AUDIT-02) is what `PUT /api/v1/branding`
+    // requires — without it the Branding Studio save 403s for the demo
+    // user, the only login.
     for (resource, operation, scope) in [
         (Resource::ClientProfile, Operation::Read, agency_scope),
         (Resource::ClientProfile, Operation::Create, agency_scope),
         (Resource::Asset, Operation::Read, profile_scope),
         (Resource::Asset, Operation::Create, profile_scope),
         (Resource::AuditLog, Operation::Read, agency_scope),
+        (Resource::AgencySettings, Operation::Manage, agency_scope),
     ] {
         let has = existing.iter().any(|grant| {
             grant.action.resource == resource

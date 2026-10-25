@@ -9,10 +9,11 @@
 use leptos::prelude::*;
 
 use crate::api::{fetch_branding, update_branding, BrandingResponse, BrandingThemeDto};
+use crate::components::ErrorAlert;
 use crate::theme::{branded_css, BrandingTheme};
 use crate::ui::{
-    Badge, BadgeVariant, Button, ButtonVariant, Card, CardContent, CardDescription, CardHeader,
-    CardTitle, Input, Label, UiHandler, UiValueHandler,
+    push_toast, Badge, BadgeVariant, Button, ButtonVariant, Card, CardContent, CardDescription,
+    CardHeader, CardTitle, Input, Label, ToastVariant, Toasts, UiHandler, UiValueHandler,
 };
 use crate::ui_styles::{apply_ui_style, UiStyle, ALL_STYLES};
 
@@ -98,6 +99,15 @@ pub fn BrandingPage(token: String) -> impl IntoView {
     let ui_style = RwSignal::new(UiStyle::BentoGrid.as_str().to_string());
     let status = RwSignal::new(String::new());
     let version = RwSignal::new(0u64);
+    // The last save failure, if any — rendered as an `ErrorAlert` and
+    // announced as an error toast, so a failed save can never look like
+    // a success (AUDIT-02: the save used to fail silently while the
+    // local preview still showed the new theme).
+    let save_error = RwSignal::new(Option::<String>::None);
+    // App-shell toast stack (provided via context in `main.rs`); `None`
+    // if the page is ever rendered outside the shell — then the alert
+    // above is the only feedback, which is still unmistakable.
+    let toasts = use_context::<Toasts>();
 
     // Load the current theme on mount.
     {
@@ -155,12 +165,28 @@ pub fn BrandingPage(token: String) -> impl IntoView {
                 status.set("Saving…".to_string());
                 match update_branding(&dto, &token).await {
                     Ok(resp) => {
+                        save_error.set(None);
                         version.set(resp.version);
                         apply_branding_style(&dto_to_theme(&resp.theme));
                         apply_ui_style(resp.theme.ui_style.as_deref());
                         status.set(format!("Saved (version {})", resp.version));
                     }
-                    Err(e) => status.set(format!("Save failed: {e:?}")),
+                    Err(e) => {
+                        // Display (not Debug): "server error 403: Forbidden
+                        // — the authenticated caller lacks the grant for
+                        // this action" is what the user needs to see.
+                        let message = e.to_string();
+                        save_error.set(Some(message.clone()));
+                        status.set("Save failed".to_string());
+                        if let Some(toasts) = toasts {
+                            push_toast(
+                                toasts,
+                                "Branding save failed",
+                                Some(message),
+                                ToastVariant::Error,
+                            );
+                        }
+                    }
                 }
             });
         })
@@ -367,6 +393,12 @@ pub fn BrandingPage(token: String) -> impl IntoView {
                     </div>
                 </CardContent>
             </Card>
+
+            {move || {
+                save_error.get().map(|message| view! {
+                    <ErrorAlert message=message on_retry=on_save />
+                })
+            }}
 
             <div style="display: flex; gap: 0.75rem; align-items: center;">
                 <Button variant=ButtonVariant::Default on_click=on_save>
