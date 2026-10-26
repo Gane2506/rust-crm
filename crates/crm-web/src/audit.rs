@@ -132,7 +132,7 @@ pub fn AuditPage(token: String) -> impl IntoView {
                             </span>
                         </div>
                     </div>
-                    <Hint text="Newest-first reorders the fetched page only — the API returns chain order (oldest first).".to_string() />
+                    <Hint text="Newest-first reorders the fetched page only — this page fetches in chain order and reverses client-side (the API also offers ?newest_first=true, used by the Dashboard tile).".to_string() />
                 </CardContent>
             </Card>
             {move || match verification.get() {
