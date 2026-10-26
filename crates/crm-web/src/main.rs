@@ -18,9 +18,11 @@ use wasm_bindgen::JsCast;
 use api::logout;
 use assets::AssetsPage;
 use audit::AuditPage;
+use billing::{InvoiceDetail, InvoicesPage};
 use branding::BrandingPage;
 use campaigns::{CampaignDetail, CampaignsPage};
 use contacts::{ContactDetail, ContactsPage, MergePage};
+use emails::{MailPage, ThreadDetail};
 use login::LoginForm;
 use profiles::{ProfileDetail, ProfilesPage};
 use theme::{provide_theme_mode, ThemeToggle};
@@ -34,10 +36,12 @@ use ui::{
 mod api;
 mod assets;
 mod audit;
+mod billing;
 mod branding;
 mod campaigns;
 mod components;
 mod contacts;
+mod emails;
 mod login;
 mod profiles;
 mod theme;
@@ -105,6 +109,20 @@ fn App() -> impl IntoView {
     // `sessionStorage` on init so refreshes don't log the user out.
     let token = RwSignal::new(restore_token());
 
+    // Session expiry (SESSION-02): set by the API client when any
+    // authenticated call gets a 401. App watches it — the pages never
+    // have to — and drops the dead token so the login form renders
+    // instead of a shell whose every call 401s. The flag stays set
+    // until the next login, so the form can say why the user is there.
+    let session_expired = RwSignal::new(false);
+    crate::api::register_session_expired(session_expired);
+    Effect::new(move |_| {
+        if session_expired.get() {
+            clear_token();
+            token.set(None);
+        }
+    });
+
     // Branding (UI2-03): fetch the public theme on mount (the login page
     // is themed too) and re-fetch after login; inject as a `<style>`
     // layered after the theme_css tag. The UI style (UI3-01) is applied
@@ -130,6 +148,9 @@ fn App() -> impl IntoView {
     let on_logged_in = UiValueHandler::new(move |new_token: String| {
         persist_token(&new_token);
         token.set(Some(new_token));
+        // Reset so a later expiry is a fresh false → true transition
+        // and the watcher above fires again.
+        session_expired.set(false);
         apply_branding();
     });
     // Server-side revocation first, then drop the local token either way.
@@ -141,13 +162,22 @@ fn App() -> impl IntoView {
         }
         clear_token();
         token.set(None);
+        // A stale expiry flag must never show the "session expired"
+        // banner after an intentional logout.
+        session_expired.set(false);
     });
 
     view! {
         <>
             <style id="crm-base-style">{crate::theme::theme_css()}</style>
             {move || match token.get() {
-                None => view! { <LoginForm on_logged_in=on_logged_in /> }.into_any(),
+                None => view! {
+                    <LoginForm
+                        on_logged_in=on_logged_in
+                        session_expired=session_expired.get()
+                    />
+                }
+                    .into_any(),
                 Some(token) => {
                     view! { <Shell token=token on_logout=on_logout /> }.into_any()
                 }
@@ -820,6 +850,44 @@ fn Shell(token: String, on_logout: UiHandler) -> impl IntoView {
                                 }
                             />
                             <Route
+                                path=path!("/billing")
+                                view={
+                                    let token = token.clone();
+                                    move || view! { <InvoicesPage token=token.clone() /> }
+                                }
+                            />
+                            <Route
+                                path=path!("/billing/:id")
+                                view={
+                                    let token = token.clone();
+                                    move || {
+                                        let params = leptos_router::hooks::use_params_map();
+                                        let id = params.get().get("id").unwrap_or_default();
+                                        let token = token.clone();
+                                        view! { <InvoiceDetail token=token invoice_id=id /> }
+                                    }
+                                }
+                            />
+                            <Route
+                                path=path!("/mail")
+                                view={
+                                    let token = token.clone();
+                                    move || view! { <MailPage token=token.clone() /> }
+                                }
+                            />
+                            <Route
+                                path=path!("/mail/:id")
+                                view={
+                                    let token = token.clone();
+                                    move || {
+                                        let params = leptos_router::hooks::use_params_map();
+                                        let id = params.get().get("id").unwrap_or_default();
+                                        let token = token.clone();
+                                        view! { <ThreadDetail token=token thread_id=id /> }
+                                    }
+                                }
+                            />
+                            <Route
                                 path=path!("/audit")
                                 view={
                                     let token = token.clone();
@@ -835,11 +903,9 @@ fn Shell(token: String, on_logout: UiHandler) -> impl IntoView {
                             />
                             // Feature areas whose dedicated views land in later
                             // tasks route to a placeholder so the IA is complete.
-                            <Route path=path!("/mail") view=|| view! { <ComingSoon feature="Mail" /> } />
                             <Route path=path!("/agents") view=|| view! { <ComingSoon feature="Jev agents" /> } />
                             <Route path=path!("/workflows") view=|| view! { <ComingSoon feature="Workflows" /> } />
                             <Route path=path!("/forms") view=|| view! { <ComingSoon feature="Forms" /> } />
-                            <Route path=path!("/billing") view=|| view! { <ComingSoon feature="Billing" /> } />
                             <Route path=path!("/signing") view=|| view! { <ComingSoon feature="Signing" /> } />
                             <Route path=path!("/calls") view=|| view! { <ComingSoon feature="Calls" /> } />
                             <Route path=path!("/analytics") view=|| view! { <ComingSoon feature="Analytics" /> } />

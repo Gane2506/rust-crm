@@ -11,7 +11,7 @@
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 
-use crate::api::{login, ApiError};
+use crate::api::{login, ApiError, SESSION_EXPIRED_MESSAGE};
 use crate::components::ErrorAlert;
 use crate::ui::{
     Button, ButtonVariant, Card, CardContent, Icon, IconName, Input as TextInput, Label,
@@ -28,11 +28,24 @@ enum LoginStatus {
 /// Login form: email + password, submitting to `POST /api/v1/auth/login`.
 ///
 /// Calls `on_logged_in` with the bearer token on success.
+///
+/// When `session_expired` is set (SESSION-02: `App` returned here
+/// because an authenticated call got a 401), the form opens with the
+/// session-expired message in the same error slot a failed login uses —
+/// same `ErrorAlert`, same `margin-top: 1rem`, no new spacing. A fresh
+/// login attempt replaces it with that attempt's own result.
 #[component]
-pub fn LoginForm(on_logged_in: UiValueHandler<String>) -> impl IntoView {
+pub fn LoginForm(
+    on_logged_in: UiValueHandler<String>,
+    #[prop(optional)] session_expired: bool,
+) -> impl IntoView {
     let email = RwSignal::new(String::new());
     let password = RwSignal::new(String::new());
-    let status = RwSignal::new(None::<LoginStatus>);
+    let status = RwSignal::new(if session_expired {
+        Some(LoginStatus::Error(SESSION_EXPIRED_MESSAGE.to_string()))
+    } else {
+        None
+    });
     let submitting = RwSignal::new(false);
 
     let on_submit = move |ev: leptos::ev::SubmitEvent| {
