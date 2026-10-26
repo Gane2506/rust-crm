@@ -923,8 +923,7 @@ where
         return problem_response(
             StatusCode::UNPROCESSABLE_ENTITY,
             "Validation failed",
-            "cannot create a checkout session for an invoice with no remaining balance"
-                .to_owned(),
+            "cannot create a checkout session for an invoice with no remaining balance".to_owned(),
             instance,
         );
     }

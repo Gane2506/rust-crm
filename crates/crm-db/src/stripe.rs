@@ -80,18 +80,21 @@ impl PgStripeEventRepository {
     }
 
     /// Returns the payment id this event already produced, if any.
+    /// A claim row with no payment yet (`payment_id` NULL) decodes
+    /// to `None`, not an error: `query_scalar` must decode the
+    /// column as `Option<Uuid>` or a NULL errors the lookup and
+    /// every in-flight claim reads as a storage failure.
     pub async fn payment_for_event(
         &self,
         event_id: &str,
     ) -> Result<Option<PaymentId>, DomainError> {
-        let row: Option<Uuid> = sqlx::query_scalar(
-            "SELECT payment_id FROM stripe_webhook_events WHERE event_id = $1",
-        )
-        .bind(event_id)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(map_storage_error)?;
-        Ok(row.map(PaymentId::from))
+        let row: Option<Option<Uuid>> =
+            sqlx::query_scalar("SELECT payment_id FROM stripe_webhook_events WHERE event_id = $1")
+                .bind(event_id)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(map_storage_error)?;
+        Ok(row.flatten().map(PaymentId::from))
     }
 
     /// Returns when the event was claimed, if the claim row exists.
@@ -101,13 +104,11 @@ impl PgStripeEventRepository {
         &self,
         event_id: &str,
     ) -> Result<Option<chrono::DateTime<chrono::Utc>>, DomainError> {
-        sqlx::query_scalar(
-            "SELECT received_at FROM stripe_webhook_events WHERE event_id = $1",
-        )
-        .bind(event_id)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(map_storage_error)
+        sqlx::query_scalar("SELECT received_at FROM stripe_webhook_events WHERE event_id = $1")
+            .bind(event_id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(map_storage_error)
     }
 
     /// Releases a claim row: the event may be claimed again by a

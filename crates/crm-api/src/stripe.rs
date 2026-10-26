@@ -193,11 +193,11 @@ pub(crate) enum StripeError {
 }
 
 /// A Stripe Checkout Session, as returned by
-/// `POST /v1/checkout/sessions`.
+/// `POST /v1/checkout/sessions`. No `id` field: the session id is
+/// never read (the webhook reconciles on `metadata[invoice_id]`),
+/// and serde ignores the extra field Stripe sends.
 #[derive(Debug, Deserialize)]
 pub(crate) struct StripeCheckoutSession {
-    /// Session id (`cs_test_…` / `cs_live_…`).
-    pub id: String,
     /// Hosted Checkout URL the payer is redirected to.
     pub url: Option<String>,
 }
@@ -288,8 +288,10 @@ impl StripeClient {
                 status: status.as_u16(),
             });
         }
-        let session: StripeCheckoutSession =
-            response.json().await.map_err(|_| StripeError::BadResponse)?;
+        let session: StripeCheckoutSession = response
+            .json()
+            .await
+            .map_err(|_| StripeError::BadResponse)?;
         if session.url.is_none() {
             return Err(StripeError::BadResponse);
         }
@@ -364,8 +366,7 @@ pub(crate) fn verify_stripe_signature(
         let Ok(bytes) = hex::decode(signature) else {
             continue;
         };
-        if bytes.len() == expected.len()
-            && bool::from(expected.as_slice().ct_eq(bytes.as_slice()))
+        if bytes.len() == expected.len() && bool::from(expected.as_slice().ct_eq(bytes.as_slice()))
         {
             return Ok(());
         }
@@ -488,7 +489,7 @@ where
     A: AuditService + Clone + Send + Sync + 'static,
     I: IdempotencyStore,
 {
-    let (instance, _) = request_id(&headers);
+    let (instance, correlation_id) = request_id(&headers);
     let Some(api_auth) = &state.auth else {
         return problem_response(
             StatusCode::NOT_IMPLEMENTED,
@@ -522,8 +523,7 @@ where
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_secs())
         .unwrap_or(0);
-    if let Err(error) = verify_stripe_signature(webhook_secret, signature, &body, now_unix_secs)
-    {
+    if let Err(error) = verify_stripe_signature(webhook_secret, signature, &body, now_unix_secs) {
         tracing::warn!(%error, "stripe webhook signature verification failed");
         return problem_response(
             StatusCode::BAD_REQUEST,
@@ -544,13 +544,9 @@ where
         }
     };
     if event.event_type != "checkout.session.completed" {
-        return (
-            StatusCode::OK,
-            Json(json!({"received": true})),
-        )
-            .into_response();
+        return (StatusCode::OK, Json(json!({"received": true}))).into_response();
     }
-    process_checkout_completed(api_auth, &event, &instance).await
+    process_checkout_completed(api_auth, &event, &instance, correlation_id).await
 }
 
 /// Records the payment for a verified `checkout.session.completed`
@@ -559,6 +555,7 @@ async fn process_checkout_completed(
     api_auth: &ApiAuth,
     event: &StripeEvent,
     instance: &str,
+    correlation_id: Uuid,
 ) -> Response {
     let session: CheckoutSession = match serde_json::from_value(event.data.object.clone()) {
         Ok(session) => session,
@@ -670,16 +667,14 @@ async fn process_checkout_completed(
         );
     }
     let amount = match (session.amount_total, session.currency.as_deref()) {
-        (Some(total), Some(currency)) => {
-            match Money::new(total, currency.to_uppercase()) {
-                Ok(amount) => amount,
-                Err(error) => {
-                    tracing::warn!(%error, event_id = %event.id, "stripe webhook session has an invalid amount or currency; acknowledged without recording");
-                    let _ = api_auth.stripe_events.release(&event.id).await;
-                    return (StatusCode::OK, Json(json!({"received": true}))).into_response();
-                }
+        (Some(total), Some(currency)) => match Money::new(total, currency.to_uppercase()) {
+            Ok(amount) => amount,
+            Err(error) => {
+                tracing::warn!(%error, event_id = %event.id, "stripe webhook session has an invalid amount or currency; acknowledged without recording");
+                let _ = api_auth.stripe_events.release(&event.id).await;
+                return (StatusCode::OK, Json(json!({"received": true}))).into_response();
             }
-        }
+        },
         _ => {
             tracing::warn!(event_id = %event.id, "stripe webhook session has no amount or currency; acknowledged without recording");
             let _ = api_auth.stripe_events.release(&event.id).await;
@@ -696,7 +691,7 @@ async fn process_checkout_completed(
         actor_id: ActorId::from(Uuid::nil()),
         actor_kind: ActorKind::System,
         client_profile_id: Some(invoice.client_profile_id),
-        delegation_id: None,
+        correlation_id,
     };
     let service = crate::billing::billing_service(api_auth);
     let payment = match service
@@ -786,10 +781,12 @@ mod tests {
     fn sign(secret: &str, timestamp: u64, payload: &[u8]) -> String {
         let mut signed = format!("{timestamp}.").into_bytes();
         signed.extend_from_slice(payload);
-        let mut mac =
-            Hmac::<Sha256>::new_from_slice(secret.as_bytes()).expect("test hmac key");
+        let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes()).expect("test hmac key");
         mac.update(&signed);
-        format!("t={timestamp},v1={}", hex::encode(mac.finalize().into_bytes()))
+        format!(
+            "t={timestamp},v1={}",
+            hex::encode(mac.finalize().into_bytes())
+        )
     }
 
     #[test]
@@ -888,7 +885,8 @@ mod tests {
             success_url: DEFAULT_STRIPE_SUCCESS_URL.to_owned(),
             cancel_url: DEFAULT_STRIPE_CANCEL_URL.to_owned(),
         };
-        let invoice_id = InvoiceId::from(Uuid::from_u128(0x1234_5678_9abc_def0_1234_5678_9abc_def0));
+        let invoice_id =
+            InvoiceId::from(Uuid::from_u128(0x1234_5678_9abc_def0_1234_5678_9abc_def0));
         let amount = Money::new(4_000, "USD".to_owned()).expect("valid money");
         let form = checkout_session_form(&config, invoice_id, amount);
         let get = |key: &str| {
@@ -933,10 +931,7 @@ mod tests {
         let config = StripeConfig::from_env();
         assert!(config.is_configured());
         assert_eq!(config.secret_key.as_deref(), Some(TEST_SECRET_KEY));
-        assert_eq!(
-            config.webhook_secret.as_deref(),
-            Some(TEST_WEBHOOK_SECRET)
-        );
+        assert_eq!(config.webhook_secret.as_deref(), Some(TEST_WEBHOOK_SECRET));
     }
 
     #[test]

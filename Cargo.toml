@@ -56,7 +56,7 @@ sha2 = { version = "0.10" }
 # Minimal Stripe HTTP client (STRIPE-01): no default features — `json`
 # for response parsing, `rustls-tls` (ring + webpki-roots) for HTTPS,
 # `form` for Stripe's form-encoded API. No native-tls/OpenSSL.
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "form"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 # HMAC-SHA256 for Stripe webhook signature verification (STRIPE-01):
 # `hmac` computes the digest, `subtle` compares it in constant time,
 # `hex` decodes Stripe's hex-encoded `v1` signatures.
