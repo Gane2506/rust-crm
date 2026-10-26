@@ -18,7 +18,7 @@ use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 
 use crm_domain::audit::{ActionResult, PermissionDecision};
-use crm_domain::email::{match_thread_by_subject, EmailMessage, EmailThread};
+use crm_domain::email::{match_thread_by_subject, EmailDirection, EmailMessage, EmailThread};
 use crm_domain::error::DomainError;
 use crm_domain::ids::{ClientProfileId, EmailThreadId};
 use crm_domain::repositories::{
@@ -131,6 +131,44 @@ where
             Some(input.idempotency_key)
         };
         message.advance_to(crm_domain::email::EmailStatus::Queued)?;
+        // Resolve the thread: a reply appends to its thread; a fresh
+        // compose opens one. Before this, a send with thread_id None
+        // orphaned the message — no thread row, so the threads list
+        // could never show it and the sent mail was unfindable in the
+        // UI (MAIL-01 live verification). Mirrors ingest_reply's
+        // "no match: open a new thread".
+        let thread = match input.thread_id {
+            Some(thread_id) => Some(self.threads.get(thread_id).await?),
+            None => None,
+        };
+        let mut thread = match thread {
+            Some(thread) => thread,
+            None => {
+                let first_participant = if !message.from.is_empty() {
+                    message.from.clone()
+                } else {
+                    message
+                        .to
+                        .first()
+                        .or(message.cc.first())
+                        .or(message.bcc.first())
+                        .cloned()
+                        .unwrap_or_default()
+                };
+                let subject = if message.subject.is_empty() {
+                    "(no subject)".to_string()
+                } else {
+                    message.subject.clone()
+                };
+                let thread =
+                    EmailThread::new(input.client_profile_id, None, subject, first_participant)?;
+                self.threads.create(thread).await?
+            }
+        };
+        // A passed-in thread must belong to the profile being mailed
+        // in; a fresh one trivially does (same profile id).
+        Self::check_scope(ctx, thread.client_profile_id)?;
+        message.thread_id = Some(thread.thread_id);
         let mut message = self.messages.create(message).await?;
 
         // Hand to the provider.
@@ -142,8 +180,13 @@ where
                 // Provider failure: terminal Failed, audit, propagate.
                 // The message row is preserved for the audit trail;
                 // re-sending creates a new idempotency-keyed message.
+                // The failed message stays in its thread (visible,
+                // auditable); count it so the thread's message count
+                // stays true.
                 let _ = message.mark_failed();
                 let message = self.messages.update(message).await?;
+                thread.add_message(EmailDirection::Outbound, &message.to, chrono::Utc::now());
+                let _ = self.threads.update(thread).await;
                 let _ = self
                     .audit
                     .record_action(
@@ -164,17 +207,19 @@ where
         message.advance_to(crm_domain::email::EmailStatus::Sent)?;
         let message = self.messages.update(message).await?;
 
-        // If the provider threaded the message, link the thread.
+        // Record the provider's threading (if any) and the message on
+        // the thread, so the sent mail shows up in the threads list.
+        // (The old code looked the thread up by provider id and then
+        // set the same id on it — a no-op that never linked anything.)
         if let Some(provider_thread_id) = outcome.provider_thread_id {
-            if let Some(mut thread) = self
-                .threads
-                .find_by_provider_thread_id(input.client_profile_id, &provider_thread_id)
-                .await?
-            {
-                thread.provider_thread_id = Some(provider_thread_id);
-                let _ = self.threads.update(thread).await;
-            }
+            thread.provider_thread_id = Some(provider_thread_id);
         }
+        thread.add_message(
+            EmailDirection::Outbound,
+            &message.to,
+            message.sent_at.unwrap_or_else(chrono::Utc::now),
+        );
+        let _ = self.threads.update(thread).await;
 
         let _ = self
             .audit
