@@ -4,12 +4,14 @@
 //!
 //! Reskinned on the v2 component library (UI2-02). Both endpoints
 //! require `AuditLog:Read` at agency scope — a caller without it gets
-//! `403`. The server returns events in chain order (oldest first) with
-//! no descending-order parameter; the "newest first" toggle therefore
-//! only reorders the fetched page for display. It does NOT fetch the
-//! newest N events — with more than one page of matches, the newest
-//! events may be beyond the fetched page. True newest-first querying
-//! needs a backend `order` parameter (a future backend task).
+//! `403`. The server returns events in chain order (oldest first) by
+//! default; `?newest_first=true` returns the newest events first
+//! (AUDIT-13). This page deliberately keeps fetching chain order and
+//! the "newest first" toggle only reorders the fetched page for
+//! display — it does NOT fetch the newest N events, so with more than
+//! one page of matches the newest events may be beyond the fetched
+//! page. The Dashboard tile, which needs the newest events, asks the
+//! server for them with `newest_first: true` instead.
 
 use leptos::prelude::*;
 use leptos::task::spawn_local;
@@ -54,6 +56,9 @@ pub fn AuditPage(token: String) -> impl IntoView {
                     Some(filter)
                 },
                 limit: Some(50),
+                // Deliberately chain order: the toggle below only
+                // reorders the fetched page (see the module docs).
+                newest_first: false,
             };
             let my_generation = generation.get_untracked() + 1;
             generation.set(my_generation);

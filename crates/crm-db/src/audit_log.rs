@@ -211,7 +211,9 @@ impl PgAuditLogService {
 
         // Cursor: chain order is seq order; `after` names the last event
         // of the previous page. An unknown cursor yields an empty page
-        // (fail closed) rather than guessing a position.
+        // (fail closed) rather than guessing a position. Newest-first
+        // pages run the other way (`seq < after_seq`) so the same
+        // cursor keeps paginating forward in the requested order.
         let after_seq: Option<i64> = match filter.after {
             Some(event_id) => {
                 let seq: Option<i64> =
@@ -228,7 +230,22 @@ impl PgAuditLogService {
             None => None,
         };
 
-        let rows: Vec<sqlx::postgres::PgRow> = sqlx::query(
+        // Newest-first is a presentation order only: the same filters,
+        // the same cursor shape, the same `take + 1` overflow row — just
+        // `seq DESC` with the cursor flipped. The chain itself (storage,
+        // hashing, verification) never sees this flag.
+        let sql = if filter.newest_first {
+            "SELECT event_id, occurred_at, actor_kind, actor_id, client_profile_id, action, target_kind, target_id, correlation_id, permission_decision, result, before_ref, after_ref, chain_hash, payload
+             FROM audit_events
+             WHERE ($1::uuid IS NULL OR actor_id = $1)
+               AND ($2::text IS NULL OR action = $2)
+               AND ($3::uuid IS NULL OR client_profile_id = $3)
+               AND ($4::timestamptz IS NULL OR occurred_at >= $4)
+               AND ($5::timestamptz IS NULL OR occurred_at < $5)
+               AND ($6::bigint IS NULL OR seq < $6)
+             ORDER BY seq DESC
+             LIMIT $7"
+        } else {
             "SELECT event_id, occurred_at, actor_kind, actor_id, client_profile_id, action, target_kind, target_id, correlation_id, permission_decision, result, before_ref, after_ref, chain_hash, payload
              FROM audit_events
              WHERE ($1::uuid IS NULL OR actor_id = $1)
@@ -238,19 +255,20 @@ impl PgAuditLogService {
                AND ($5::timestamptz IS NULL OR occurred_at < $5)
                AND ($6::bigint IS NULL OR seq > $6)
              ORDER BY seq ASC
-             LIMIT $7",
-        )
-        .bind(filter.actor_id.map(ActorId::as_uuid))
-        .bind(filter.action.clone())
-        .bind(effective_profile.map(ClientProfileId::as_uuid))
-        .bind(filter.from)
-        .bind(filter.to)
-        .bind(after_seq)
-        // Fetch one extra to know whether another page exists.
-        .bind((take + 1) as i64)
-        .fetch_all(pool)
-        .await
-        .map_err(map_storage_error)?;
+             LIMIT $7"
+        };
+        let rows: Vec<sqlx::postgres::PgRow> = sqlx::query(sql)
+            .bind(filter.actor_id.map(ActorId::as_uuid))
+            .bind(filter.action.clone())
+            .bind(effective_profile.map(ClientProfileId::as_uuid))
+            .bind(filter.from)
+            .bind(filter.to)
+            .bind(after_seq)
+            // Fetch one extra to know whether another page exists.
+            .bind((take + 1) as i64)
+            .fetch_all(pool)
+            .await
+            .map_err(map_storage_error)?;
 
         let has_more = rows.len() as u64 > take;
         let mut events = Vec::with_capacity(rows.len().min(take as usize));

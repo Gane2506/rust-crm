@@ -1674,6 +1674,154 @@ async fn pg_audit_endpoints_serve_agency_auditor() {
 
     drop_db(&admin_url, &db_name, pool).await;
 }
+
+/// `GET /api/v1/audit/events?newest_first=true` returns the newest
+/// events first — the order the Dashboard "Recent audit events" tile
+/// needs — while the default (and an explicit `newest_first=false`)
+/// stays chain order, and the cursor pages forward in whichever
+/// direction was requested (AUDIT-13).
+#[tokio::test]
+async fn pg_audit_events_newest_first_returns_newest_first() {
+    let Some((pool, admin_url, db_name)) = fresh_db().await else {
+        eprintln!("skipping Postgres API test: DATABASE_URL is not set");
+        return;
+    };
+    let router = pg_router(&pool);
+    let profile = uuid::Uuid::new_v4();
+    let (token, staff_id, agency_id) =
+        seed_authed_user(&pool, &router, profile, "newest@example.com").await;
+
+    PgGrantRepository::new(pool.clone())
+        .assign(
+            staff_id,
+            Grant {
+                grant_id: GrantId::new(),
+                action: Action {
+                    resource: Resource::AuditLog,
+                    operation: Operation::Read,
+                },
+                scope: Scope::Agency { agency_id },
+            },
+        )
+        .await
+        .expect("assign the audit-read grant");
+
+    // Three events in a known order, recorded after the login so they
+    // are the newest events in the log.
+    let audit_log = PgAuditLogService::new(pool.clone());
+    let ctx = audit_system_ctx();
+    let mut recorded = Vec::new();
+    for n in 1..=3 {
+        recorded.push(
+            audit_log
+                .record(
+                    &ctx,
+                    &SecurityEvent::login_failed(&format!("newest-{n}@example.com")),
+                    uuid::Uuid::new_v4(),
+                )
+                .await
+                .expect("record")
+                .event_id
+                .as_uuid()
+                .to_string(),
+        );
+    }
+
+    // Fetches one page over HTTP, returning the event ids in response
+    // order plus `has_more`.
+    let fetch_page = |uri: &str| {
+        let router = router.clone();
+        let token = token.clone();
+        let uri = uri.to_owned();
+        async move {
+            let (status, body) =
+                read_json(router.oneshot(get(uri, &token)).await.expect("oneshot")).await;
+            assert_eq!(status, StatusCode::OK);
+            let events = body
+                .get("events")
+                .and_then(serde_json::Value::as_array)
+                .expect("events array");
+            let ids: Vec<String> = events
+                .iter()
+                .map(|event| {
+                    event
+                        .get("event_id")
+                        .and_then(serde_json::Value::as_str)
+                        .expect("event id")
+                        .to_owned()
+                })
+                .collect();
+            let has_more = body
+                .get("has_more")
+                .and_then(serde_json::Value::as_bool)
+                .expect("has_more flag");
+            (ids, has_more)
+        }
+    };
+
+    // Only the three recorded events, in response order: the login and
+    // grant events also sit in the log, but their relative order to the
+    // recorded three is not what this test pins.
+    let only_recorded = |ids: Vec<String>| {
+        ids.into_iter()
+            .filter(|id| recorded.contains(id))
+            .collect::<Vec<String>>()
+    };
+
+    // Default: chain order — the three recorded events oldest first.
+    let (ids, _) = fetch_page("/api/v1/audit/events?limit=10").await;
+    assert_eq!(
+        only_recorded(ids),
+        recorded,
+        "the default page must stay in chain order"
+    );
+
+    // Explicit false: same as the default.
+    let (ids, _) = fetch_page("/api/v1/audit/events?newest_first=false&limit=10").await;
+    assert_eq!(
+        only_recorded(ids),
+        recorded,
+        "newest_first=false must behave like the default"
+    );
+
+    // Newest first: the three recorded events newest first, and the
+    // newest event in the whole log is the first row — this is what
+    // the Dashboard tile shows.
+    let (ids, _) = fetch_page("/api/v1/audit/events?newest_first=true&limit=10").await;
+    assert_eq!(
+        ids.first().expect("the page is not empty"),
+        recorded.last().expect("three events recorded"),
+        "the newest event must head a newest-first page"
+    );
+    let mut reversed = recorded.clone();
+    reversed.reverse();
+    assert_eq!(
+        only_recorded(ids),
+        reversed,
+        "a newest-first page must run newest first"
+    );
+
+    // Cursor pages forward in newest-first order too: one per page,
+    // newest to oldest.
+    let (ids, has_more) = fetch_page("/api/v1/audit/events?newest_first=true&limit=1").await;
+    assert_eq!(ids, vec![recorded[2].clone()], "first newest-first page");
+    assert!(has_more);
+    let (ids, has_more) = fetch_page(&format!(
+        "/api/v1/audit/events?newest_first=true&limit=1&after={}",
+        recorded[2]
+    ))
+    .await;
+    assert_eq!(ids, vec![recorded[1].clone()], "second newest-first page");
+    assert!(has_more);
+    let (ids, _) = fetch_page(&format!(
+        "/api/v1/audit/events?newest_first=true&limit=1&after={}",
+        recorded[1]
+    ))
+    .await;
+    assert_eq!(ids, vec![recorded[0].clone()], "third newest-first page");
+
+    drop_db(&admin_url, &db_name, pool).await;
+}
 /// Tampering with a chain hash is surfaced through the HTTP verify
 /// endpoint: `GET /api/v1/audit/verify` reports `valid: false` and names
 /// the first bad event (task 04-AUD-03).

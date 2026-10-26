@@ -97,20 +97,33 @@ pub struct AuditQuery {
     pub from: Option<DateTime<Utc>>,
     /// Only events before this time.
     pub to: Option<DateTime<Utc>>,
-    /// Cursor: only events after this event id, in chain order.
+    /// Cursor: only events after this event id, in chain order — or, when
+    /// [`AuditQuery::newest_first`] is set, only events before this event
+    /// id in newest-first order (the cursor is always the last event of
+    /// the previous page, whichever direction the page runs).
     pub after: Option<AuditEventId>,
     /// Maximum events to return. Implementations cap this at a sane
     /// bound and document it.
     pub limit: u64,
+    /// When true, events come back newest first (descending `seq`)
+    /// instead of chain order. Presentation order only: it changes
+    /// nothing about how events are stored, hashed, or verified.
+    /// Defaults to false (chain order) so existing callers are
+    /// unaffected. Timelines (e.g. the Dashboard "Recent audit events"
+    /// tile) set this; the Audit page keeps chain order and reorders
+    /// the fetched page client-side.
+    pub newest_first: bool,
 }
 
-/// One page of audit events in chain (ascending time) order.
+/// One page of audit events.
 ///
-/// Chain order — not newest-first — so a reader can stream the log and
-/// verify each link as it goes. Display layers reverse for timelines.
+/// Chain (ascending time) order by default, so a reader can stream the
+/// log and verify each link as it goes; newest first when the query
+/// asked for it ([`AuditQuery::newest_first`]). Display layers reverse
+/// for timelines.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AuditPage {
-    /// The events in this page, chain order.
+    /// The events in this page, in the order the query asked for.
     pub events: Vec<AuditEvent>,
     /// Whether more events match beyond this page.
     pub has_more: bool,
@@ -180,7 +193,10 @@ pub trait AuditLogService {
     ) -> impl Future<Output = Result<ChainVerification, DomainError>> + Send + 'a;
 
     /// Queries the log with `filter`, enforcing `ctx`'s client-profile
-    /// isolation. Events come back in chain (ascending time) order.
+    /// isolation. Events come back in chain (ascending time) order, or
+    /// newest first when `filter.newest_first` is set. Newest-first is
+    /// a presentation order only — storage, hashing and chain
+    /// verification are unaffected.
     fn query<'a>(
         &'a self,
         ctx: &'a ActionContext,

@@ -888,6 +888,7 @@ fn Dashboard(token: String) -> impl IntoView {
                     &crate::api::AuditQuery {
                         action: None,
                         limit: Some(8),
+                        newest_first: true,
                     },
                     &token,
                 )
