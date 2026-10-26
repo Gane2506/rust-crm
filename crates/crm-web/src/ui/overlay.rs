@@ -81,6 +81,30 @@ pub(crate) fn focus_first_in(panel: &web_sys::Element) {
     }
 }
 
+/// Moves focus to the first element in `panel` matching `selector`,
+/// returning whether anything was focused.
+///
+/// Used by [`Dialog`]'s `autofocus` prop: a search palette wants its
+/// input focused on open, not the dialog's close button (the first
+/// focusable element in DOM order). Guards mirror [`focusable_in`]:
+/// disabled, unfocusable, and hidden elements are skipped.
+fn focus_selector_in(panel: &web_sys::Element, selector: &str) -> bool {
+    let Ok(Some(node)) = panel.query_selector(selector) else {
+        return false;
+    };
+    let Ok(el) = node.dyn_into::<web_sys::HtmlElement>() else {
+        return false;
+    };
+    if el.has_attribute("disabled") || el.tab_index() < 0 {
+        return false;
+    }
+    if el.offset_parent().is_none() {
+        return false;
+    }
+    let _ = el.focus();
+    true
+}
+
 /// Cycles Tab / Shift+Tab within `panel` (focus trap).
 ///
 /// Focus wraps from last to first (and back) instead of escaping to
@@ -120,7 +144,8 @@ pub(crate) fn trap_tab(panel: &web_sys::Element, ev: &leptos::ev::KeyboardEvent)
 /// Modal dialog with overlay.
 ///
 /// Focus management (WAI-APG dialog pattern):
-/// - On open, focus moves to the first focusable element inside the
+/// - On open, focus moves to the element matching `autofocus` when
+///   one is given, else to the first focusable element inside the
 ///   dialog (or the panel itself when there is none).
 /// - Tab / Shift+Tab cycles within the dialog; focus cannot escape
 ///   to the page behind it.
@@ -134,6 +159,10 @@ pub(crate) fn trap_tab(panel: &web_sys::Element, ev: &leptos::ev::KeyboardEvent)
 /// - `close_on_escape`: Escape closes the dialog when it has focus
 ///   (default true).
 /// - `title`: optional dialog heading.
+/// - `autofocus`: optional CSS selector for the element to focus on
+///   open, instead of the first focusable element (e.g. a search
+///   input in a command palette). When the selector matches nothing,
+///   focus falls back to the first focusable element.
 /// - `children`: dialog body.
 #[component]
 pub fn Dialog(
@@ -141,6 +170,7 @@ pub fn Dialog(
     #[prop(optional)] on_close: Option<UiHandler>,
     #[prop(default = true)] close_on_escape: bool,
     #[prop(optional)] title: Option<&'static str>,
+    #[prop(optional)] autofocus: Option<&'static str>,
     children: ChildrenFn,
 ) -> impl IntoView {
     // `UiHandler`: the close handler is captured inside the `<Show>`
@@ -173,7 +203,16 @@ pub fn Dialog(
                         opener.update_value(|slot| *slot = Some(el));
                     }
                 }
-                focus_first_in(&panel);
+                // A caller-nominated focus target (e.g. the palette's
+                // search input) wins over the first focusable element;
+                // when the selector matches nothing, fall back to the
+                // default so the dialog still takes focus on open.
+                let focused = autofocus
+                    .map(|selector| focus_selector_in(&panel, selector))
+                    .unwrap_or(false);
+                if !focused {
+                    focus_first_in(&panel);
+                }
             }
         } else {
             opener.with_value(|slot| {
