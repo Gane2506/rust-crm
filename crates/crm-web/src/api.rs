@@ -1199,12 +1199,13 @@ pub struct InvoiceListResponse {
 }
 
 /// `GET /api/v1/invoices/{id}/payments` response envelope.
+///
+/// No `total` field: the payments list is never paged in the UI, and
+/// serde ignores the extra field the server sends.
 #[derive(Debug, Clone, Deserialize)]
 pub struct PaymentListResponse {
     /// The invoice's payments, oldest first.
     pub payments: Vec<Payment>,
-    /// Total payments on the invoice.
-    pub total: u64,
 }
 
 /// `POST /api/v1/invoices` request body.
@@ -1247,9 +1248,7 @@ pub async fn fetch_invoices(
     client_profile_id: &str,
     token: &str,
 ) -> Result<InvoiceListResponse, ApiError> {
-    let url = format!(
-        "{API_BASE}/api/v1/invoices?client_profile_id={client_profile_id}&limit=20"
-    );
+    let url = format!("{API_BASE}/api/v1/invoices?client_profile_id={client_profile_id}&limit=20");
     let response = bearer(Request::get(&url), token)
         .send()
         .await

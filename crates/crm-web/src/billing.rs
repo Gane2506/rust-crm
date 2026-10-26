@@ -218,9 +218,7 @@ fn InvoiceBrowser(token: String, selected: RwSignal<String>) -> impl IntoView {
                         let invoice_id = invoice.invoice_id.to_string();
                         let token = token.clone();
                         spawn_local(async move {
-                            if let Ok(balance) =
-                                fetch_invoice_balance(&invoice_id, &token).await
-                            {
+                            if let Ok(balance) = fetch_invoice_balance(&invoice_id, &token).await {
                                 if generation.get_untracked() == my_generation {
                                     balances.update(|map| {
                                         map.insert(invoice_id, balance);
@@ -371,11 +369,10 @@ fn InvoiceCreateForm(token: String, profile_id: String, on_created: UiHandler) -
                 return;
             }
             let currency_value = currency.get().trim().to_uppercase();
-            if currency_value.len() != 3
-                || !currency_value.bytes().all(|b| b.is_ascii_uppercase())
+            if currency_value.len() != 3 || !currency_value.bytes().all(|b| b.is_ascii_uppercase())
             {
                 status.set(Some(Err(
-                    "Enter a 3-letter currency code, e.g. USD.".to_string(),
+                    "Enter a 3-letter currency code, e.g. USD.".to_string()
                 )));
                 return;
             }
@@ -386,14 +383,13 @@ fn InvoiceCreateForm(token: String, profile_id: String, on_created: UiHandler) -
             let description_value = line_description.get().trim().to_string();
             let quantity_raw = line_quantity.get();
             let price_raw = line_price.get();
-            let line_given =
-                !description_value.is_empty() || !price_raw.trim().is_empty();
+            let line_given = !description_value.is_empty() || !price_raw.trim().is_empty();
             let first_line = if !line_given {
                 None
             } else {
                 if description_value.is_empty() {
                     status.set(Some(Err(
-                        "Enter a description for the first line.".to_string(),
+                        "Enter a description for the first line.".to_string()
                     )));
                     return;
                 }
@@ -404,7 +400,7 @@ fn InvoiceCreateForm(token: String, profile_id: String, on_created: UiHandler) -
                         Ok(n) if n > 0 => n,
                         _ => {
                             status.set(Some(Err(
-                                "Quantity must be a whole number above 0.".to_string(),
+                                "Quantity must be a whole number above 0.".to_string()
                             )));
                             return;
                         }
@@ -413,18 +409,14 @@ fn InvoiceCreateForm(token: String, profile_id: String, on_created: UiHandler) -
                 let price_minor = match parse_major_units(&price_raw) {
                     Some(minor) => minor,
                     None => {
-                        status.set(Some(Err(
-                            "Enter a unit price like 100.00.".to_string(),
-                        )));
+                        status.set(Some(Err("Enter a unit price like 100.00.".to_string())));
                         return;
                     }
                 };
                 let unit_price = match Money::new(price_minor, currency_value.clone()) {
                     Ok(money) => money,
                     Err(_) => {
-                        status.set(Some(Err(
-                            "Enter a unit price like 100.00.".to_string(),
-                        )));
+                        status.set(Some(Err("Enter a unit price like 100.00.".to_string())));
                         return;
                     }
                 };
@@ -447,9 +439,7 @@ fn InvoiceCreateForm(token: String, profile_id: String, on_created: UiHandler) -
                         // Optional first line, second call.
                         let mut line_error = None;
                         if let Some(line) = first_line {
-                            if let Err(e) =
-                                add_invoice_line(&invoice_id, &line, &token).await
-                            {
+                            if let Err(e) = add_invoice_line(&invoice_id, &line, &token).await {
                                 line_error = Some(e.friendly_message());
                             }
                         }
@@ -730,6 +720,15 @@ pub fn InvoiceDetail(token: String, invoice_id: String) -> impl IntoView {
                     let balance_value = balance.get();
                     let lines = inv.lines.clone();
                     let payments_list = payments.get();
+                    // One fresh clone per use: a `view!` child/prop is a
+                    // `move` closure, so the first use of a `String`
+                    // would move it out and the next use would fail
+                    // (E0382). Each form and the header takes its own.
+                    let currency_header = inv.currency.clone();
+                    let line_token = token.clone();
+                    let line_currency = inv.currency.clone();
+                    let payment_token = token.clone();
+                    let payment_currency = inv.currency.clone();
                     view! {
                         <Card>
                             <CardHeader>
@@ -750,7 +749,7 @@ pub fn InvoiceDetail(token: String, invoice_id: String) -> impl IntoView {
                                     <FieldRow label="Client profile">
                                         {short_id(&inv.client_profile_id.to_string())}
                                     </FieldRow>
-                                    <FieldRow label="Currency">{inv.currency.clone()}</FieldRow>
+                                    <FieldRow label="Currency">{currency_header}</FieldRow>
                                     <FieldRow label="Total">{total}</FieldRow>
                                     <FieldRow label="Balance due">{balance_text}</FieldRow>
                                     <FieldRow label="Created">
@@ -846,9 +845,9 @@ pub fn InvoiceDetail(token: String, invoice_id: String) -> impl IntoView {
                                 {if is_draft {
                                     view! {
                                         <AddInvoiceLineForm
-                                            token={token.clone()}
+                                            token={line_token}
                                             invoice_id={inv.invoice_id.to_string()}
-                                            currency={inv.currency.clone()}
+                                            currency={line_currency}
                                             on_added=retry
                                         />
                                     }
@@ -889,6 +888,11 @@ pub fn InvoiceDetail(token: String, invoice_id: String) -> impl IntoView {
                                                             p.payment_id.to_string();
                                                         let is_recorded =
                                                             p.status == PaymentStatus::Recorded;
+                                                        // Clone in the body, not in the `view!`:
+                                                        // the on_click prop's `move` closure
+                                                        // would move `reverse_handler` out of
+                                                        // this `Fn` closure on the first row.
+                                                        let reverse = reverse_handler.clone();
                                                         view! {
                                                             <TableRow>
                                                                 <TableCell>{amount}</TableCell>
@@ -909,14 +913,10 @@ pub fn InvoiceDetail(token: String, invoice_id: String) -> impl IntoView {
                                                                                 disabled=Signal::derive(move || {
                                                                                     working.get()
                                                                                 })
-                                                                                on_click={UiHandler::new({
-                                                                                    let reverse =
-                                                                                        reverse_handler.clone();
-                                                                                    move || {
-                                                                                        reverse(
-                                                                                            payment_id.clone(),
-                                                                                        )
-                                                                                    }
+                                                                                on_click={UiHandler::new(move || {
+                                                                                    reverse(
+                                                                                        payment_id.clone(),
+                                                                                    )
                                                                                 })}
                                                                             >
                                                                                 "Reverse"
@@ -940,9 +940,9 @@ pub fn InvoiceDetail(token: String, invoice_id: String) -> impl IntoView {
                                     match balance_value {
                                         Some(amount) => view! {
                                             <RecordPaymentForm
-                                                token={token.clone()}
+                                                token={payment_token}
                                                 invoice_id={inv.invoice_id.to_string()}
-                                                currency={inv.currency.clone()}
+                                                currency={payment_currency}
                                                 balance=amount
                                                 on_recorded=retry
                                             />
@@ -1012,7 +1012,7 @@ fn AddInvoiceLineForm(
                 Ok(n) if n > 0 => n,
                 _ => {
                     status.set(Some(Err(
-                        "Quantity must be a whole number above 0.".to_string(),
+                        "Quantity must be a whole number above 0.".to_string()
                     )));
                     return;
                 }
@@ -1160,9 +1160,9 @@ fn RecordPaymentForm(
             let amount_minor = match parse_major_units(&amount.get()) {
                 Some(minor) if minor > 0 => minor,
                 _ => {
-                    status.set(Some(Err(
-                        "Enter an amount above 0, like 60.00.".to_string(),
-                    )));
+                    status.set(Some(
+                        Err("Enter an amount above 0, like 60.00.".to_string()),
+                    ));
                     return;
                 }
             };
@@ -1176,9 +1176,9 @@ fn RecordPaymentForm(
             let payment = match Money::new(amount_minor, currency.clone()) {
                 Ok(money) => money,
                 Err(_) => {
-                    status.set(Some(Err(
-                        "Enter an amount above 0, like 60.00.".to_string(),
-                    )));
+                    status.set(Some(
+                        Err("Enter an amount above 0, like 60.00.".to_string()),
+                    ));
                     return;
                 }
             };
