@@ -1243,9 +1243,7 @@ pub async fn fetch_threads(
     token: &str,
     client_profile_id: &str,
 ) -> Result<ThreadListResponse, ApiError> {
-    let url = format!(
-        "{API_BASE}/api/v1/threads?client_profile_id={client_profile_id}&limit=20"
-    );
+    let url = format!("{API_BASE}/api/v1/threads?client_profile_id={client_profile_id}&limit=20");
     let response = bearer(Request::get(&url), token)
         .send()
         .await
@@ -1261,10 +1259,7 @@ pub async fn fetch_threads(
 }
 
 /// Fetches one thread with its messages.
-pub async fn fetch_thread(
-    thread_id: &str,
-    token: &str,
-) -> Result<ThreadDetailResponse, ApiError> {
+pub async fn fetch_thread(thread_id: &str, token: &str) -> Result<ThreadDetailResponse, ApiError> {
     let url = format!("{API_BASE}/api/v1/threads/{thread_id}");
     let response = bearer(Request::get(&url), token)
         .send()
@@ -1282,10 +1277,7 @@ pub async fn fetch_thread(
 
 /// Sends an email, minting a fresh `Idempotency-Key` per call so a
 /// retried submission never sends a duplicate.
-pub async fn send_email(
-    request: &SendEmailRequest,
-    token: &str,
-) -> Result<EmailMessage, ApiError> {
+pub async fn send_email(request: &SendEmailRequest, token: &str) -> Result<EmailMessage, ApiError> {
     let url = format!("{API_BASE}/api/v1/emails/send");
     let body = serde_json::to_string(request)
         .map_err(|error| ApiError::Transport(format!("invalid send-email request: {error}")))?;

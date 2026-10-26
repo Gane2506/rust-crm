@@ -34,9 +34,9 @@ use crate::components::{
     CountLine, EmptyState, ErrorAlert, FieldRow, Loading, OkAlert, PageHeader,
 };
 use crate::ui::{
-    push_toast, Badge, BadgeVariant, Button, Card, CardContent, CardHeader,
-    CardTitle, Input as TextInput, Label, Select, Table, TableBody, TableCell, TableHead,
-    TableHeader, TableRow, Textarea, ToastVariant, Toasts, UiHandler, UiValueHandler,
+    push_toast, Badge, BadgeVariant, Button, Card, CardContent, CardHeader, CardTitle,
+    Input as TextInput, Label, Select, Table, TableBody, TableCell, TableHead, TableHeader,
+    TableRow, Textarea, ToastVariant, Toasts, UiHandler, UiValueHandler,
 };
 
 /// Maps a thread lifecycle state to its badge variant.
@@ -308,9 +308,7 @@ fn ComposeForm(token: String, profile_id: String, on_sent: UiHandler) -> impl In
             let subject_value = subject.get();
             let body_value = body.get();
             if subject_value.trim().is_empty() && body_value.trim().is_empty() {
-                status.set(Some(Err(
-                    "Enter a subject or a message body.".to_string(),
-                )));
+                status.set(Some(Err("Enter a subject or a message body.".to_string())));
                 return;
             }
             let request = SendEmailRequest {
@@ -528,11 +526,17 @@ pub fn ThreadDetail(token: String, thread_id: String) -> impl IntoView {
                     let status = t.status;
                     let count = t.message_count;
                     let thread_messages = messages.get();
+                    // Hoisted before the view!: the macro captures its
+                    // environment by move, and a `{t.subject.clone()}`
+                    // child partially moves `t`, so the `t.clone()` for
+                    // ReplyForm below could not borrow it (E0382).
+                    let subject = t.subject.clone();
+                    let thread_id = t.thread_id.to_string();
                     view! {
                         <Card>
                             <CardHeader>
                                 <div style="display: flex; align-items: center; gap: 0.625rem;">
-                                    <CardTitle>{t.subject.clone()}</CardTitle>
+                                    <CardTitle>{subject}</CardTitle>
                                     <Badge variant=thread_status_badge(&status)>
                                         {format!("{status:?}")}
                                     </Badge>
@@ -542,7 +546,7 @@ pub fn ThreadDetail(token: String, thread_id: String) -> impl IntoView {
                                 <dl style="margin: 0 0 1rem;">
                                     <FieldRow label="Thread id">
                                         <span style="font-family: var(--font-mono); font-size: 0.8125rem;">
-                                            {t.thread_id.to_string()}
+                                            {thread_id}
                                         </span>
                                     </FieldRow>
                                     <FieldRow label="Client profile">
@@ -685,9 +689,7 @@ fn ReplyForm(
             let subject_value = subject.get();
             let body_value = body.get();
             if subject_value.trim().is_empty() && body_value.trim().is_empty() {
-                status.set(Some(Err(
-                    "Enter a subject or a message body.".to_string(),
-                )));
+                status.set(Some(Err("Enter a subject or a message body.".to_string())));
                 return;
             }
             let request = SendEmailRequest {
