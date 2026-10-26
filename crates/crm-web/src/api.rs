@@ -13,6 +13,7 @@ use crm_domain::asset::Asset;
 use crm_domain::audit::AuditEvent;
 use crm_domain::campaign::{Campaign, CampaignStep, ProspectPool};
 use crm_domain::contact::Contact;
+use crm_domain::email::{EmailMessage, EmailThread};
 use crm_domain::ids::{ClientProfileId, ContactId};
 use crm_domain::profile::ClientProfile;
 use gloo_net::http::Request;
@@ -1178,6 +1179,124 @@ pub async fn create_pool(
             .json::<ProspectPool>()
             .await
             .map_err(|error| ApiError::Transport(format!("invalid pool response: {error}")))
+    } else {
+        Err(api_error_from_response(&response).await)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Email threads (`GET /api/v1/threads…`, `POST /api/v1/emails/send`)
+// ---------------------------------------------------------------------------
+
+/// `GET /api/v1/threads` response envelope.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ThreadListResponse {
+    /// The requested page of threads.
+    pub threads: Vec<EmailThread>,
+    /// Total matching threads across all pages.
+    pub total: u64,
+}
+
+/// `GET /api/v1/threads/{id}` response: the thread plus its messages
+/// in chronological order.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ThreadDetailResponse {
+    /// The thread.
+    pub thread: EmailThread,
+    /// Its messages, oldest first.
+    pub messages: Vec<EmailMessage>,
+}
+
+/// `POST /api/v1/emails/send` request body.
+///
+/// Field names mirror the API's `SendEmailBody` exactly. `thread_id`
+/// and `body_html` are skipped when `None`: the server's
+/// `#[serde(default)]` only applies to *missing* fields. `from` is
+/// sent blank to use the agency's configured from-address.
+#[derive(Debug, Clone, Serialize)]
+pub struct SendEmailRequest {
+    /// Owning client profile (UUID string).
+    pub client_profile_id: String,
+    /// Thread to append to, if replying in-thread.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thread_id: Option<String>,
+    /// Sender address; blank means the agency's configured from-address.
+    pub from: String,
+    /// Recipient addresses.
+    pub to: Vec<String>,
+    /// CC addresses.
+    pub cc: Vec<String>,
+    /// BCC addresses.
+    pub bcc: Vec<String>,
+    /// Subject line.
+    pub subject: String,
+    /// Plain-text body.
+    pub body_text: String,
+    /// HTML body, if supplied.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub body_html: Option<String>,
+}
+
+/// Lists threads for one client profile (threads are profile-scoped;
+/// the query requires `client_profile_id`).
+pub async fn fetch_threads(
+    token: &str,
+    client_profile_id: &str,
+) -> Result<ThreadListResponse, ApiError> {
+    let url = format!("{API_BASE}/api/v1/threads?client_profile_id={client_profile_id}&limit=20");
+    let response = bearer(Request::get(&url), token)
+        .send()
+        .await
+        .map_err(|error| ApiError::Transport(error.to_string()))?;
+    if response.ok() {
+        response
+            .json::<ThreadListResponse>()
+            .await
+            .map_err(|error| ApiError::Transport(format!("invalid thread list response: {error}")))
+    } else {
+        Err(api_error_from_response(&response).await)
+    }
+}
+
+/// Fetches one thread with its messages.
+pub async fn fetch_thread(thread_id: &str, token: &str) -> Result<ThreadDetailResponse, ApiError> {
+    let url = format!("{API_BASE}/api/v1/threads/{thread_id}");
+    let response = bearer(Request::get(&url), token)
+        .send()
+        .await
+        .map_err(|error| ApiError::Transport(error.to_string()))?;
+    if response.ok() {
+        response
+            .json::<ThreadDetailResponse>()
+            .await
+            .map_err(|error| ApiError::Transport(format!("invalid thread response: {error}")))
+    } else {
+        Err(api_error_from_response(&response).await)
+    }
+}
+
+/// Sends an email, minting a fresh `Idempotency-Key` per call so a
+/// retried submission never sends a duplicate.
+pub async fn send_email(request: &SendEmailRequest, token: &str) -> Result<EmailMessage, ApiError> {
+    let url = format!("{API_BASE}/api/v1/emails/send");
+    let body = serde_json::to_string(request)
+        .map_err(|error| ApiError::Transport(format!("invalid send-email request: {error}")))?;
+    let response = bearer(
+        Request::post(&url)
+            .header("Idempotency-Key", &new_idempotency_key())
+            .header("Content-Type", "application/json"),
+        token,
+    )
+    .body(body)
+    .map_err(|error| ApiError::Transport(error.to_string()))?
+    .send()
+    .await
+    .map_err(|error| ApiError::Transport(error.to_string()))?;
+    if response.ok() {
+        response
+            .json::<EmailMessage>()
+            .await
+            .map_err(|error| ApiError::Transport(format!("invalid sent-email response: {error}")))
     } else {
         Err(api_error_from_response(&response).await)
     }
