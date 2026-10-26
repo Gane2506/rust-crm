@@ -16,7 +16,7 @@ use crm_domain::contact::Contact;
 use crm_domain::ids::{ClientProfileId, ContactId};
 use crm_domain::profile::ClientProfile;
 use gloo_net::http::Request;
-use leptos::prelude::RwSignal;
+use leptos::prelude::{RwSignal, Set};
 use serde::{Deserialize, Serialize};
 
 /// Base URL of the `crm-api` server.
@@ -189,19 +189,21 @@ fn plain_detail(detail: &str, prefix: &str) -> Option<String> {
     Some(sentence)
 }
 
-/// The signal `App` registers so a 401 from any authenticated call can
-/// mark the session expired (SESSION-02).
-///
-/// Why registration, not `use_context`: every API call in the app runs
-/// inside `leptos::task::spawn_local`, which does NOT preserve the
-/// reactive owner — only `spawn_local_scoped` wraps the future in a
-/// `ScopedFuture` (reactive_graph 0.2.16) — so `use_context` inside
-/// these `async fn`s would silently return `None` and the expiry would
-/// never fire. Registration happens once, synchronously, in `App`
-/// setup where the owner is live; the signal itself is just a `Copy`
-/// handle afterwards, so setting it from here needs no context at all.
-/// The app is single-threaded (WASM), so a `thread_local!` cell is
-/// enough; on the host test target each test thread has its own cell.
+// The signal `App` registers so a 401 from any authenticated call can
+// mark the session expired (SESSION-02).
+//
+// Why registration, not `use_context`: every API call in the app runs
+// inside `leptos::task::spawn_local`, which does NOT preserve the
+// reactive owner — only `spawn_local_scoped` wraps the future in a
+// `ScopedFuture` (reactive_graph 0.2.16) — so `use_context` inside
+// these `async fn`s would silently return `None` and the expiry would
+// never fire. Registration happens once, synchronously, in `App`
+// setup where the owner is live; the signal itself is just a `Copy`
+// handle afterwards, so setting it from here needs no context at all.
+// The app is single-threaded (WASM), so a `thread_local!` cell is
+// enough; on the host test target each test thread has its own cell.
+// (Plain `//` comment, not `///`: rustdoc does not document macro
+// invocations, and `///` here is a denied `unused_doc_comments` lint.)
 thread_local! {
     static SESSION_EXPIRED: Cell<Option<RwSignal<bool>>> = const { Cell::new(None) };
 }
