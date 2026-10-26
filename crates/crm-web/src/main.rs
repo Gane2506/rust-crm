@@ -556,6 +556,11 @@ fn TopBar(on_search: UiHandler, nav_open: RwSignal<bool>) -> impl IntoView {
 /// or the global ⌘K/Ctrl+K shortcut (AUDIT-11, registered in [`Shell`]);
 /// closes on selection or Escape.
 ///
+/// Focus lands on the search input on open (via the dialog's
+/// `autofocus` prop — the close button is the first focusable element
+/// in DOM order, so the default would swallow typing) and Enter
+/// selects the first filtered entry (R3-01).
+///
 /// # Props
 /// - `open`: controls visibility.
 #[component]
@@ -575,9 +580,37 @@ fn CommandPalette(open: RwSignal<bool>) -> impl IntoView {
     // can reach it.
     let navigate = StoredValue::new_local(leptos_router::hooks::use_navigate());
 
+    // The first entry the list shows for the current query — Enter
+    // selects it. Mirrors the filter in the list render below.
+    let first_match = move || {
+        let needle = query.get().to_lowercase();
+        NAV_ITEMS
+            .iter()
+            .find(|item| needle.is_empty() || item.label.to_lowercase().contains(&needle))
+            .map(|item| item.href)
+    };
+
     view! {
-        <Dialog open=open title="Jump to…">
-            <div style="margin-bottom: 0.75rem;">
+        <Dialog open=open title="Jump to…" autofocus="#cmd-palette-input">
+            <div
+                style="margin-bottom: 0.75rem;"
+                on:keydown=move |ev: leptos::ev::KeyboardEvent| {
+                    // Enter selects the first filtered entry — the same
+                    // navigation the row buttons do on click. Keydown
+                    // bubbles from the input to this wrapper, so the
+                    // shared `Input` component needs no keydown prop;
+                    // Tab and Escape keep bubbling to the dialog panel
+                    // handler. With no match (empty filter) Enter does
+                    // nothing.
+                    if ev.key() == "Enter" {
+                        if let Some(href) = first_match() {
+                            open.set(false);
+                            let href = href.to_string();
+                            navigate.with_value(|n| n(&href, Default::default()));
+                        }
+                    }
+                }
+            >
                 <Input
                     input_type="search"
                     placeholder="Type a workspace area…"
