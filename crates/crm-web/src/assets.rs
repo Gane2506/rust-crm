@@ -15,7 +15,7 @@
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 
-use crm_domain::asset::Asset;
+use crm_domain::asset::{Asset, AssetStatus};
 
 use crate::api::{
     archive_asset, fetch_assets, fetch_profiles, register_asset, ApiError, AssetListResponse,
@@ -23,9 +23,9 @@ use crate::api::{
 };
 use crate::components::{CountLine, EmptyState, ErrorAlert, Loading, OkAlert, PageHeader};
 use crate::ui::{
-    Badge, BadgeVariant, Button, ButtonVariant, Card, CardContent, CardHeader, CardTitle,
-    Input as TextInput, Label, Select, Table, TableBody, TableCell, TableHead, TableHeader,
-    TableRow, UiHandler, UiValueHandler,
+    push_toast, Badge, BadgeVariant, Button, ButtonVariant, Card, CardContent, CardHeader,
+    CardTitle, Input as TextInput, Label, Select, Table, TableBody, TableCell, TableHead,
+    TableHeader, TableRow, ToastVariant, Toasts, UiHandler, UiValueHandler,
 };
 
 /// Maps an asset kind to its badge variant.
@@ -37,6 +37,17 @@ fn asset_badge(kind: &crm_domain::asset::AssetKind) -> BadgeVariant {
         AssetKind::Audio => BadgeVariant::Warning,
         AssetKind::Video => BadgeVariant::Info,
         AssetKind::Other => BadgeVariant::Secondary,
+    }
+}
+
+/// Maps an asset status to its badge variant.
+///
+/// Mirrors the profile status badge: the live state reads green, the
+/// terminal state reads muted.
+fn asset_status_badge(status: &AssetStatus) -> BadgeVariant {
+    match status {
+        AssetStatus::Available => BadgeVariant::Success,
+        AssetStatus::Archived => BadgeVariant::Secondary,
     }
 }
 
@@ -185,6 +196,7 @@ fn AssetBrowser(token: String, selected: RwSignal<String>) -> impl IntoView {
                                                 <TableHead>"MIME"</TableHead>
                                                 <TableHead>"Size"</TableHead>
                                                 <TableHead>"SHA-256"</TableHead>
+                                                <TableHead>"Status"</TableHead>
                                                 <TableHead>"Actions"</TableHead>
                                             </TableRow>
                                         </TableHeader>
@@ -356,8 +368,14 @@ fn AssetRegisterForm(token: String, profile_id: String, on_registered: UiHandler
     }
 }
 
-/// One asset row: name, kind, size, short hash, archive action.
+/// One asset row: name, kind, size, short hash, status badge, archive action.
 ///
+/// Archiving shows a success toast with the file name and refetches the
+/// list (via `on_archived`), so the row's Status badge flips to Archived
+/// without a manual refresh. The Archive button is hidden on
+/// already-archived rows — archiving is terminal, and offering the button
+/// there used to read as a broken no-op (R3-02: the re-archive path is
+/// idempotent server-side, so nothing about the API changes here).
 /// Archive failures surface inline via [`ErrorAlert`]; `on_archived` fires
 /// only on success so the list refetch (and its error state) stays
 /// consistent.
@@ -365,6 +383,13 @@ fn AssetRegisterForm(token: String, profile_id: String, on_registered: UiHandler
 fn AssetRow(asset: Asset, token: String, on_archived: UiHandler) -> impl IntoView {
     let working = RwSignal::new(false);
     let archive_error = RwSignal::new(None::<String>);
+    // App-shell toast stack (provided via context in `main.rs`); `None`
+    // if the row is ever rendered outside the shell — then the Status
+    // badge flip after refetch is the only feedback, which is still
+    // unmistakable.
+    let toasts = use_context::<Toasts>();
+    // `AssetStatus` is `Copy`, so this read does not move `asset`.
+    let is_archived = asset.status == AssetStatus::Archived;
     let asset_id = asset.asset_id.to_string();
     let short_hash: String = asset
         .sha256
@@ -384,7 +409,17 @@ fn AssetRow(asset: Asset, token: String, on_archived: UiHandler) -> impl IntoVie
         let asset_id = asset_id.clone();
         spawn_local(async move {
             match archive_asset(&asset_id, &token).await {
-                Ok(_) => on_archived.call(),
+                Ok(archived) => {
+                    if let Some(toasts) = toasts {
+                        push_toast(
+                            toasts,
+                            "Asset archived",
+                            Some(archived.file_name),
+                            ToastVariant::Success,
+                        );
+                    }
+                    on_archived.call();
+                }
                 Err(error) => archive_error.set(Some(error.friendly_message())),
             }
             working.set(false);
@@ -409,19 +444,29 @@ fn AssetRow(asset: Asset, token: String, on_archived: UiHandler) -> impl IntoVie
                 </span>
             </TableCell>
             <TableCell>
+                <Badge variant=asset_status_badge(&asset.status)>{format!("{:?}", asset.status)}</Badge>
+            </TableCell>
+            <TableCell>
                 {move || {
                     archive_error
                         .get()
                         .map(|message| view! { <ErrorAlert message=message /> })
                 }}
-                <Button
-                    variant=ButtonVariant::Destructive
-                    btn_type="button"
-                    disabled=Signal::derive(move || working.get())
-                    on_click=on_archive
-                >
-                    {move || if working.get() { "Archiving…" } else { "Archive" }}
-                </Button>
+                {if is_archived {
+                    ().into_any()
+                } else {
+                    view! {
+                        <Button
+                            variant=ButtonVariant::Destructive
+                            btn_type="button"
+                            disabled=Signal::derive(move || working.get())
+                            on_click=on_archive
+                        >
+                            {move || if working.get() { "Archiving…" } else { "Archive" }}
+                        </Button>
+                    }
+                        .into_any()
+                }}
             </TableCell>
         </TableRow>
     }
