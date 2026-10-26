@@ -19,6 +19,7 @@ use api::logout;
 use assets::AssetsPage;
 use audit::AuditPage;
 use branding::BrandingPage;
+use campaigns::{CampaignDetail, CampaignsPage};
 use contacts::{ContactDetail, ContactsPage, MergePage};
 use login::LoginForm;
 use profiles::{ProfileDetail, ProfilesPage};
@@ -34,6 +35,7 @@ mod api;
 mod assets;
 mod audit;
 mod branding;
+mod campaigns;
 mod components;
 mod contacts;
 mod login;
@@ -799,6 +801,25 @@ fn Shell(token: String, on_logout: UiHandler) -> impl IntoView {
                                 }
                             />
                             <Route
+                                path=path!("/campaigns")
+                                view={
+                                    let token = token.clone();
+                                    move || view! { <CampaignsPage token=token.clone() /> }
+                                }
+                            />
+                            <Route
+                                path=path!("/campaigns/:id")
+                                view={
+                                    let token = token.clone();
+                                    move || {
+                                        let params = leptos_router::hooks::use_params_map();
+                                        let id = params.get().get("id").unwrap_or_default();
+                                        let token = token.clone();
+                                        view! { <CampaignDetail token=token campaign_id=id /> }
+                                    }
+                                }
+                            />
+                            <Route
                                 path=path!("/audit")
                                 view={
                                     let token = token.clone();
@@ -815,7 +836,6 @@ fn Shell(token: String, on_logout: UiHandler) -> impl IntoView {
                             // Feature areas whose dedicated views land in later
                             // tasks route to a placeholder so the IA is complete.
                             <Route path=path!("/mail") view=|| view! { <ComingSoon feature="Mail" /> } />
-                            <Route path=path!("/campaigns") view=|| view! { <ComingSoon feature="Campaigns" /> } />
                             <Route path=path!("/agents") view=|| view! { <ComingSoon feature="Jev agents" /> } />
                             <Route path=path!("/workflows") view=|| view! { <ComingSoon feature="Workflows" /> } />
                             <Route path=path!("/forms") view=|| view! { <ComingSoon feature="Forms" /> } />

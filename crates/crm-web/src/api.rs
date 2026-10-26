@@ -10,6 +10,7 @@ use std::fmt;
 
 use crm_domain::asset::Asset;
 use crm_domain::audit::AuditEvent;
+use crm_domain::campaign::{Campaign, CampaignStep, ProspectPool};
 use crm_domain::contact::Contact;
 use crm_domain::ids::{ClientProfileId, ContactId};
 use crm_domain::profile::ClientProfile;
@@ -789,6 +790,322 @@ pub async fn update_branding(
             .json::<BrandingResponse>()
             .await
             .map_err(|error| ApiError::Transport(format!("invalid branding response: {error}")))
+    } else {
+        Err(api_error_from_response(&response).await)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Campaigns (`POST/GET /api/v1/campaigns…`, `/api/v1/prospect-pools…`)
+// ---------------------------------------------------------------------------
+
+/// `GET /api/v1/campaigns` response envelope.
+#[derive(Debug, Clone, Deserialize)]
+pub struct CampaignListResponse {
+    /// The requested page of campaigns.
+    pub campaigns: Vec<Campaign>,
+    /// Total matching campaigns across all pages.
+    pub total: u64,
+}
+
+/// `GET /api/v1/campaigns/{id}` response envelope: the campaign plus its
+/// steps in position order.
+#[derive(Debug, Clone, Deserialize)]
+pub struct CampaignDetailResponse {
+    /// The campaign.
+    pub campaign: Campaign,
+    /// Its steps, in position order.
+    pub steps: Vec<CampaignStep>,
+}
+
+/// `GET /api/v1/prospect-pools` response envelope.
+#[derive(Debug, Clone, Deserialize)]
+pub struct PoolListResponse {
+    /// The requested page of pools.
+    pub pools: Vec<ProspectPool>,
+}
+
+/// `POST /api/v1/campaigns` request body.
+///
+/// Field names mirror the API's `CreateCampaignBody` exactly. The
+/// optional fields are skipped when `None`: the server's
+/// `#[serde(default)]` only applies to *missing* fields — an explicit
+/// JSON `null` would fail to deserialize into a `String`.
+#[derive(Debug, Clone, Serialize)]
+pub struct CreateCampaignRequest {
+    /// Campaign name; must be non-empty.
+    pub name: String,
+    /// `"agency"` or `"client_profile"`.
+    pub owner_kind: String,
+    /// Owning profile id, required when `owner_kind` is `"client_profile"`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_profile_id: Option<String>,
+    /// `"email"`, `"call"`, or `"mixed"`.
+    pub channel: String,
+    /// Prospect pool id (UUID string).
+    pub prospect_pool_id: String,
+    /// Cron schedule, e.g. `"0 9 * * *"`.
+    pub schedule: String,
+    /// Suppression policy; server default `""`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub suppression_policy: Option<String>,
+    /// Conversion rules; server default `""`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub conversion_rules: Option<String>,
+    /// Attribution window in days; server default `30`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attribution_window_days: Option<u32>,
+}
+
+/// `POST /api/v1/campaigns/{id}/steps` request body.
+#[derive(Debug, Clone, Serialize)]
+pub struct AddCampaignStepRequest {
+    /// `"email"`, `"call"`, or `"wait"`.
+    pub kind: String,
+    /// 0-based position in the step order.
+    pub position: u32,
+    /// Template id; required for email/call steps.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub template_id: Option<String>,
+    /// Wait in seconds; required (and > 0) for wait steps.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wait_duration_secs: Option<u64>,
+}
+
+/// `POST /api/v1/campaigns/{id}/schedule` request body: one-shot launch
+/// time, RFC 3339 in UTC (the server rejects a past time).
+#[derive(Debug, Clone, Serialize)]
+pub struct ScheduleCampaignRequest {
+    /// Launch time, e.g. `"2026-11-01T09:00:00Z"`.
+    pub schedule_for: String,
+}
+
+/// `POST /api/v1/prospect-pools` request body.
+#[derive(Debug, Clone, Serialize)]
+pub struct CreatePoolRequest {
+    /// Owning client profile (UUID string).
+    pub client_profile_id: String,
+    /// Pool name; must be non-empty.
+    pub name: String,
+}
+
+/// Lists campaigns: agency-owned when `client_profile_id` is `None`,
+/// profile-owned when `Some`. The list response carries no step count —
+/// count steps from [`fetch_campaign`] instead (R3-04).
+pub async fn fetch_campaigns(
+    token: &str,
+    client_profile_id: Option<&str>,
+) -> Result<CampaignListResponse, ApiError> {
+    let url = match client_profile_id {
+        Some(profile_id) => {
+            format!("{API_BASE}/api/v1/campaigns?client_profile_id={profile_id}&limit=20")
+        }
+        None => format!("{API_BASE}/api/v1/campaigns?limit=20"),
+    };
+    let response = bearer(Request::get(&url), token)
+        .send()
+        .await
+        .map_err(|error| ApiError::Transport(error.to_string()))?;
+    if response.ok() {
+        response
+            .json::<CampaignListResponse>()
+            .await
+            .map_err(|error| {
+                ApiError::Transport(format!("invalid campaign list response: {error}"))
+            })
+    } else {
+        Err(api_error_from_response(&response).await)
+    }
+}
+
+/// Fetches one campaign plus its steps.
+pub async fn fetch_campaign(
+    campaign_id: &str,
+    token: &str,
+) -> Result<CampaignDetailResponse, ApiError> {
+    let url = format!("{API_BASE}/api/v1/campaigns/{campaign_id}");
+    let response = bearer(Request::get(&url), token)
+        .send()
+        .await
+        .map_err(|error| ApiError::Transport(error.to_string()))?;
+    if response.ok() {
+        response
+            .json::<CampaignDetailResponse>()
+            .await
+            .map_err(|error| ApiError::Transport(format!("invalid campaign response: {error}")))
+    } else {
+        Err(api_error_from_response(&response).await)
+    }
+}
+
+/// Creates a campaign, minting a fresh `Idempotency-Key` per call.
+pub async fn create_campaign(
+    request: &CreateCampaignRequest,
+    token: &str,
+) -> Result<Campaign, ApiError> {
+    let url = format!("{API_BASE}/api/v1/campaigns");
+    let body = serde_json::to_string(request).map_err(|error| {
+        ApiError::Transport(format!("invalid create-campaign request: {error}"))
+    })?;
+    let response = bearer(
+        Request::post(&url)
+            .header("Idempotency-Key", &new_idempotency_key())
+            .header("Content-Type", "application/json"),
+        token,
+    )
+    .body(body)
+    .map_err(|error| ApiError::Transport(error.to_string()))?
+    .send()
+    .await
+    .map_err(|error| ApiError::Transport(error.to_string()))?;
+    if response.ok() {
+        response
+            .json::<Campaign>()
+            .await
+            .map_err(|error| ApiError::Transport(format!("invalid campaign response: {error}")))
+    } else {
+        Err(api_error_from_response(&response).await)
+    }
+}
+
+/// Adds a step to a draft campaign — the server rejects steps once the
+/// campaign leaves `Draft` — minting a fresh `Idempotency-Key` per call.
+pub async fn add_campaign_step(
+    campaign_id: &str,
+    request: &AddCampaignStepRequest,
+    token: &str,
+) -> Result<CampaignStep, ApiError> {
+    let url = format!("{API_BASE}/api/v1/campaigns/{campaign_id}/steps");
+    let body = serde_json::to_string(request)
+        .map_err(|error| ApiError::Transport(format!("invalid add-step request: {error}")))?;
+    let response = bearer(
+        Request::post(&url)
+            .header("Idempotency-Key", &new_idempotency_key())
+            .header("Content-Type", "application/json"),
+        token,
+    )
+    .body(body)
+    .map_err(|error| ApiError::Transport(error.to_string()))?
+    .send()
+    .await
+    .map_err(|error| ApiError::Transport(error.to_string()))?;
+    if response.ok() {
+        response
+            .json::<CampaignStep>()
+            .await
+            .map_err(|error| ApiError::Transport(format!("invalid step response: {error}")))
+    } else {
+        Err(api_error_from_response(&response).await)
+    }
+}
+
+/// Schedules a one-shot launch for a draft campaign — the server
+/// requires a future time and `Draft` state — minting a fresh
+/// `Idempotency-Key` per call.
+pub async fn schedule_campaign(
+    campaign_id: &str,
+    request: &ScheduleCampaignRequest,
+    token: &str,
+) -> Result<Campaign, ApiError> {
+    let url = format!("{API_BASE}/api/v1/campaigns/{campaign_id}/schedule");
+    let body = serde_json::to_string(request)
+        .map_err(|error| ApiError::Transport(format!("invalid schedule request: {error}")))?;
+    let response = bearer(
+        Request::post(&url)
+            .header("Idempotency-Key", &new_idempotency_key())
+            .header("Content-Type", "application/json"),
+        token,
+    )
+    .body(body)
+    .map_err(|error| ApiError::Transport(error.to_string()))?
+    .send()
+    .await
+    .map_err(|error| ApiError::Transport(error.to_string()))?;
+    if response.ok() {
+        response
+            .json::<Campaign>()
+            .await
+            .map_err(|error| ApiError::Transport(format!("invalid campaign response: {error}")))
+    } else {
+        Err(api_error_from_response(&response).await)
+    }
+}
+
+/// Runs a campaign lifecycle transition (`launch`, `pause`, `resume`,
+/// `complete`, `cancel`).
+///
+/// The server does not read the idempotency key on transitions (they
+/// are state-machine operations, not creates); one is still sent so
+/// every POST from this client carries a fresh UUID key.
+pub async fn transition_campaign(
+    campaign_id: &str,
+    transition: &str,
+    token: &str,
+) -> Result<Campaign, ApiError> {
+    let url = format!("{API_BASE}/api/v1/campaigns/{campaign_id}/{transition}");
+    let response = bearer(
+        Request::post(&url).header("Idempotency-Key", &new_idempotency_key()),
+        token,
+    )
+    .send()
+    .await
+    .map_err(|error| ApiError::Transport(error.to_string()))?;
+    if response.ok() {
+        response
+            .json::<Campaign>()
+            .await
+            .map_err(|error| ApiError::Transport(format!("invalid campaign response: {error}")))
+    } else {
+        Err(api_error_from_response(&response).await)
+    }
+}
+
+/// Lists a profile's prospect pools (the endpoint requires a profile).
+pub async fn fetch_pools(
+    client_profile_id: &str,
+    token: &str,
+) -> Result<PoolListResponse, ApiError> {
+    let url =
+        format!("{API_BASE}/api/v1/prospect-pools?client_profile_id={client_profile_id}&limit=50");
+    let response = bearer(Request::get(&url), token)
+        .send()
+        .await
+        .map_err(|error| ApiError::Transport(error.to_string()))?;
+    if response.ok() {
+        response
+            .json::<PoolListResponse>()
+            .await
+            .map_err(|error| ApiError::Transport(format!("invalid pool list response: {error}")))
+    } else {
+        Err(api_error_from_response(&response).await)
+    }
+}
+
+/// Creates a prospect pool for a profile, minting a fresh
+/// `Idempotency-Key` per call.
+pub async fn create_pool(
+    request: &CreatePoolRequest,
+    token: &str,
+) -> Result<ProspectPool, ApiError> {
+    let url = format!("{API_BASE}/api/v1/prospect-pools");
+    let body = serde_json::to_string(request)
+        .map_err(|error| ApiError::Transport(format!("invalid create-pool request: {error}")))?;
+    let response = bearer(
+        Request::post(&url)
+            .header("Idempotency-Key", &new_idempotency_key())
+            .header("Content-Type", "application/json"),
+        token,
+    )
+    .body(body)
+    .map_err(|error| ApiError::Transport(error.to_string()))?
+    .send()
+    .await
+    .map_err(|error| ApiError::Transport(error.to_string()))?;
+    if response.ok() {
+        response
+            .json::<ProspectPool>()
+            .await
+            .map_err(|error| ApiError::Transport(format!("invalid pool response: {error}")))
     } else {
         Err(api_error_from_response(&response).await)
     }
