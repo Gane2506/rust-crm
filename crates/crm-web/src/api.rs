@@ -10,6 +10,7 @@ use std::fmt;
 
 use crm_domain::asset::Asset;
 use crm_domain::audit::AuditEvent;
+use crm_domain::billing::{Invoice, InvoiceLine, Money, Payment};
 use crm_domain::campaign::{Campaign, CampaignStep, ProspectPool};
 use crm_domain::contact::Contact;
 use crm_domain::ids::{ClientProfileId, ContactId};
@@ -1106,6 +1107,281 @@ pub async fn create_pool(
             .json::<ProspectPool>()
             .await
             .map_err(|error| ApiError::Transport(format!("invalid pool response: {error}")))
+    } else {
+        Err(api_error_from_response(&response).await)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Billing (`POST/GET /api/v1/invoices…`, `/api/v1/payments…`)
+// ---------------------------------------------------------------------------
+
+/// `GET /api/v1/invoices` response envelope.
+#[derive(Debug, Clone, Deserialize)]
+pub struct InvoiceListResponse {
+    /// The requested page of invoices.
+    pub invoices: Vec<Invoice>,
+    /// Total matching invoices across all pages.
+    pub total: u64,
+}
+
+/// `GET /api/v1/invoices/{id}/payments` response envelope.
+#[derive(Debug, Clone, Deserialize)]
+pub struct PaymentListResponse {
+    /// The invoice's payments, oldest first.
+    pub payments: Vec<Payment>,
+    /// Total payments on the invoice.
+    pub total: u64,
+}
+
+/// `POST /api/v1/invoices` request body.
+///
+/// Field names mirror the API's `CreateInvoiceBody` exactly.
+#[derive(Debug, Clone, Serialize)]
+pub struct CreateInvoiceRequest {
+    /// Owning client profile (UUID string).
+    pub client_profile_id: String,
+    /// ISO 4217 currency code for every line and the total.
+    pub currency: String,
+}
+
+/// `POST /api/v1/invoices/{id}/lines` request body.
+///
+/// Field names mirror the API's `AddLineBody` exactly. `unit_price`
+/// serializes as `{"amount": <minor units>, "currency": "USD"}`.
+#[derive(Debug, Clone, Serialize)]
+pub struct AddInvoiceLineRequest {
+    /// Human-readable description (validated non-blank).
+    pub description: String,
+    /// Quantity billed (positive).
+    pub quantity: u32,
+    /// Price per unit; must share the invoice's currency.
+    pub unit_price: Money,
+}
+
+/// `POST /api/v1/invoices/{id}/payments` request body.
+///
+/// Field names mirror the API's `RecordPaymentBody` exactly.
+#[derive(Debug, Clone, Serialize)]
+pub struct RecordPaymentRequest {
+    /// Amount paid; must match the invoice's currency.
+    pub amount: Money,
+}
+
+/// Lists a profile's invoices, newest first (the endpoint requires a
+/// profile — invoices are profile-scoped).
+pub async fn fetch_invoices(
+    client_profile_id: &str,
+    token: &str,
+) -> Result<InvoiceListResponse, ApiError> {
+    let url = format!(
+        "{API_BASE}/api/v1/invoices?client_profile_id={client_profile_id}&limit=20"
+    );
+    let response = bearer(Request::get(&url), token)
+        .send()
+        .await
+        .map_err(|error| ApiError::Transport(error.to_string()))?;
+    if response.ok() {
+        response
+            .json::<InvoiceListResponse>()
+            .await
+            .map_err(|error| ApiError::Transport(format!("invalid invoice list response: {error}")))
+    } else {
+        Err(api_error_from_response(&response).await)
+    }
+}
+
+/// Fetches one invoice with its lines.
+pub async fn fetch_invoice(invoice_id: &str, token: &str) -> Result<Invoice, ApiError> {
+    let url = format!("{API_BASE}/api/v1/invoices/{invoice_id}");
+    let response = bearer(Request::get(&url), token)
+        .send()
+        .await
+        .map_err(|error| ApiError::Transport(error.to_string()))?;
+    if response.ok() {
+        response
+            .json::<Invoice>()
+            .await
+            .map_err(|error| ApiError::Transport(format!("invalid invoice response: {error}")))
+    } else {
+        Err(api_error_from_response(&response).await)
+    }
+}
+
+/// Fetches the amount still owed on an invoice.
+pub async fn fetch_invoice_balance(invoice_id: &str, token: &str) -> Result<Money, ApiError> {
+    let url = format!("{API_BASE}/api/v1/invoices/{invoice_id}/balance");
+    let response = bearer(Request::get(&url), token)
+        .send()
+        .await
+        .map_err(|error| ApiError::Transport(error.to_string()))?;
+    if response.ok() {
+        response
+            .json::<Money>()
+            .await
+            .map_err(|error| ApiError::Transport(format!("invalid balance response: {error}")))
+    } else {
+        Err(api_error_from_response(&response).await)
+    }
+}
+
+/// Creates a draft invoice, minting a fresh `Idempotency-Key` per call.
+pub async fn create_invoice(
+    request: &CreateInvoiceRequest,
+    token: &str,
+) -> Result<Invoice, ApiError> {
+    let url = format!("{API_BASE}/api/v1/invoices");
+    let body = serde_json::to_string(request)
+        .map_err(|error| ApiError::Transport(format!("invalid create-invoice request: {error}")))?;
+    let response = bearer(
+        Request::post(&url)
+            .header("Idempotency-Key", &new_idempotency_key())
+            .header("Content-Type", "application/json"),
+        token,
+    )
+    .body(body)
+    .map_err(|error| ApiError::Transport(error.to_string()))?
+    .send()
+    .await
+    .map_err(|error| ApiError::Transport(error.to_string()))?;
+    if response.ok() {
+        response
+            .json::<Invoice>()
+            .await
+            .map_err(|error| ApiError::Transport(format!("invalid invoice response: {error}")))
+    } else {
+        Err(api_error_from_response(&response).await)
+    }
+}
+
+/// Adds a line to a draft invoice — the server rejects lines once the
+/// invoice leaves `Draft` — minting a fresh `Idempotency-Key` per call.
+pub async fn add_invoice_line(
+    invoice_id: &str,
+    request: &AddInvoiceLineRequest,
+    token: &str,
+) -> Result<InvoiceLine, ApiError> {
+    let url = format!("{API_BASE}/api/v1/invoices/{invoice_id}/lines");
+    let body = serde_json::to_string(request)
+        .map_err(|error| ApiError::Transport(format!("invalid add-line request: {error}")))?;
+    let response = bearer(
+        Request::post(&url)
+            .header("Idempotency-Key", &new_idempotency_key())
+            .header("Content-Type", "application/json"),
+        token,
+    )
+    .body(body)
+    .map_err(|error| ApiError::Transport(error.to_string()))?
+    .send()
+    .await
+    .map_err(|error| ApiError::Transport(error.to_string()))?;
+    if response.ok() {
+        response
+            .json::<InvoiceLine>()
+            .await
+            .map_err(|error| ApiError::Transport(format!("invalid invoice line response: {error}")))
+    } else {
+        Err(api_error_from_response(&response).await)
+    }
+}
+
+/// Runs an invoice lifecycle transition (`issue`, `void`).
+///
+/// The server reads the idempotency key on transitions too (they are
+/// claimed like any other write), so one is minted per call like every
+/// other POST from this client.
+pub async fn transition_invoice(
+    invoice_id: &str,
+    transition: &str,
+    token: &str,
+) -> Result<Invoice, ApiError> {
+    let url = format!("{API_BASE}/api/v1/invoices/{invoice_id}/{transition}");
+    let response = bearer(
+        Request::post(&url).header("Idempotency-Key", &new_idempotency_key()),
+        token,
+    )
+    .send()
+    .await
+    .map_err(|error| ApiError::Transport(error.to_string()))?;
+    if response.ok() {
+        response
+            .json::<Invoice>()
+            .await
+            .map_err(|error| ApiError::Transport(format!("invalid invoice response: {error}")))
+    } else {
+        Err(api_error_from_response(&response).await)
+    }
+}
+
+/// Lists an invoice's payments, oldest first.
+pub async fn fetch_payments(
+    invoice_id: &str,
+    token: &str,
+) -> Result<PaymentListResponse, ApiError> {
+    let url = format!("{API_BASE}/api/v1/invoices/{invoice_id}/payments");
+    let response = bearer(Request::get(&url), token)
+        .send()
+        .await
+        .map_err(|error| ApiError::Transport(error.to_string()))?;
+    if response.ok() {
+        response
+            .json::<PaymentListResponse>()
+            .await
+            .map_err(|error| ApiError::Transport(format!("invalid payment list response: {error}")))
+    } else {
+        Err(api_error_from_response(&response).await)
+    }
+}
+
+/// Records a payment against an issued invoice — a fully-covering
+/// payment transitions the invoice to `Paid` — minting a fresh
+/// `Idempotency-Key` per call.
+pub async fn record_payment(
+    invoice_id: &str,
+    request: &RecordPaymentRequest,
+    token: &str,
+) -> Result<Payment, ApiError> {
+    let url = format!("{API_BASE}/api/v1/invoices/{invoice_id}/payments");
+    let body = serde_json::to_string(request)
+        .map_err(|error| ApiError::Transport(format!("invalid record-payment request: {error}")))?;
+    let response = bearer(
+        Request::post(&url)
+            .header("Idempotency-Key", &new_idempotency_key())
+            .header("Content-Type", "application/json"),
+        token,
+    )
+    .body(body)
+    .map_err(|error| ApiError::Transport(error.to_string()))?
+    .send()
+    .await
+    .map_err(|error| ApiError::Transport(error.to_string()))?;
+    if response.ok() {
+        response
+            .json::<Payment>()
+            .await
+            .map_err(|error| ApiError::Transport(format!("invalid payment response: {error}")))
+    } else {
+        Err(api_error_from_response(&response).await)
+    }
+}
+
+/// Reverses a payment (idempotent on an already-reversed payment);
+/// a reversal that leaves a `Paid` invoice with a balance reopens it
+/// to `Issued`. Mints a fresh `Idempotency-Key` per call.
+pub async fn reverse_payment(payment_id: &str, token: &str) -> Result<Payment, ApiError> {
+    let url = format!("{API_BASE}/api/v1/payments/{payment_id}/reverse");
+    let response = bearer(
+        Request::post(&url).header("Idempotency-Key", &new_idempotency_key()),
+        token,
+    )
+    .send()
+    .await
+    .map_err(|error| ApiError::Transport(error.to_string()))?;
+    if response.ok() {
+        response
+            .json::<Payment>()
+            .await
+            .map_err(|error| ApiError::Transport(format!("invalid payment response: {error}")))
     } else {
         Err(api_error_from_response(&response).await)
     }

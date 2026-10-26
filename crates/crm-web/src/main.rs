@@ -18,6 +18,7 @@ use wasm_bindgen::JsCast;
 use api::logout;
 use assets::AssetsPage;
 use audit::AuditPage;
+use billing::{InvoiceDetail, InvoicesPage};
 use branding::BrandingPage;
 use campaigns::{CampaignDetail, CampaignsPage};
 use contacts::{ContactDetail, ContactsPage, MergePage};
@@ -34,6 +35,7 @@ use ui::{
 mod api;
 mod assets;
 mod audit;
+mod billing;
 mod branding;
 mod campaigns;
 mod components;
@@ -820,6 +822,25 @@ fn Shell(token: String, on_logout: UiHandler) -> impl IntoView {
                                 }
                             />
                             <Route
+                                path=path!("/billing")
+                                view={
+                                    let token = token.clone();
+                                    move || view! { <InvoicesPage token=token.clone() /> }
+                                }
+                            />
+                            <Route
+                                path=path!("/billing/:id")
+                                view={
+                                    let token = token.clone();
+                                    move || {
+                                        let params = leptos_router::hooks::use_params_map();
+                                        let id = params.get().get("id").unwrap_or_default();
+                                        let token = token.clone();
+                                        view! { <InvoiceDetail token=token invoice_id=id /> }
+                                    }
+                                }
+                            />
+                            <Route
                                 path=path!("/audit")
                                 view={
                                     let token = token.clone();
@@ -839,7 +860,6 @@ fn Shell(token: String, on_logout: UiHandler) -> impl IntoView {
                             <Route path=path!("/agents") view=|| view! { <ComingSoon feature="Jev agents" /> } />
                             <Route path=path!("/workflows") view=|| view! { <ComingSoon feature="Workflows" /> } />
                             <Route path=path!("/forms") view=|| view! { <ComingSoon feature="Forms" /> } />
-                            <Route path=path!("/billing") view=|| view! { <ComingSoon feature="Billing" /> } />
                             <Route path=path!("/signing") view=|| view! { <ComingSoon feature="Signing" /> } />
                             <Route path=path!("/calls") view=|| view! { <ComingSoon feature="Calls" /> } />
                             <Route path=path!("/analytics") view=|| view! { <ComingSoon feature="Analytics" /> } />
