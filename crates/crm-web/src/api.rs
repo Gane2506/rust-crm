@@ -6,6 +6,7 @@
 //! non-2xx responses to [`ApiError::Api`] via the decoded
 //! `application/problem+json` body.
 
+use std::cell::Cell;
 use std::fmt;
 
 use crm_domain::asset::Asset;
@@ -13,9 +14,11 @@ use crm_domain::audit::AuditEvent;
 use crm_domain::billing::{Invoice, InvoiceLine, Money, Payment};
 use crm_domain::campaign::{Campaign, CampaignStep, ProspectPool};
 use crm_domain::contact::Contact;
+use crm_domain::email::{EmailMessage, EmailThread};
 use crm_domain::ids::{ClientProfileId, ContactId};
 use crm_domain::profile::ClientProfile;
 use gloo_net::http::Request;
+use leptos::prelude::{RwSignal, Set};
 use serde::{Deserialize, Serialize};
 
 /// Base URL of the `crm-api` server.
@@ -74,6 +77,12 @@ pub struct ProblemDetails {
     #[serde(default)]
     pub detail: String,
 }
+
+/// Message shown when the session expired (401). Single source of truth:
+/// [`ApiError::friendly_message`] uses it for the 401 case, and the login
+/// form shows it when `App` returns there after an expiry, so the user
+/// knows why they were logged out instead of seeing a bare login form.
+pub const SESSION_EXPIRED_MESSAGE: &str = "Your session may have expired. Please log in again.";
 
 /// Errors surfaced by the contact API client.
 #[derive(Debug, Clone)]
@@ -138,7 +147,7 @@ impl ApiError {
                 title: _,
                 detail,
             } => match status {
-                401 => "Your session may have expired. Please log in again.".to_string(),
+                401 => SESSION_EXPIRED_MESSAGE.to_string(),
                 403 => {
                     "You don't have access to do that. Ask your agency admin for the right permission."
                         .to_string()
@@ -182,11 +191,75 @@ fn plain_detail(detail: &str, prefix: &str) -> Option<String> {
     Some(sentence)
 }
 
+// The signal `App` registers so a 401 from any authenticated call can
+// mark the session expired (SESSION-02).
+//
+// Why registration, not `use_context`: every API call in the app runs
+// inside `leptos::task::spawn_local`, which does NOT preserve the
+// reactive owner — only `spawn_local_scoped` wraps the future in a
+// `ScopedFuture` (reactive_graph 0.2.16) — so `use_context` inside
+// these `async fn`s would silently return `None` and the expiry would
+// never fire. Registration happens once, synchronously, in `App`
+// setup where the owner is live; the signal itself is just a `Copy`
+// handle afterwards, so setting it from here needs no context at all.
+// The app is single-threaded (WASM), so a `thread_local!` cell is
+// enough; on the host test target each test thread has its own cell.
+// (Plain `//` comment, not `///`: rustdoc does not document macro
+// invocations, and `///` here is a denied `unused_doc_comments` lint.)
+thread_local! {
+    static SESSION_EXPIRED: Cell<Option<RwSignal<bool>>> = const { Cell::new(None) };
+}
+
+/// Registers the session-expired signal with the API client. Called once
+/// by `App` at startup. Until registered, 401s are returned as errors
+/// only and nothing navigates (the pre-SESSION-02 behavior).
+pub fn register_session_expired(signal: RwSignal<bool>) {
+    SESSION_EXPIRED.with(|cell| cell.set(Some(signal)));
+}
+
+/// Marks the session expired, when one is registered. A no-op before
+/// registration, so unit tests and the login page (which never registers
+/// — it has no session) never trip over it.
+fn notify_session_expired() {
+    SESSION_EXPIRED.with(|cell| {
+        if let Some(signal) = cell.get() {
+            signal.set(true);
+        }
+    });
+}
+
 /// Builds an [`ApiError::Api`] from a non-2xx response, preferring the
 /// decoded `application/problem+json` body and falling back to the HTTP
 /// status text when the body is not a problem document.
+///
+/// A `401` also marks the session expired (see
+/// [`register_session_expired`]) so `App` drops the dead token and
+/// returns to the login form. This is the path every authenticated call
+/// takes, so no page has to remember to do it itself.
 async fn api_error_from_response(response: &gloo_net::http::Response) -> ApiError {
+    api_error_from_response_inner(response, true).await
+}
+
+/// Same as [`api_error_from_response`] but never marks the session
+/// expired. For the calls where a 401 is an expected outcome, not a dead
+/// session: `login` (wrong credentials), `logout` (an already-revoked
+/// token — the local token is dropped regardless), and `fetch_branding`
+/// (public endpoint, called before login).
+async fn api_error_from_response_quiet(response: &gloo_net::http::Response) -> ApiError {
+    api_error_from_response_inner(response, false).await
+}
+
+/// Shared body of [`api_error_from_response`] and
+/// [`api_error_from_response_quiet`]: `notify` selects whether a 401
+/// also marks the session expired.
+async fn api_error_from_response_inner(
+    response: &gloo_net::http::Response,
+    notify: bool,
+) -> ApiError {
     let status = response.status();
+    if notify && status == 401 {
+        notify_session_expired();
+    }
     match response.json::<ProblemDetails>().await {
         Ok(problem) if !problem.title.is_empty() || !problem.detail.is_empty() => ApiError::Api {
             status,
@@ -230,7 +303,7 @@ pub async fn login(email: &str, password: &str) -> Result<String, ApiError> {
             .map_err(|error| ApiError::Transport(format!("invalid login response: {error}")))?;
         Ok(login.token)
     } else {
-        Err(api_error_from_response(&response).await)
+        Err(api_error_from_response_quiet(&response).await)
     }
 }
 
@@ -247,7 +320,7 @@ pub async fn logout(token: &str) -> Result<(), ApiError> {
     if response.status() == 204 || response.ok() {
         Ok(())
     } else {
-        Err(api_error_from_response(&response).await)
+        Err(api_error_from_response_quiet(&response).await)
     }
 }
 
@@ -763,7 +836,7 @@ pub async fn fetch_branding() -> Result<BrandingResponse, ApiError> {
             .await
             .map_err(|error| ApiError::Transport(format!("invalid branding response: {error}")))
     } else {
-        Err(api_error_from_response(&response).await)
+        Err(api_error_from_response_quiet(&response).await)
     }
 }
 
@@ -1387,6 +1460,123 @@ pub async fn reverse_payment(payment_id: &str, token: &str) -> Result<Payment, A
     }
 }
 
+// ---------------------------------------------------------------------------
+// Email threads (`GET /api/v1/threads…`, `POST /api/v1/emails/send`)
+// ---------------------------------------------------------------------------
+
+/// `GET /api/v1/threads` response envelope.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ThreadListResponse {
+    /// The requested page of threads.
+    pub threads: Vec<EmailThread>,
+    /// Total matching threads across all pages.
+    pub total: u64,
+}
+
+/// `GET /api/v1/threads/{id}` response: the thread plus its messages
+/// in chronological order.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ThreadDetailResponse {
+    /// The thread.
+    pub thread: EmailThread,
+    /// Its messages, oldest first.
+    pub messages: Vec<EmailMessage>,
+}
+
+/// `POST /api/v1/emails/send` request body.
+///
+/// Field names mirror the API's `SendEmailBody` exactly. `thread_id`
+/// and `body_html` are skipped when `None`: the server's
+/// `#[serde(default)]` only applies to *missing* fields. `from` is
+/// sent blank to use the agency's configured from-address.
+#[derive(Debug, Clone, Serialize)]
+pub struct SendEmailRequest {
+    /// Owning client profile (UUID string).
+    pub client_profile_id: String,
+    /// Thread to append to, if replying in-thread.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thread_id: Option<String>,
+    /// Sender address; blank means the agency's configured from-address.
+    pub from: String,
+    /// Recipient addresses.
+    pub to: Vec<String>,
+    /// CC addresses.
+    pub cc: Vec<String>,
+    /// BCC addresses.
+    pub bcc: Vec<String>,
+    /// Subject line.
+    pub subject: String,
+    /// Plain-text body.
+    pub body_text: String,
+    /// HTML body, if supplied.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub body_html: Option<String>,
+}
+
+/// Lists threads for one client profile (threads are profile-scoped;
+/// the query requires `client_profile_id`).
+pub async fn fetch_threads(
+    token: &str,
+    client_profile_id: &str,
+) -> Result<ThreadListResponse, ApiError> {
+    let url = format!("{API_BASE}/api/v1/threads?client_profile_id={client_profile_id}&limit=20");
+    let response = bearer(Request::get(&url), token)
+        .send()
+        .await
+        .map_err(|error| ApiError::Transport(error.to_string()))?;
+    if response.ok() {
+        response
+            .json::<ThreadListResponse>()
+            .await
+            .map_err(|error| ApiError::Transport(format!("invalid thread list response: {error}")))
+    } else {
+        Err(api_error_from_response(&response).await)
+    }
+}
+
+/// Fetches one thread with its messages.
+pub async fn fetch_thread(thread_id: &str, token: &str) -> Result<ThreadDetailResponse, ApiError> {
+    let url = format!("{API_BASE}/api/v1/threads/{thread_id}");
+    let response = bearer(Request::get(&url), token)
+        .send()
+        .await
+        .map_err(|error| ApiError::Transport(error.to_string()))?;
+    if response.ok() {
+        response
+            .json::<ThreadDetailResponse>()
+            .await
+            .map_err(|error| ApiError::Transport(format!("invalid thread response: {error}")))
+    } else {
+        Err(api_error_from_response(&response).await)
+    }
+}
+
+/// Sends an email, minting a fresh `Idempotency-Key` per call so a
+/// retried submission never sends a duplicate.
+pub async fn send_email(request: &SendEmailRequest, token: &str) -> Result<EmailMessage, ApiError> {
+    let url = format!("{API_BASE}/api/v1/emails/send");
+    let body = serde_json::to_string(request)
+        .map_err(|error| ApiError::Transport(format!("invalid send-email request: {error}")))?;
+    let response = bearer(
+        Request::post(&url)
+            .header("Idempotency-Key", &new_idempotency_key())
+            .header("Content-Type", "application/json"),
+        token,
+    )
+    .body(body)
+    .map_err(|error| ApiError::Transport(error.to_string()))?
+    .send()
+    .await
+    .map_err(|error| ApiError::Transport(error.to_string()))?;
+    if response.ok() {
+        response
+            .json::<EmailMessage>()
+            .await
+            .map_err(|error| ApiError::Transport(format!("invalid sent-email response: {error}")))
+    } else {
+        Err(api_error_from_response(&response).await)
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1435,8 +1625,20 @@ mod tests {
     fn unauthorized_points_at_the_session() {
         assert_eq!(
             api(401, "Unauthorized", "unauthorized").friendly_message(),
-            "Your session may have expired. Please log in again."
+            SESSION_EXPIRED_MESSAGE
         );
+    }
+
+    #[test]
+    fn session_expiry_notifies_only_when_registered() {
+        use leptos::prelude::GetUntracked;
+
+        // No signal registered: notifying is a silent no-op, never a panic.
+        notify_session_expired();
+        let expired = RwSignal::new(false);
+        register_session_expired(expired);
+        notify_session_expired();
+        assert!(expired.get_untracked());
     }
 
     #[test]
