@@ -36,9 +36,13 @@ Query parameters (all optional):
 | `from` / `to` | RFC 3339 time range (`to` is exclusive) |
 | `after` | Event UUID cursor — the last event of the previous page |
 | `limit` | Page size (default 50, capped at 100) |
+| `newest_first` | `true` returns the newest events first instead of chain order |
 
-Events come back in chain order (oldest first), each with its forensic
-`payload`. Example:
+Events come back in chain order (oldest first) by default, each with
+its forensic `payload`; `?newest_first=true` returns the newest events
+first instead (the `after` cursor then pages backwards from the
+previous page's last event). Newest-first is a presentation order
+only — storage, hashing and verification never change. Example:
 
 ```bash
 TOKEN="$(curl -s -X POST localhost:3000/api/v1/auth/login \

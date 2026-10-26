@@ -607,10 +607,12 @@ pub struct AuditEventItem {
     pub payload: Option<serde_json::Value>,
 }
 
-/// `GET /api/v1/audit/events` response: chain-order page.
+/// `GET /api/v1/audit/events` response: a page of audit events, in
+/// the order the query asked for (chain order by default, newest first
+/// with `AuditQuery::newest_first`).
 #[derive(Debug, Clone, Deserialize)]
 pub struct AuditEventsResponse {
-    /// Events in chain (ascending time) order.
+    /// Events in the requested order.
     pub events: Vec<AuditEventItem>,
     /// Whether more events match beyond this page.
     pub has_more: bool,
@@ -624,6 +626,26 @@ pub struct AuditQuery {
     pub action: Option<String>,
     /// Maximum events to return.
     pub limit: Option<u64>,
+    /// When true, ask the server for the newest events first instead
+    /// of chain order. The Dashboard sets this; the Audit page leaves
+    /// it false and reorders the fetched page client-side.
+    pub newest_first: bool,
+}
+
+/// Query pairs for `GET /api/v1/audit/events`, in request order.
+///
+/// `newest_first` is only sent when true — absent means chain order,
+/// so callers that do not ask for it get exactly today's request.
+fn audit_events_params(query: &AuditQuery) -> Vec<(&'static str, String)> {
+    let mut params = Vec::new();
+    if let Some(action) = &query.action {
+        params.push(("action", action.clone()));
+    }
+    params.push(("limit", query.limit.unwrap_or(50).min(100).to_string()));
+    if query.newest_first {
+        params.push(("newest_first", "true".to_string()));
+    }
+    params
 }
 
 /// Queries the audit log (agency scope required).
@@ -635,15 +657,11 @@ pub async fn fetch_audit_events(
     query: &AuditQuery,
     token: &str,
 ) -> Result<AuditEventsResponse, ApiError> {
-    let limit = query.limit.unwrap_or(50).min(100).to_string();
-    let mut builder = bearer(
+    let builder = bearer(
         Request::get(&format!("{API_BASE}/api/v1/audit/events")),
         token,
     );
-    if let Some(action) = &query.action {
-        builder = builder.query([("action", action.as_str())]);
-    }
-    builder = builder.query([("limit", limit.as_str())]);
+    let builder = builder.query(audit_events_params(query));
     let response = builder
         .send()
         .await
@@ -874,6 +892,56 @@ mod tests {
             "Something went wrong on our side. Please try again."
         );
         assert!(!message.contains("database"));
+    }
+
+    #[test]
+    fn audit_events_params_default_is_chain_order() {
+        // A default query sends only the limit — no `newest_first`,
+        // so the server keeps today's chain order.
+        assert_eq!(
+            audit_events_params(&AuditQuery::default()),
+            vec![("limit", "50".to_string())]
+        );
+    }
+
+    #[test]
+    fn audit_events_params_sends_newest_first_only_when_set() {
+        let query = AuditQuery {
+            action: Some("auth.login".to_string()),
+            limit: Some(8),
+            newest_first: true,
+        };
+        assert_eq!(
+            audit_events_params(&query),
+            vec![
+                ("action", "auth.login".to_string()),
+                ("limit", "8".to_string()),
+                ("newest_first", "true".to_string()),
+            ]
+        );
+        let query = AuditQuery {
+            limit: Some(8),
+            newest_first: false,
+            ..AuditQuery::default()
+        };
+        assert!(
+            audit_events_params(&query)
+                .iter()
+                .all(|(key, _)| *key != "newest_first"),
+            "an explicit false must not send the parameter"
+        );
+    }
+
+    #[test]
+    fn audit_events_params_caps_the_limit() {
+        let query = AuditQuery {
+            limit: Some(500),
+            ..AuditQuery::default()
+        };
+        assert_eq!(
+            audit_events_params(&query),
+            vec![("limit", "100".to_string())]
+        );
     }
 
     #[test]

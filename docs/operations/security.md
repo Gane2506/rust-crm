@@ -200,7 +200,8 @@ authorization denials (counted toward the probing anomaly signal).
 Contact-lifecycle events share the same chain with a NULL payload.
 
 - `GET /api/v1/audit/events` — filtered query (actor, action, profile,
-  time range, cursor, limit; chain order). Authorized as
+  time range, cursor, limit; chain order by default,
+  `?newest_first=true` for newest first). Authorized as
   `AuditLog:Read` **at agency scope**: a profile-scoped caller gets 403,
   so profile readers can never learn whether agency-level events exist.
 - `GET /api/v1/audit/verify` — verifies the whole chain from genesis

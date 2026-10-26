@@ -108,9 +108,12 @@ troubleshooting.
 - **No server-side rendering.** First paint waits for WASM download +
   init; there is no SEO-friendly static HTML.
 - **No offline support.** The app is a thin client over the API.
-- **Audit newest-first is display-only.** The API returns chain order
-  (oldest first) with no `order` parameter; the toggle reorders the
-  fetched page. True newest-first querying needs a backend `order`
-  parameter (future backend task).
+- **Audit newest-first is display-only on the Audit page.** The API
+  returns chain order (oldest first) by default; the page's toggle
+  reorders the fetched page, so with more than one page of matches the
+  newest events may be beyond the fetched page. The API does offer
+  `?newest_first=true` for true newest-first querying — the Dashboard
+  "Recent audit events" tile uses it; the Audit page deliberately
+  keeps chain order (AUDIT-13).
 - **Asset pagination.** List endpoints cap at 50; the UI has no
   continuation affordance yet.
