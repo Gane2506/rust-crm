@@ -107,6 +107,20 @@ fn App() -> impl IntoView {
     // `sessionStorage` on init so refreshes don't log the user out.
     let token = RwSignal::new(restore_token());
 
+    // Session expiry (SESSION-02): set by the API client when any
+    // authenticated call gets a 401. App watches it — the pages never
+    // have to — and drops the dead token so the login form renders
+    // instead of a shell whose every call 401s. The flag stays set
+    // until the next login, so the form can say why the user is there.
+    let session_expired = RwSignal::new(false);
+    crate::api::register_session_expired(session_expired);
+    Effect::new(move |_| {
+        if session_expired.get() {
+            clear_token();
+            token.set(None);
+        }
+    });
+
     // Branding (UI2-03): fetch the public theme on mount (the login page
     // is themed too) and re-fetch after login; inject as a `<style>`
     // layered after the theme_css tag. The UI style (UI3-01) is applied
@@ -132,6 +146,9 @@ fn App() -> impl IntoView {
     let on_logged_in = UiValueHandler::new(move |new_token: String| {
         persist_token(&new_token);
         token.set(Some(new_token));
+        // Reset so a later expiry is a fresh false → true transition
+        // and the watcher above fires again.
+        session_expired.set(false);
         apply_branding();
     });
     // Server-side revocation first, then drop the local token either way.
@@ -143,13 +160,22 @@ fn App() -> impl IntoView {
         }
         clear_token();
         token.set(None);
+        // A stale expiry flag must never show the "session expired"
+        // banner after an intentional logout.
+        session_expired.set(false);
     });
 
     view! {
         <>
             <style id="crm-base-style">{crate::theme::theme_css()}</style>
             {move || match token.get() {
-                None => view! { <LoginForm on_logged_in=on_logged_in /> }.into_any(),
+                None => view! {
+                    <LoginForm
+                        on_logged_in=on_logged_in
+                        session_expired=session_expired.get()
+                    />
+                }
+                    .into_any(),
                 Some(token) => {
                     view! { <Shell token=token on_logout=on_logout /> }.into_any()
                 }
