@@ -49,6 +49,7 @@ mod profiles;
 mod rate_limit;
 mod security_headers;
 mod signing;
+mod stripe;
 mod voice;
 mod workflows;
 
@@ -542,6 +543,10 @@ where
             post(billing::record_payment::<R, A, I>).get(billing::list_payments::<R, A, I>),
         )
         .route(
+            "/v1/invoices/{id}/stripe-checkout",
+            post(billing::create_stripe_checkout::<R, A, I>),
+        )
+        .route(
             "/v1/payments/{id}/reverse",
             post(billing::reverse_payment::<R, A, I>),
         )
@@ -747,6 +752,13 @@ where
             // the `CRM_EMAIL_WEBHOOK_SECRET` shared secret inside the
             // handler, so it lives outside the auth middleware.
             .route("/v1/emails/ingest", post(emails::ingest_email::<R, A, I>))
+            // The Stripe webhook is likewise NOT bearer-authenticated
+            // (STRIPE-01); it is gated by the `STRIPE_WEBHOOK_SECRET`
+            // signature inside the handler.
+            .route(
+                "/v1/stripe/webhook",
+                post(stripe::stripe_webhook::<R, A, I>),
+            )
             // The branding GET is public: the login page needs the
             // theme before authentication. It lives outside the auth
             // middleware; the PUT stays behind it.
@@ -760,6 +772,10 @@ where
         // without `ApiAuth`.
         None => api
             .route("/v1/emails/ingest", post(emails::ingest_email::<R, A, I>))
+            .route(
+                "/v1/stripe/webhook",
+                post(stripe::stripe_webhook::<R, A, I>),
+            )
             .route("/v1/branding", get(branding::get_branding::<R, A, I>)),
     };
 

@@ -9,29 +9,37 @@
 //! local runs with `docker compose up -d`); without it they skip loudly
 //! instead of failing, so `cargo test` stays usable with no database.
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::body::{to_bytes, Body};
 use axum::http::{header, Request, StatusCode};
 use axum::response::Response;
+use hmac::{Hmac, Mac};
+use sha2::Sha256;
 use sqlx::PgPool;
 use tower::ServiceExt;
 
 use crm_core::IdempotencyKey;
 use crm_db::audit_log::PgAuditLogService;
 use crm_db::auth::hash_password;
+use crm_db::billing::PgPaymentRepository;
 use crm_db::email::{PgEmailMessageRepository, PgEmailThreadRepository};
 use crm_db::postgres::{
     PgAuditRepository, PgContactRepository, PgGrantRepository, PgStaffRepository,
 };
+use crm_db::stripe::PgStripeEventRepository;
 use crm_domain::audit::{fingerprint, ActorKind, SecurityEvent};
 use crm_domain::email::EmailStatus;
 use crm_domain::ids::{
-    ActorId, AgencyId, ClientProfileId, ContactId, EmailMessageId, EmailThreadId, GrantId, StaffId,
+    ActorId, AgencyId, ClientProfileId, ContactId, EmailMessageId, EmailThreadId, GrantId,
+    InvoiceId, StaffId,
 };
 use crm_domain::repositories::{
     AuditRepository, ContactRepository, EmailMessageRepository, EmailThreadRepository,
-    GrantRepository, SessionRepository, StaffRepository,
+    GrantRepository, PaymentRepository, SessionRepository, StaffRepository,
 };
 use crm_domain::security::{
     Action, Grant, Operation, PasswordCredential, Resource, Scope, StaffStatus, StaffUser,
@@ -39,6 +47,7 @@ use crm_domain::security::{
 use crm_domain::services::{ActionContext, AuditLogService, AuditQuery};
 
 use crate::contacts::{AppState, IDEMPOTENCY_KEY_HEADER};
+use crate::stripe::{STRIPE_API_BASE_URL_ENV, STRIPE_SECRET_KEY_ENV, STRIPE_WEBHOOK_SECRET_ENV};
 
 static DB_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -5081,6 +5090,749 @@ async fn pg_branding_concurrent_same_key_bumps_once() {
     assert_eq!(
         current["version"], 1,
         "exactly one version bump for concurrent same-key writes"
+    );
+
+    drop_db(&admin_url, &db_name, pool).await;
+}
+
+/// Stripe tests (STRIPE-01).
+///
+/// The Stripe API is mocked: a tiny axum server answers
+/// `POST /v1/checkout/sessions` with a canned session, and the
+/// webhook tests sign their own events with the dummy webhook
+/// secret. No test ever touches Stripe, and the suite passes with
+/// no Stripe keys set — the dummy values below are the only keys
+/// in the tree, and they are never real.
+///
+/// Fixed dummy key material for the Stripe tests. The same values
+/// are set by every Stripe test (see the ingest-test rule at
+/// `TEST_WEBHOOK_SECRET`): env vars are process-global and tests
+/// run in parallel, so a different value would race. Never a real
+/// key — these values only ever reach the mock server.
+const STRIPE_TEST_SECRET_KEY: &str = "sk_test_dummy";
+const STRIPE_TEST_WEBHOOK_SECRET: &str = "whsec_test_dummy";
+
+/// Per-invoice record of mock Stripe checkout requests: call count
+/// plus the last decoded form fields.
+///
+/// Checkout Session creation requests the mock Stripe server saw,
+/// keyed by the request's `metadata[invoice_id]` (or `"unknown"`
+/// when the request carries none), with a call count. Keyed per
+/// invoice so parallel tests never read each other's requests.
+type MockStripeRequests = Mutex<HashMap<String, (u64, HashMap<String, String>)>>;
+
+static MOCK_STRIPE_REQUESTS: std::sync::LazyLock<MockStripeRequests> =
+    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Mock Stripe API base URL, started once per test binary.
+static MOCK_STRIPE_BASE_URL: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// Starts the mock Stripe API server (once per test binary) and
+/// returns its base URL. The mock answers
+/// `POST /v1/checkout/sessions` with a canned session and records
+/// the decoded form fields per invoice id.
+///
+/// The server runs on its own runtime in a detached std thread, not
+/// on the calling test's runtime: a `#[tokio::test]` runtime shuts
+/// down when its test ends, aborting every task spawned on it —
+/// a server spawned on the first test's runtime would be dead by
+/// the second test, while this `OnceLock` kept returning its URL
+/// (every later checkout test then failed with connection-refused).
+/// A leaked thread runtime lives for the whole test binary.
+async fn mock_stripe_base_url() -> &'static str {
+    MOCK_STRIPE_BASE_URL.get_or_init(|| {
+        let app = axum::Router::new().route(
+            "/v1/checkout/sessions",
+            axum::routing::post(
+                |axum::extract::Form(form): axum::extract::Form<HashMap<String, String>>| async move {
+                    let key = form
+                        .get("metadata[invoice_id]")
+                        .cloned()
+                        .unwrap_or_else(|| "unknown".to_owned());
+                    let mut requests = MOCK_STRIPE_REQUESTS.lock().expect("mock stripe lock");
+                    let entry = requests.entry(key).or_insert((0, HashMap::new()));
+                    entry.0 += 1;
+                    entry.1 = form;
+                    axum::Json(serde_json::json!({
+                        "id": "cs_test_mock",
+                        "url": "https://checkout.stripe.com/pay/cs_test_mock",
+                    }))
+                },
+            ),
+        );
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("mock stripe runtime");
+            rt.block_on(async move {
+                let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                    .await
+                    .expect("bind mock stripe server");
+                let addr = listener.local_addr().expect("mock stripe address");
+                tx.send(format!("http://{addr}")).expect("mock stripe url");
+                axum::serve(listener, app).await.expect("serve mock stripe");
+            });
+        });
+        rx.recv().expect("mock stripe url")
+    })
+}
+
+/// Returns the mock Stripe requests for `invoice_id`: `(call count,
+/// last decoded form fields)`. `(0, empty)` when the mock saw no
+/// request for the invoice.
+fn mock_stripe_request(invoice_id: &str) -> (u64, HashMap<String, String>) {
+    MOCK_STRIPE_REQUESTS
+        .lock()
+        .expect("mock stripe lock")
+        .get(invoice_id)
+        .cloned()
+        .unwrap_or((0, HashMap::new()))
+}
+
+/// Sets the Stripe test environment (same values in every test; see
+/// the dummy-key consts above): the dummy secret key, the dummy
+/// webhook secret, and the mock Stripe API base URL. Never removes
+/// the vars.
+async fn ensure_stripe_test_env() {
+    std::env::set_var(STRIPE_SECRET_KEY_ENV, STRIPE_TEST_SECRET_KEY);
+    std::env::set_var(STRIPE_WEBHOOK_SECRET_ENV, STRIPE_TEST_WEBHOOK_SECRET);
+    let base_url = mock_stripe_base_url().await;
+    std::env::set_var(STRIPE_API_BASE_URL_ENV, base_url);
+}
+
+/// Builds a `checkout.session.completed` event for `invoice_id`.
+fn stripe_event_json(
+    event_id: &str,
+    session_id: &str,
+    invoice_id: &str,
+    amount_total: i64,
+    payment_status: &str,
+) -> serde_json::Value {
+    serde_json::json!({
+        "id": event_id,
+        "type": "checkout.session.completed",
+        "data": {
+            "object": {
+                "id": session_id,
+                "payment_status": payment_status,
+                "amount_total": amount_total,
+                "currency": "usd",
+                "metadata": { "invoice_id": invoice_id },
+            }
+        }
+    })
+}
+
+/// Signs `body` the way Stripe does, with the dummy webhook secret.
+fn sign_stripe_event(body: &[u8]) -> String {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system time")
+        .as_secs();
+    sign_stripe_event_with_secret(body, STRIPE_TEST_WEBHOOK_SECRET, now)
+}
+
+/// Signs `body` with an explicit secret and timestamp (the wrong
+/// secret proves a bad signature is rejected; a stale timestamp
+/// proves the tolerance is enforced).
+fn sign_stripe_event_with_secret(body: &[u8], secret: &str, timestamp: u64) -> String {
+    let mut signed = format!("{timestamp}.").into_bytes();
+    signed.extend_from_slice(body);
+    let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes()).expect("test hmac key");
+    mac.update(&signed);
+    format!(
+        "t={timestamp},v1={}",
+        hex::encode(mac.finalize().into_bytes())
+    )
+}
+
+/// Builds a signed Stripe webhook request for `body`.
+fn post_stripe_webhook(body: serde_json::Value) -> Request<Body> {
+    let bytes = serde_json::to_vec(&body).expect("serialize stripe event");
+    let signature = sign_stripe_event(&bytes);
+    post_stripe_webhook_with_signature(bytes, Some(&signature))
+}
+
+/// Builds a Stripe webhook request with an explicit signature
+/// (`None` = no `Stripe-Signature` header at all).
+fn post_stripe_webhook_with_signature(body: Vec<u8>, signature: Option<&str>) -> Request<Body> {
+    let mut builder = Request::builder()
+        .method("POST")
+        .uri("/api/v1/stripe/webhook")
+        .header(header::CONTENT_TYPE, "application/json");
+    if let Some(signature) = signature {
+        builder = builder.header("stripe-signature", signature);
+    }
+    builder
+        .body(Body::from(body))
+        .expect("build stripe webhook request")
+}
+
+/// Builds an authenticated `POST /v1/invoices/{id}/stripe-checkout`
+/// request.
+fn post_stripe_checkout(invoice_id: &str, key: Option<&str>, token: &str) -> Request<Body> {
+    let mut builder = Request::builder()
+        .method("POST")
+        .uri(format!("/api/v1/invoices/{invoice_id}/stripe-checkout"))
+        .header(header::AUTHORIZATION, format!("Bearer {token}"));
+    if let Some(key) = key {
+        builder = builder.header(IDEMPOTENCY_KEY_HEADER, key);
+    }
+    builder.body(Body::empty()).expect("build checkout request")
+}
+
+/// Lists the payments recorded against `invoice_id` (test-side read
+/// through the repository, not the API).
+async fn list_payments_for(pool: &PgPool, invoice_id: &str) -> Vec<crm_domain::billing::Payment> {
+    PgPaymentRepository::new(pool.clone())
+        .list_by_invoice(InvoiceId::from(
+            invoice_id.parse::<uuid::Uuid>().expect("invoice id"),
+        ))
+        .await
+        .expect("list payments")
+}
+
+#[tokio::test]
+async fn pg_stripe_checkout_creates_session_for_issued_invoice() {
+    let Some((pool, admin_url, db_name)) = fresh_db().await else {
+        eprintln!(
+            "pg_stripe_checkout_creates_session_for_issued_invoice: DATABASE_URL not set, skipping"
+        );
+        return;
+    };
+    ensure_stripe_test_env().await;
+    let router = pg_router(&pool);
+    let profile = uuid::Uuid::new_v4();
+    let (token, _, _) = seed_billing_user(&pool, &router, profile, "striper@example.com").await;
+    let invoice_id = seed_issued_invoice_with_line(&router, profile, &token).await;
+
+    let key = IdempotencyKey::generate().to_string();
+    let (status, body) = read_json(
+        router
+            .clone()
+            .oneshot(post_stripe_checkout(&invoice_id, Some(&key), &token))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "checkout body: {body}");
+    assert_eq!(
+        body["checkout_url"], "https://checkout.stripe.com/pay/cs_test_mock",
+        "the mock session URL is returned"
+    );
+
+    // The mock saw exactly one creation, for this invoice, with the
+    // $100.00 balance as a single line item.
+    let (calls, form) = mock_stripe_request(&invoice_id);
+    assert_eq!(calls, 1, "one Stripe call for one checkout");
+    assert_eq!(form.get("mode").map(String::as_str), Some("payment"));
+    assert_eq!(
+        form.get("line_items[0][price_data][unit_amount]")
+            .map(String::as_str),
+        Some("10000"),
+        "amount = remaining balance in minor units"
+    );
+    assert_eq!(
+        form.get("line_items[0][price_data][currency]")
+            .map(String::as_str),
+        Some("usd"),
+        "currency is lowercased for Stripe"
+    );
+    assert_eq!(
+        form.get("metadata[invoice_id]").map(String::as_str),
+        Some(invoice_id.as_str()),
+        "the session carries the invoice id for webhook reconciliation"
+    );
+
+    drop_db(&admin_url, &db_name, pool).await;
+}
+
+#[tokio::test]
+async fn pg_stripe_checkout_rejects_draft_invoice() {
+    let Some((pool, admin_url, db_name)) = fresh_db().await else {
+        eprintln!("pg_stripe_checkout_rejects_draft_invoice: DATABASE_URL not set, skipping");
+        return;
+    };
+    ensure_stripe_test_env().await;
+    let router = pg_router(&pool);
+    let profile = uuid::Uuid::new_v4();
+    let (token, _, _) = seed_billing_user(&pool, &router, profile, "striper2@example.com").await;
+    let invoice_id = seed_invoice_with_line(&router, profile, &token).await;
+
+    let (status, body) = read_json(
+        router
+            .clone()
+            .oneshot(post_stripe_checkout(&invoice_id, None, &token))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "body: {body}");
+    assert_eq!(
+        mock_stripe_request(&invoice_id).0,
+        0,
+        "Stripe is never called"
+    );
+
+    drop_db(&admin_url, &db_name, pool).await;
+}
+
+#[tokio::test]
+async fn pg_stripe_checkout_rejects_paid_invoice() {
+    let Some((pool, admin_url, db_name)) = fresh_db().await else {
+        eprintln!("pg_stripe_checkout_rejects_paid_invoice: DATABASE_URL not set, skipping");
+        return;
+    };
+    ensure_stripe_test_env().await;
+    let router = pg_router(&pool);
+    let profile = uuid::Uuid::new_v4();
+    let (token, _, _) = seed_billing_user(&pool, &router, profile, "striper3@example.com").await;
+    let invoice_id = seed_issued_invoice_with_line(&router, profile, &token).await;
+    // Pay the $100.00 invoice in full through the API.
+    let (status, _) = read_json(
+        router
+            .clone()
+            .oneshot(post_invoice_payments(
+                &invoice_id,
+                serde_json::json!({"amount": {"amount": 10000, "currency": "USD"}}),
+                None,
+                &token,
+            ))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, body) = read_json(
+        router
+            .clone()
+            .oneshot(post_stripe_checkout(&invoice_id, None, &token))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "body: {body}");
+    assert_eq!(
+        mock_stripe_request(&invoice_id).0,
+        0,
+        "Stripe is never called"
+    );
+
+    drop_db(&admin_url, &db_name, pool).await;
+}
+
+#[tokio::test]
+async fn pg_stripe_checkout_is_idempotent() {
+    let Some((pool, admin_url, db_name)) = fresh_db().await else {
+        eprintln!("pg_stripe_checkout_is_idempotent: DATABASE_URL not set, skipping");
+        return;
+    };
+    ensure_stripe_test_env().await;
+    let router = pg_router(&pool);
+    let profile = uuid::Uuid::new_v4();
+    let (token, _, _) = seed_billing_user(&pool, &router, profile, "striper4@example.com").await;
+    let invoice_id = seed_issued_invoice_with_line(&router, profile, &token).await;
+
+    let key = IdempotencyKey::generate().to_string();
+    let (first_status, first) = read_json(
+        router
+            .clone()
+            .oneshot(post_stripe_checkout(&invoice_id, Some(&key), &token))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    let (second_status, second) = read_json(
+        router
+            .clone()
+            .oneshot(post_stripe_checkout(&invoice_id, Some(&key), &token))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(first_status, StatusCode::CREATED);
+    assert_eq!(second_status, StatusCode::CREATED, "loser replays the 201");
+    assert_eq!(first, second, "both callers see the identical checkout URL");
+    assert_eq!(
+        mock_stripe_request(&invoice_id).0,
+        1,
+        "the second request never reached Stripe"
+    );
+
+    drop_db(&admin_url, &db_name, pool).await;
+}
+
+#[tokio::test]
+async fn pg_stripe_webhook_records_payment() {
+    let Some((pool, admin_url, db_name)) = fresh_db().await else {
+        eprintln!("pg_stripe_webhook_records_payment: DATABASE_URL not set, skipping");
+        return;
+    };
+    ensure_stripe_test_env().await;
+    let router = pg_router(&pool);
+    let profile = uuid::Uuid::new_v4();
+    let (token, _, _) = seed_billing_user(&pool, &router, profile, "striper5@example.com").await;
+    let invoice_id = seed_issued_invoice_with_line(&router, profile, &token).await;
+
+    let event = stripe_event_json(
+        "evt_webhook_1",
+        "cs_test_webhook_1",
+        &invoice_id,
+        10000,
+        "paid",
+    );
+    let (status, body) = read_json(
+        router
+            .clone()
+            .oneshot(post_stripe_webhook(event))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "webhook body: {body}");
+    assert_eq!(body["received"], true);
+    let payment_id = body["payment_id"].as_str().expect("payment_id").to_owned();
+
+    let payments = list_payments_for(&pool, &invoice_id).await;
+    assert_eq!(payments.len(), 1, "exactly one payment recorded");
+    assert_eq!(payments[0].payment_id.to_string(), payment_id);
+    assert_eq!(payments[0].amount.amount(), 10000);
+    assert_eq!(
+        payments[0].external_reference.as_deref(),
+        Some("cs_test_webhook_1"),
+        "the Stripe session id is stored on the payment"
+    );
+
+    // The fully-covering payment transitions the invoice to Paid.
+    let (status, invoice) = read_json(
+        router
+            .clone()
+            .oneshot(get(format!("/api/v1/invoices/{invoice_id}"), &token))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(invoice["status"], "Paid");
+
+    // The event claim is linked to the payment.
+    let linked = PgStripeEventRepository::new(pool.clone())
+        .payment_for_event("evt_webhook_1")
+        .await
+        .expect("read event claim");
+    assert_eq!(
+        linked.map(|id| id.to_string()),
+        Some(payment_id),
+        "the event claim links to its payment"
+    );
+
+    drop_db(&admin_url, &db_name, pool).await;
+}
+
+#[tokio::test]
+async fn pg_stripe_webhook_redelivery_does_not_double_record() {
+    let Some((pool, admin_url, db_name)) = fresh_db().await else {
+        eprintln!(
+            "pg_stripe_webhook_redelivery_does_not_double_record: DATABASE_URL not set, skipping"
+        );
+        return;
+    };
+    ensure_stripe_test_env().await;
+    let router = pg_router(&pool);
+    let profile = uuid::Uuid::new_v4();
+    let (token, _, _) = seed_billing_user(&pool, &router, profile, "striper6@example.com").await;
+    let invoice_id = seed_issued_invoice_with_line(&router, profile, &token).await;
+
+    let event = stripe_event_json(
+        "evt_webhook_2",
+        "cs_test_webhook_2",
+        &invoice_id,
+        10000,
+        "paid",
+    );
+    let (first_status, first) = read_json(
+        router
+            .clone()
+            .oneshot(post_stripe_webhook(event.clone()))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    let (second_status, second) = read_json(
+        router
+            .clone()
+            .oneshot(post_stripe_webhook(event))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(first_status, StatusCode::OK, "first body: {first}");
+    assert_eq!(
+        second_status,
+        StatusCode::OK,
+        "redelivery is a 200, not a 409"
+    );
+    assert_eq!(
+        first["payment_id"], second["payment_id"],
+        "the redelivery reports the same payment"
+    );
+    assert_eq!(
+        list_payments_for(&pool, &invoice_id).await.len(),
+        1,
+        "exactly one payment after the redelivery"
+    );
+
+    drop_db(&admin_url, &db_name, pool).await;
+}
+
+#[tokio::test]
+async fn pg_stripe_webhook_rejects_bad_signature() {
+    let Some((pool, admin_url, db_name)) = fresh_db().await else {
+        eprintln!("pg_stripe_webhook_rejects_bad_signature: DATABASE_URL not set, skipping");
+        return;
+    };
+    ensure_stripe_test_env().await;
+    let router = pg_router(&pool);
+    let profile = uuid::Uuid::new_v4();
+    let (token, _, _) = seed_billing_user(&pool, &router, profile, "striper7@example.com").await;
+    let invoice_id = seed_issued_invoice_with_line(&router, profile, &token).await;
+
+    // Signed with the wrong secret: 400, nothing recorded.
+    let event = stripe_event_json(
+        "evt_webhook_3",
+        "cs_test_webhook_3",
+        &invoice_id,
+        10000,
+        "paid",
+    );
+    let bytes = serde_json::to_vec(&event).expect("serialize stripe event");
+    let wrong_signature = sign_stripe_event_with_secret(
+        &bytes,
+        "whsec_wrong_secret",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time")
+            .as_secs(),
+    );
+    let (status, body) = read_json(
+        router
+            .clone()
+            .oneshot(post_stripe_webhook_with_signature(
+                bytes,
+                Some(&wrong_signature),
+            ))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body: {body}");
+
+    // No signature header at all: also 400.
+    let event = stripe_event_json(
+        "evt_webhook_3",
+        "cs_test_webhook_3",
+        &invoice_id,
+        10000,
+        "paid",
+    );
+    let bytes = serde_json::to_vec(&event).expect("serialize stripe event");
+    let (status, body) = read_json(
+        router
+            .clone()
+            .oneshot(post_stripe_webhook_with_signature(bytes, None))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body: {body}");
+
+    // A stale-but-correctly-signed event: 400, nothing recorded.
+    let event = stripe_event_json(
+        "evt_webhook_3",
+        "cs_test_webhook_3",
+        &invoice_id,
+        10000,
+        "paid",
+    );
+    let bytes = serde_json::to_vec(&event).expect("serialize stripe event");
+    let stale_signature = sign_stripe_event_with_secret(
+        &bytes,
+        STRIPE_TEST_WEBHOOK_SECRET,
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time")
+            .as_secs()
+            - 600,
+    );
+    let (status, body) = read_json(
+        router
+            .clone()
+            .oneshot(post_stripe_webhook_with_signature(
+                bytes,
+                Some(&stale_signature),
+            ))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body: {body}");
+
+    assert_eq!(
+        list_payments_for(&pool, &invoice_id).await.len(),
+        0,
+        "no payment is ever recorded without a valid signature"
+    );
+
+    drop_db(&admin_url, &db_name, pool).await;
+}
+
+#[tokio::test]
+async fn pg_stripe_webhook_ignores_unpaid_session() {
+    let Some((pool, admin_url, db_name)) = fresh_db().await else {
+        eprintln!("pg_stripe_webhook_ignores_unpaid_session: DATABASE_URL not set, skipping");
+        return;
+    };
+    ensure_stripe_test_env().await;
+    let router = pg_router(&pool);
+    let profile = uuid::Uuid::new_v4();
+    let (token, _, _) = seed_billing_user(&pool, &router, profile, "striper8@example.com").await;
+    let invoice_id = seed_issued_invoice_with_line(&router, profile, &token).await;
+
+    let event = stripe_event_json(
+        "evt_webhook_4",
+        "cs_test_webhook_4",
+        &invoice_id,
+        10000,
+        "unpaid",
+    );
+    let (status, body) = read_json(
+        router
+            .clone()
+            .oneshot(post_stripe_webhook(event))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body: {body}");
+    assert_eq!(
+        list_payments_for(&pool, &invoice_id).await.len(),
+        0,
+        "an unpaid session records nothing"
+    );
+
+    drop_db(&admin_url, &db_name, pool).await;
+}
+
+#[tokio::test]
+async fn pg_stripe_webhook_reclaims_stale_claim() {
+    let Some((pool, admin_url, db_name)) = fresh_db().await else {
+        eprintln!("pg_stripe_webhook_reclaims_stale_claim: DATABASE_URL not set, skipping");
+        return;
+    };
+    ensure_stripe_test_env().await;
+    let router = pg_router(&pool);
+    let profile = uuid::Uuid::new_v4();
+    let (token, _, _) = seed_billing_user(&pool, &router, profile, "striper9@example.com").await;
+    let invoice_id = seed_issued_invoice_with_line(&router, profile, &token).await;
+
+    // Simulate a winner that died mid-flight: a claim row an hour
+    // old, with no payment linked.
+    sqlx::query(
+        "INSERT INTO stripe_webhook_events (event_id, event_type, invoice_id, received_at) \
+         VALUES ($1, $2, $3, now() - interval '1 hour')",
+    )
+    .bind("evt_webhook_5")
+    .bind("checkout.session.completed")
+    .bind(invoice_id.parse::<uuid::Uuid>().expect("invoice id"))
+    .execute(&pool)
+    .await
+    .expect("insert stale claim");
+
+    let event = stripe_event_json(
+        "evt_webhook_5",
+        "cs_test_webhook_5",
+        &invoice_id,
+        10000,
+        "paid",
+    );
+    let (status, body) = read_json(
+        router
+            .clone()
+            .oneshot(post_stripe_webhook(event))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body: {body}");
+    assert_eq!(
+        list_payments_for(&pool, &invoice_id).await.len(),
+        1,
+        "the redelivery reclaims the stale claim and records"
+    );
+
+    drop_db(&admin_url, &db_name, pool).await;
+}
+
+#[tokio::test]
+async fn pg_stripe_webhook_concurrent_redelivery_records_once() {
+    let Some((pool, admin_url, db_name)) = fresh_db().await else {
+        eprintln!(
+            "pg_stripe_webhook_concurrent_redelivery_records_once: DATABASE_URL not set, skipping"
+        );
+        return;
+    };
+    ensure_stripe_test_env().await;
+    let router = pg_router(&pool);
+    let profile = uuid::Uuid::new_v4();
+    let (token, _, _) = seed_billing_user(&pool, &router, profile, "striper10@example.com").await;
+    let invoice_id = seed_issued_invoice_with_line(&router, profile, &token).await;
+
+    let event = stripe_event_json(
+        "evt_webhook_6",
+        "cs_test_webhook_6",
+        &invoice_id,
+        10000,
+        "paid",
+    );
+    let (first, second) = tokio::join!(
+        read_json(
+            router
+                .clone()
+                .oneshot(post_stripe_webhook(event.clone()))
+                .await
+                .expect("oneshot")
+        ),
+        read_json(
+            router
+                .clone()
+                .oneshot(post_stripe_webhook(event))
+                .await
+                .expect("oneshot")
+        ),
+    );
+    let (first_status, _) = first;
+    let (second_status, _) = second;
+    // One delivery records; the other either replays the recorded
+    // payment (200, if the winner finished first) or is told to
+    // retry (409, while the winner is still in flight). Either
+    // delivery may win, so neither position is asserted.
+    for status in [first_status, second_status] {
+        assert!(
+            status == StatusCode::OK || status == StatusCode::CONFLICT,
+            "the loser replays (200) or retries (409), never records twice: {status}"
+        );
+    }
+    assert!(
+        first_status == StatusCode::OK || second_status == StatusCode::OK,
+        "one delivery succeeds"
+    );
+    assert_eq!(
+        list_payments_for(&pool, &invoice_id).await.len(),
+        1,
+        "exactly one payment after concurrent redelivery"
     );
 
     drop_db(&admin_url, &db_name, pool).await;

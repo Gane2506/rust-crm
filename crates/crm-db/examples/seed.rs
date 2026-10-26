@@ -865,6 +865,7 @@ async fn seed_billing(pool: &sqlx::PgPool) -> Result<bool, DomainError> {
             NewPayment {
                 invoice_id: invoice.invoice_id,
                 amount: usd(20_000),
+                external_reference: None,
             },
             &ctx,
         )

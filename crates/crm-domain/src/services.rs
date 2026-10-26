@@ -1765,6 +1765,12 @@ pub struct NewPayment {
     pub invoice_id: crate::ids::InvoiceId,
     /// Amount paid (positive; must match the invoice's currency).
     pub amount: crate::billing::Money,
+    /// The payment provider's reference for this payment, when it was
+    /// recorded through a provider (STRIPE-01: the Stripe Checkout
+    /// Session id). `None` for manually recorded payments; the
+    /// recorded [`Payment`](crate::billing::Payment) then carries no
+    /// external reference.
+    pub external_reference: Option<String>,
 }
 
 /// Domain operations for billing (task 12-BILL-01): invoice lifecycle
