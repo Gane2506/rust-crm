@@ -5,9 +5,11 @@ How the billing vertical slice (tasks 12-BILL-01 through
 client profiles, line items, and payment records with
 coverage tracking. This is **record-keeping** — it tracks
 invoice lifecycles and payment coverage; it does not
-execute charges. For the auth model, see `security.md`;
-for the audit events billing emits, `audit-log.md`; for
-the billing security posture, `threat-model.md`.
+execute charges itself. Charges go through the Stripe
+adapter (STRIPE-01): see `stripe.md`. For the auth model,
+see `security.md`; for the audit events billing emits,
+`audit-log.md`; for the billing security posture,
+`threat-model.md`.
 
 ## What it is
 

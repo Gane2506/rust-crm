@@ -583,6 +583,14 @@ pub struct Payment {
     pub status: PaymentStatus,
     /// When the payment was recorded.
     pub recorded_at: DateTime<Utc>,
+    /// The payment provider's reference for this payment, when it was
+    /// recorded through a provider (STRIPE-01: the Stripe Checkout
+    /// Session id, e.g. `cs_test_…`). `None` for manually recorded
+    /// payments. A provider webhook looks a payment up by this
+    /// reference to tell "already recorded" from "not yet recorded",
+    /// which is what makes webhook redelivery idempotent.
+    #[serde(default)]
+    pub external_reference: Option<String>,
 }
 
 impl Payment {
@@ -620,7 +628,18 @@ impl Payment {
             amount,
             status: PaymentStatus::Recorded,
             recorded_at: Utc::now(),
+            external_reference: None,
         })
+    }
+
+    /// Attaches the payment provider's reference (e.g. the Stripe
+    /// Checkout Session id) to this payment. The reference is
+    /// informational for manually recorded payments and the dedupe
+    /// key for provider-recorded ones; it does not change the
+    /// payment's amount, status, or coverage.
+    pub fn with_external_reference(mut self, reference: String) -> Self {
+        self.external_reference = Some(reference);
+        self
     }
 
     /// Reverses the payment. Idempotent on an already-reversed

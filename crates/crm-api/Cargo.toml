@@ -26,3 +26,11 @@ crm-core = { path = "../crm-core", version = "0.1.0" }
 # Postgres-backed application state.
 crm-db = { path = "../crm-db", version = "0.1.0" }
 sqlx.workspace = true
+# Stripe Checkout/webhook adapter (STRIPE-01): reqwest for the
+# form-encoded Stripe API, hmac + subtle + hex for webhook signature
+# verification, sha2 for the HMAC-SHA256 digest.
+reqwest.workspace = true
+hmac.workspace = true
+hex.workspace = true
+subtle.workspace = true
+sha2.workspace = true

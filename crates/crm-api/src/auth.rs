@@ -75,6 +75,7 @@ use crm_db::jev::{
 };
 use crm_db::postgres::{PgAuditService, PgContactRepository, PgStaffRepository};
 use crm_db::signing::{PgContractRepository, PgSigningTemplateRepository};
+use crm_db::stripe::PgStripeEventRepository;
 use crm_db::voice::PgCallRepository;
 use crm_db::workflow::{
     PgTriggerRepository, PgWorkflowEdgeRepository, PgWorkflowNodeRepository, PgWorkflowRepository,
@@ -159,6 +160,10 @@ pub struct ApiAuth {
     pub invoices: PgInvoiceRepository,
     /// Payment repository for the billing endpoints.
     pub payments: PgPaymentRepository,
+    /// Stripe webhook event repository for the Stripe endpoints
+    /// (STRIPE-01): claims one row per Stripe event id so a
+    /// redelivered webhook cannot double-record a payment.
+    pub stripe_events: PgStripeEventRepository,
     /// Contract repository for the signing endpoints.
     pub contracts: PgContractRepository,
     /// Signing-template repository for the signing endpoints.
@@ -261,6 +266,7 @@ impl ApiAuth {
             feed_items: PgFeedItemRepository::new(pool.clone()),
             invoices: PgInvoiceRepository::new(pool.clone()),
             payments: PgPaymentRepository::new(pool.clone()),
+            stripe_events: PgStripeEventRepository::new(pool.clone()),
             contracts: PgContractRepository::new(pool.clone()),
             signing_templates: PgSigningTemplateRepository::new(pool.clone()),
             calls: PgCallRepository::new(pool.clone()),

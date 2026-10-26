@@ -237,6 +237,7 @@ async fn service_full_lifecycle_to_paid() {
         NewPayment {
             invoice_id: invoice.invoice_id,
             amount: usd(6_000),
+            external_reference: None,
         },
         &ctx,
     )
@@ -253,6 +254,7 @@ async fn service_full_lifecycle_to_paid() {
         NewPayment {
             invoice_id: invoice.invoice_id,
             amount: usd(4_000),
+            external_reference: None,
         },
         &ctx,
     )
@@ -315,6 +317,7 @@ async fn service_rejects_overpayment() {
             NewPayment {
                 invoice_id: invoice.invoice_id,
                 amount: usd(1_001),
+                external_reference: None,
             },
             &ctx,
         )
@@ -368,6 +371,7 @@ async fn service_reversal_reopens_paid_invoice() {
             NewPayment {
                 invoice_id: invoice.invoice_id,
                 amount: usd(5_000),
+                external_reference: None,
             },
             &ctx,
         )
@@ -458,6 +462,7 @@ async fn service_void_rules() {
         NewPayment {
             invoice_id: invoice.invoice_id,
             amount: usd(100),
+            external_reference: None,
         },
         &ctx,
     )
@@ -505,6 +510,7 @@ async fn service_enforces_scope_isolation() {
             NewPayment {
                 invoice_id: invoice.invoice_id,
                 amount: usd(10),
+                external_reference: None,
             },
             &ctx_b,
         )

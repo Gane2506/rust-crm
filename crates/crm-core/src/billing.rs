@@ -256,7 +256,15 @@ where
                 )));
             }
             // `record` rejects zero amounts; nothing is persisted yet.
+            // A provider-recorded payment carries its provider
+            // reference (STRIPE-01: the Stripe Checkout Session id)
+            // so a webhook redelivery can find it again instead of
+            // recording a second payment.
             let payment = Payment::record(input.invoice_id, input.amount)?;
+            let payment = match input.external_reference {
+                Some(reference) => payment.with_external_reference(reference),
+                None => payment,
+            };
             // Atomic read-check-write: the repository locks the invoice
             // row, validates coverage against the latest payments, and
             // marks the invoice paid when covered — all in one

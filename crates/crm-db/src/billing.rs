@@ -363,11 +363,15 @@ fn row_to_payment(row: &sqlx::postgres::PgRow) -> Result<Payment, DomainError> {
         recorded_at: row
             .try_get::<DateTime<Utc>, _>("recorded_at")
             .map_err(map_storage_error)?,
+        external_reference: row
+            .try_get::<Option<String>, _>("external_reference")
+            .map_err(map_storage_error)?,
     })
 }
 
 /// Columns selected for a `payments` row.
-const PAYMENT_COLUMNS: &str = "payment_id, invoice_id, amount, currency, status, recorded_at";
+const PAYMENT_COLUMNS: &str =
+    "payment_id, invoice_id, amount, currency, status, recorded_at, external_reference";
 
 /// SQLx implementation of [`PaymentRepository`].
 #[derive(Debug, Clone)]
@@ -385,7 +389,7 @@ impl PgPaymentRepository {
 impl PaymentRepository for PgPaymentRepository {
     async fn record(&self, payment: Payment) -> Result<Payment, DomainError> {
         sqlx::query(
-            "INSERT INTO payments (payment_id, invoice_id, amount, currency, status, recorded_at)\n             VALUES ($1, $2, $3, $4, $5, $6)",
+            "INSERT INTO payments (payment_id, invoice_id, amount, currency, status, recorded_at, external_reference)\n             VALUES ($1, $2, $3, $4, $5, $6, $7)",
         )
         .bind(payment.payment_id.as_uuid())
         .bind(payment.invoice_id.as_uuid())
@@ -393,6 +397,7 @@ impl PaymentRepository for PgPaymentRepository {
         .bind(payment.amount.currency())
         .bind(payment_status_as_str(payment.status))
         .bind(payment.recorded_at)
+        .bind(payment.external_reference.as_deref())
         .execute(&self.pool)
         .await
         .map_err(map_storage_error)?;
@@ -499,7 +504,7 @@ impl PaymentRepository for PgPaymentRepository {
             )));
         }
         sqlx::query(
-            "INSERT INTO payments (payment_id, invoice_id, amount, currency, status, recorded_at)\n             VALUES ($1, $2, $3, $4, $5, $6)",
+            "INSERT INTO payments (payment_id, invoice_id, amount, currency, status, recorded_at, external_reference)\n             VALUES ($1, $2, $3, $4, $5, $6, $7)",
         )
         .bind(payment.payment_id.as_uuid())
         .bind(payment.invoice_id.as_uuid())
@@ -507,6 +512,7 @@ impl PaymentRepository for PgPaymentRepository {
         .bind(payment.amount.currency())
         .bind(payment_status_as_str(payment.status))
         .bind(payment.recorded_at)
+        .bind(payment.external_reference.as_deref())
         .execute(&mut *tx)
         .await
         .map_err(map_storage_error)?;

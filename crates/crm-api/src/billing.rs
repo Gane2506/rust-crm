@@ -24,6 +24,10 @@
 //! * `POST /api/v1/invoices/{id}/payments` — records a payment
 //!   (`201`); a fully-covering payment transitions the invoice to
 //!   `Paid`.
+//! * `POST /api/v1/invoices/{id}/stripe-checkout` — creates a Stripe
+//!   Checkout Session for an issued invoice (`201` with
+//!   `{ "checkout_url" }`); amount = remaining balance (STRIPE-01).
+//!   Without `STRIPE_SECRET_KEY` this answers `503`.
 //! * `GET /api/v1/invoices/{id}/payments` — lists payments, oldest
 //!   first (`200`).
 //! * `POST /api/v1/payments/{id}/reverse` — reverses a payment
@@ -50,7 +54,7 @@ use uuid::Uuid;
 use crm_core::billing::BillingServiceImpl;
 use crm_core::IdempotencyKey;
 use crm_db::billing::{PgInvoiceRepository, PgPaymentRepository};
-use crm_domain::billing::{Invoice, Money, Payment};
+use crm_domain::billing::{Invoice, InvoiceStatus, Money, Payment};
 use crm_domain::ids::{ClientProfileId, InvoiceId, PaymentId};
 use crm_domain::repositories::{InvoiceRepository, PaymentRepository};
 use crm_domain::security::{Action, Operation, Resource};
@@ -62,6 +66,7 @@ use crate::contacts::{
     IdempotencyStore,
 };
 use crate::problem_response;
+use crate::stripe::{CheckoutSessionResponse, StripeClient, StripeConfig, StripeError};
 use crm_core::memory::ContactServiceImpl;
 
 /// Body of `POST /api/v1/invoices`.
@@ -102,7 +107,10 @@ pub struct ListInvoicesQuery {
 }
 
 /// Builds the billing service from the API auth components.
-fn billing_service(
+///
+/// Shared with the Stripe webhook ([`crate::stripe`]), which records
+/// webhook payments through the same guarded path.
+pub(crate) fn billing_service(
     api_auth: &crate::auth::ApiAuth,
 ) -> BillingServiceImpl<PgInvoiceRepository, PgPaymentRepository, crm_db::postgres::PgAuditService>
 {
@@ -123,7 +131,10 @@ fn billing_service(
 /// The fingerprint is over the parsed-then-reserialized payload, so it
 /// is stable across insignificant whitespace differences in the raw
 /// JSON.
-fn fingerprint(route: &str, payload: &impl Serialize) -> u64 {
+///
+/// Shared with the Stripe checkout handler in this file (the route
+/// string differs, the payload is the invoice id).
+pub(crate) fn fingerprint(route: &str, payload: &impl Serialize) -> u64 {
     let mut hasher = DefaultHasher::new();
     route.hash(&mut hasher);
     serde_json::to_string(payload)
@@ -157,7 +168,9 @@ pub(crate) async fn record_response<I>(
 /// the client must be storable for replay.
 /// The error side is boxed: `axum::http::Response` is a large type and
 /// returning it by value trips `clippy::result_large_err`.
-fn storable_value(
+///
+/// Shared with the Stripe checkout handler in this file.
+pub(crate) fn storable_value(
     value: &impl Serialize,
     what: &str,
     instance: &str,
@@ -771,6 +784,7 @@ where
             NewPayment {
                 invoice_id,
                 amount: body.amount,
+                external_reference: None,
             },
             &ctx,
         )
@@ -787,6 +801,170 @@ where
         record_response(state.idempotency_store(), key, fp, stored).await;
     }
     (StatusCode::CREATED, Json(payment)).into_response()
+}
+
+/// `POST /v1/invoices/{id}/stripe-checkout` — creates a Stripe
+/// Checkout Session for an issued invoice (STRIPE-01).
+///
+/// Amount = remaining balance, currency = invoice currency; the
+/// session's `metadata[invoice_id]` is what the webhook reconciles
+/// on. Returns `201` with `{ "checkout_url" }`. Requires the
+/// `invoice/update` grant in the invoice's profile, an `Issued`
+/// invoice, and a positive balance (else `422`). Without
+/// `STRIPE_SECRET_KEY` the endpoint answers `503 "Stripe not
+/// configured"`; the server still starts and everything else works.
+///
+/// Supports `Idempotency-Key` like [`record_payment`]: a repeated
+/// request with the same key replays the original `201`, and the key
+/// is also passed to Stripe, so a retried creation returns the same
+/// Stripe session instead of a duplicate.
+///
+/// Known limitation: the balance is read just before the Stripe
+/// call, but a manual payment recorded between that read and the
+/// webhook cannot be seen here — the webhook's guarded path refuses
+/// to over-apply, so the worst case is a refused webhook payment the
+/// operator reconciles in the Stripe dashboard (a refund), never an
+/// over-applied invoice.
+pub async fn create_stripe_checkout<R, A, I>(
+    State(state): State<AppState<ContactServiceImpl<R, A>, I>>,
+    auth: Option<Extension<RequestAuth>>,
+    headers: HeaderMap,
+    path: Result<Path<Uuid>, PathRejection>,
+) -> Response
+where
+    R: crm_core::memory::ContactReadModel + Clone + Send + Sync + 'static,
+    A: AuditService + Clone + Send + Sync + 'static,
+    I: IdempotencyStore,
+{
+    let (instance, _) = request_id(&headers);
+    let invoice_id = match path_invoice_id(path, &instance) {
+        Ok(id) => id,
+        Err(response) => return *response,
+    };
+    let key = match idempotency_key(&headers, &instance) {
+        Ok(key) => key,
+        Err(response) => return *response,
+    };
+    let fp = fingerprint(
+        "POST /api/v1/invoices/{id}/stripe-checkout",
+        &invoice_id.as_uuid(),
+    );
+    let Some(api_auth) = &state.auth else {
+        return problem_response(
+            StatusCode::NOT_IMPLEMENTED,
+            "Not implemented",
+            "authentication is not configured on this server".to_owned(),
+            instance,
+        );
+    };
+    let invoice = match fetch_invoice(api_auth, invoice_id, &instance).await {
+        Ok(invoice) => invoice,
+        Err(response) => return *response,
+    };
+    let ctx = match authorize_invoice(&state, auth, &headers, &invoice, Operation::Update).await {
+        Ok(ctx) => ctx,
+        Err(response) => return *response,
+    };
+    // Configuration is checked after authorization (an unauthorized
+    // caller learns nothing about the server's Stripe setup) and
+    // before the idempotency claim, so a `503` never consumes a
+    // claim.
+    let config = StripeConfig::from_env();
+    if !config.is_configured() {
+        tracing::warn!("stripe checkout requested but STRIPE_SECRET_KEY is not configured");
+        return problem_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Stripe not configured",
+            "STRIPE_SECRET_KEY is not set on this server".to_owned(),
+            instance,
+        );
+    }
+    // The idempotency replay runs AFTER authorization: the stored
+    // response must only be visible to a caller authorized for
+    // this operation.
+    if let Some(key) = &key {
+        match claim_or_replay(
+            state.idempotency_store(),
+            key,
+            fp,
+            StatusCode::CREATED,
+            &instance,
+        )
+        .await
+        {
+            Ok(ClaimOutcome::Replay(response)) => return response,
+            Ok(ClaimOutcome::Won) => {}
+            Err(response) => return *response,
+        }
+    }
+    // Fresh reads, taken after winning the claim: the invoice may
+    // have been voided or paid since the first fetch.
+    let invoice = match fetch_invoice(api_auth, invoice_id, &instance).await {
+        Ok(invoice) => invoice,
+        Err(response) => return *response,
+    };
+    if invoice.status != InvoiceStatus::Issued {
+        return problem_response(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "Validation failed",
+            format!(
+                "cannot create a checkout session for an invoice with status {:?}",
+                invoice.status
+            ),
+            instance,
+        );
+    }
+    let service = billing_service(api_auth);
+    let balance = match service.invoice_balance(invoice_id, &ctx).await {
+        Ok(balance) => balance,
+        Err(error) => return domain_error_response(error, instance),
+    };
+    if balance.amount() <= 0 {
+        return problem_response(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "Validation failed",
+            "cannot create a checkout session for an invoice with no remaining balance"
+                .to_owned(),
+            instance,
+        );
+    }
+    let stripe_key = key.as_ref().map(|key| key.to_string());
+    let client = StripeClient::new(config);
+    let session = match client
+        .create_checkout_session(invoice_id, balance, stripe_key.as_deref())
+        .await
+    {
+        Ok(session) => session,
+        Err(StripeError::NotConfigured) => {
+            return problem_response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Stripe not configured",
+                "STRIPE_SECRET_KEY is not set on this server".to_owned(),
+                instance,
+            );
+        }
+        Err(error) => {
+            tracing::warn!(%error, "stripe checkout session creation failed");
+            return problem_response(
+                StatusCode::BAD_GATEWAY,
+                "Stripe error",
+                "Stripe did not return a checkout session".to_owned(),
+                instance,
+            );
+        }
+    };
+    let checkout_url = session
+        .url
+        .expect("StripeClient::create_checkout_session only returns sessions with a URL");
+    let body = CheckoutSessionResponse { checkout_url };
+    let stored = match storable_value(&body, "checkout session", &instance) {
+        Ok(value) => value,
+        Err(response) => return *response,
+    };
+    if let Some(key) = key {
+        record_response(state.idempotency_store(), key, fp, stored).await;
+    }
+    (StatusCode::CREATED, Json(body)).into_response()
 }
 
 /// `GET /api/v1/invoices/{id}/payments` — lists payments for an
