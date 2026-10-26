@@ -27,7 +27,7 @@ use crm_db::postgres::{
 use crm_domain::audit::{fingerprint, ActorKind, SecurityEvent};
 use crm_domain::email::EmailStatus;
 use crm_domain::ids::{
-    ActorId, AgencyId, ClientProfileId, ContactId, EmailMessageId, GrantId, StaffId,
+    ActorId, AgencyId, ClientProfileId, ContactId, EmailMessageId, EmailThreadId, GrantId, StaffId,
 };
 use crm_domain::repositories::{
     AuditRepository, ContactRepository, EmailMessageRepository, EmailThreadRepository,
@@ -2860,6 +2860,60 @@ async fn pg_email_send_transitions_to_sent() {
         .await
         .expect("fetch sent message");
     assert_eq!(stored.status, EmailStatus::Sent);
+
+    drop_db(&admin_url, &db_name, pool).await;
+}
+
+/// A fresh compose (no thread_id) opens a thread for the sent message.
+/// Regression: sends used to leave thread_id NULL, so the message never
+/// appeared in the threads list and the sent mail was unfindable in the
+/// UI (MAIL-01 live verification).
+#[tokio::test]
+async fn pg_email_send_without_thread_opens_a_thread() {
+    let Some((pool, admin_url, db_name)) = fresh_db().await else {
+        eprintln!("pg_email_send_without_thread: DATABASE_URL not set, skipping");
+        return;
+    };
+    let router = pg_router(&pool);
+    let profile = uuid::Uuid::new_v4();
+    let (token, _staff, _agency) =
+        seed_email_user(&pool, &router, profile, "mailer-thread@example.com").await;
+
+    let (status, body) = read_json(
+        router
+            .clone()
+            .oneshot(post_emails_send(send_email_body(profile), None, &token))
+            .await
+            .expect("oneshot"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "send body: {body}");
+    let thread_id = uuid::Uuid::parse_str(
+        body["thread_id"]
+            .as_str()
+            .expect("thread_id on the sent message"),
+    )
+    .expect("uuid");
+
+    // The thread exists, carries the subject, and counts the message.
+    let threads = PgEmailThreadRepository::new(pool.clone());
+    let thread = threads
+        .get(EmailThreadId::from(thread_id))
+        .await
+        .expect("fetch opened thread");
+    assert_eq!(thread.subject, "Welcome");
+    assert_eq!(thread.message_count, 1);
+    assert!(thread
+        .participants
+        .contains(&"customer@example.com".to_string()));
+
+    // The threads list shows it for the profile.
+    let listed = threads
+        .list_for_client(ClientProfileId::from(profile), 100)
+        .await
+        .expect("list threads");
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].thread_id, EmailThreadId::from(thread_id));
 
     drop_db(&admin_url, &db_name, pool).await;
 }
