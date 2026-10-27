@@ -88,12 +88,13 @@ pub(crate) const STRIPE_CANCEL_URL_ENV: &str = "STRIPE_CANCEL_URL";
 
 /// Stripe API base URL when [`STRIPE_API_BASE_URL_ENV`] is unset.
 const DEFAULT_STRIPE_API_BASE_URL: &str = "https://api.stripe.com";
-/// Checkout success redirect when [`STRIPE_SUCCESS_URL_ENV`] is
-/// unset. The billing list is the only billing page today; the Pay
-/// button follow-on may point this at an invoice detail page.
-const DEFAULT_STRIPE_SUCCESS_URL: &str = "http://127.0.0.1:3000/billing";
-/// Checkout cancel redirect when [`STRIPE_CANCEL_URL_ENV`] is unset.
-const DEFAULT_STRIPE_CANCEL_URL: &str = "http://127.0.0.1:3000/billing";
+/// Default Checkout return URL for an invoice: its detail page.
+/// Both the success and the cancel redirect land here — the detail
+/// page shows the current state on load and does not poll, so the
+/// payment appears once the webhook lands.
+fn default_stripe_return_url(invoice_id: InvoiceId) -> String {
+    format!("http://127.0.0.1:3000/billing/{}", invoice_id.as_uuid())
+}
 
 /// Stripe's webhook timestamp tolerance, in seconds: a signature
 /// older than this is rejected even when the HMAC matches, so a
@@ -120,10 +121,12 @@ pub(crate) struct StripeConfig {
     pub webhook_secret: Option<String>,
     /// Stripe API base URL (override for tests only).
     pub api_base_url: String,
-    /// URL Stripe redirects to after a successful Checkout.
-    pub success_url: String,
-    /// URL Stripe redirects to when the customer cancels Checkout.
-    pub cancel_url: String,
+    /// `STRIPE_SUCCESS_URL` override, or `None` when unset: the
+    /// per-invoice default (the invoice detail page) applies then.
+    pub success_url: Option<String>,
+    /// `STRIPE_CANCEL_URL` override, or `None` when unset: the
+    /// per-invoice default (the invoice detail page) applies then.
+    pub cancel_url: Option<String>,
 }
 
 impl std::fmt::Debug for StripeConfig {
@@ -154,11 +157,31 @@ impl StripeConfig {
             webhook_secret: std::env::var(STRIPE_WEBHOOK_SECRET_ENV).ok(),
             api_base_url: std::env::var(STRIPE_API_BASE_URL_ENV)
                 .unwrap_or_else(|_| DEFAULT_STRIPE_API_BASE_URL.to_owned()),
-            success_url: std::env::var(STRIPE_SUCCESS_URL_ENV)
-                .unwrap_or_else(|_| DEFAULT_STRIPE_SUCCESS_URL.to_owned()),
-            cancel_url: std::env::var(STRIPE_CANCEL_URL_ENV)
-                .unwrap_or_else(|_| DEFAULT_STRIPE_CANCEL_URL.to_owned()),
+            success_url: std::env::var(STRIPE_SUCCESS_URL_ENV).ok(),
+            cancel_url: std::env::var(STRIPE_CANCEL_URL_ENV).ok(),
         }
+    }
+
+    /// URL Stripe redirects to after a successful Checkout for
+    /// `invoice_id`: the `STRIPE_SUCCESS_URL` override when set,
+    /// else the invoice detail page. The payer lands back on the
+    /// invoice they just paid, where the payment appears once the
+    /// webhook lands.
+    #[must_use]
+    pub(crate) fn success_url_for(&self, invoice_id: InvoiceId) -> String {
+        self.success_url
+            .clone()
+            .unwrap_or_else(|| default_stripe_return_url(invoice_id))
+    }
+
+    /// URL Stripe redirects to when the customer cancels Checkout
+    /// for `invoice_id`: the `STRIPE_CANCEL_URL` override when set,
+    /// else the invoice detail page.
+    #[must_use]
+    pub(crate) fn cancel_url_for(&self, invoice_id: InvoiceId) -> String {
+        self.cancel_url
+            .clone()
+            .unwrap_or_else(|| default_stripe_return_url(invoice_id))
     }
 
     /// Whether a Checkout Session can be created: a secret key is
@@ -209,6 +232,8 @@ pub(crate) struct StripeCheckoutSession {
 /// the invoice balance (`price_data.unit_amount`, minor units) —
 /// `amount_total` is a response field, not a request parameter.
 /// `metadata[invoice_id]` is what the webhook reconciles on.
+/// `success_url` / `cancel_url` are the env overrides when set,
+/// else the invoice detail page for this invoice.
 fn checkout_session_form(
     config: &StripeConfig,
     invoice_id: InvoiceId,
@@ -229,8 +254,8 @@ fn checkout_session_form(
             amount.amount().to_string(),
         ),
         ("line_items[0][quantity]".to_owned(), "1".to_owned()),
-        ("success_url".to_owned(), config.success_url.clone()),
-        ("cancel_url".to_owned(), config.cancel_url.clone()),
+        ("success_url".to_owned(), config.success_url_for(invoice_id)),
+        ("cancel_url".to_owned(), config.cancel_url_for(invoice_id)),
         (
             "metadata[invoice_id]".to_owned(),
             invoice_id.as_uuid().to_string(),
@@ -882,8 +907,8 @@ mod tests {
             secret_key: Some(TEST_SECRET_KEY.to_owned()),
             webhook_secret: None,
             api_base_url: DEFAULT_STRIPE_API_BASE_URL.to_owned(),
-            success_url: DEFAULT_STRIPE_SUCCESS_URL.to_owned(),
-            cancel_url: DEFAULT_STRIPE_CANCEL_URL.to_owned(),
+            success_url: None,
+            cancel_url: None,
         };
         let invoice_id =
             InvoiceId::from(Uuid::from_u128(0x1234_5678_9abc_def0_1234_5678_9abc_def0));
@@ -914,11 +939,43 @@ mod tests {
         );
         assert_eq!(
             get("success_url").as_deref(),
-            Some("http://127.0.0.1:3000/billing")
+            Some(format!("http://127.0.0.1:3000/billing/{}", invoice_id.as_uuid()).as_str())
+        );
+        assert_eq!(
+            get("cancel_url").as_deref(),
+            Some(format!("http://127.0.0.1:3000/billing/{}", invoice_id.as_uuid()).as_str())
         );
         assert!(
             !form.iter().any(|(name, _)| name == "amount_total"),
             "amount_total is a Stripe response field, not a request parameter"
+        );
+    }
+
+    #[test]
+    fn checkout_session_form_uses_url_overrides_when_set() {
+        let config = StripeConfig {
+            secret_key: Some(TEST_SECRET_KEY.to_owned()),
+            webhook_secret: Some(TEST_WEBHOOK_SECRET.to_owned()),
+            api_base_url: DEFAULT_STRIPE_API_BASE_URL.to_owned(),
+            success_url: Some("https://example.test/checkout/ok".to_owned()),
+            cancel_url: Some("https://example.test/checkout/cancel".to_owned()),
+        };
+        let invoice_id =
+            InvoiceId::from(Uuid::from_u128(0x1234_5678_9abc_def0_1234_5678_9abc_def0));
+        let amount = Money::new(4_000, "USD".to_owned()).expect("valid money");
+        let form = checkout_session_form(&config, invoice_id, amount);
+        let get = |key: &str| {
+            form.iter()
+                .find(|(name, _)| name == key)
+                .map(|(_, value)| value.clone())
+        };
+        assert_eq!(
+            get("success_url").as_deref(),
+            Some("https://example.test/checkout/ok")
+        );
+        assert_eq!(
+            get("cancel_url").as_deref(),
+            Some("https://example.test/checkout/cancel")
         );
     }
 
@@ -940,8 +997,8 @@ mod tests {
             secret_key: Some("sk_live_abc".to_owned()),
             webhook_secret: Some("whsec_xyz".to_owned()),
             api_base_url: DEFAULT_STRIPE_API_BASE_URL.to_owned(),
-            success_url: DEFAULT_STRIPE_SUCCESS_URL.to_owned(),
-            cancel_url: DEFAULT_STRIPE_CANCEL_URL.to_owned(),
+            success_url: None,
+            cancel_url: None,
         };
         let debug = format!("{config:?}");
         assert!(!debug.contains("sk_live_abc"));

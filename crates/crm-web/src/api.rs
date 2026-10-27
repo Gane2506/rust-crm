@@ -1459,6 +1459,40 @@ pub async fn reverse_payment(payment_id: &str, token: &str) -> Result<Payment, A
     }
 }
 
+/// `POST /v1/invoices/{id}/stripe-checkout` response envelope.
+#[derive(Debug, Clone, Deserialize)]
+pub struct StripeCheckoutResponse {
+    /// Hosted Checkout URL the payer is redirected to.
+    pub checkout_url: String,
+}
+
+/// Creates a Stripe Checkout Session for an issued invoice —
+/// minting a fresh `Idempotency-Key` per call. Returns the hosted
+/// Checkout URL; the caller navigates the browser to it. The server
+/// answers `422` for a non-issued or fully-paid invoice and `503`
+/// when Stripe is not configured.
+pub async fn create_stripe_checkout(
+    invoice_id: &str,
+    token: &str,
+) -> Result<StripeCheckoutResponse, ApiError> {
+    let url = format!("{API_BASE}/api/v1/invoices/{invoice_id}/stripe-checkout");
+    let response = bearer(
+        Request::post(&url).header("Idempotency-Key", &new_idempotency_key()),
+        token,
+    )
+    .send()
+    .await
+    .map_err(|error| ApiError::Transport(error.to_string()))?;
+    if response.ok() {
+        response
+            .json::<StripeCheckoutResponse>()
+            .await
+            .map_err(|error| ApiError::Transport(format!("invalid checkout response: {error}")))
+    } else {
+        Err(api_error_from_response(&response).await)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Email threads (`GET /api/v1/threads…`, `POST /api/v1/emails/send`)
 // ---------------------------------------------------------------------------

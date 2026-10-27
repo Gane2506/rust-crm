@@ -42,8 +42,8 @@ in config files, or in the repo.
 | --- | --- | --- |
 | `STRIPE_SECRET_KEY` | for checkout | Stripe secret key (`sk_test_…` / `sk_live_…`). Without it the server still starts and everything else works; the checkout endpoint answers `503 "Stripe not configured"`. |
 | `STRIPE_WEBHOOK_SECRET` | for the webhook | The endpoint's signing secret (`whsec_…`). Without it the webhook answers `503`. Each Stripe endpoint has its own secret — copy the one for *this* endpoint. |
-| `STRIPE_SUCCESS_URL` | no | Where Stripe redirects after a successful Checkout. Default: `http://127.0.0.1:3000/billing`. |
-| `STRIPE_CANCEL_URL` | no | Where Stripe redirects when the customer cancels Checkout. Default: `http://127.0.0.1:3000/billing`. |
+| `STRIPE_SUCCESS_URL` | no | Where Stripe redirects after a successful Checkout. Default: the invoice detail page (`http://127.0.0.1:3000/billing/{invoice_id}`), so the payer lands back on the invoice they just paid. |
+| `STRIPE_CANCEL_URL` | no | Where Stripe redirects when the customer cancels Checkout. Default: the invoice detail page (`http://127.0.0.1:3000/billing/{invoice_id}`). |
 
 `STRIPE_API_BASE_URL` is a test-only override (the test suite
 points it at a mock server). Never set it in production.
@@ -69,8 +69,13 @@ points it at a mock server). Never set it in production.
 2. Create and issue an invoice, then
    `POST /v1/invoices/{id}/stripe-checkout` with a staff token.
    The response's `checkout_url` opens Stripe's test Checkout page.
+   In the UI, the same flow is the "Pay with Stripe" button on an
+   issued invoice's detail page (shown only while a balance is owed).
 3. Pay with Stripe's test card `4242 4242 4242 4242` (any future
-   expiry, any CVC). Stripe redirects to the success URL.
+   expiry, any CVC). Stripe redirects to the invoice detail page
+   (`/billing/{invoice_id}`); the payment appears there once the
+   webhook lands — the page does not poll for it, so a reload may be
+   needed if the webhook is still in flight.
 4. In the dashboard's webhook deliveries for the endpoint, the
    `checkout.session.completed` delivery should show `200`, and
    the invoice should be `Paid` with one payment carrying the
