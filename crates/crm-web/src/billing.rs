@@ -40,10 +40,10 @@ use leptos_router::components::A;
 use crm_domain::billing::{Invoice, InvoiceStatus, Money, Payment, PaymentStatus};
 
 use crate::api::{
-    add_invoice_line, create_invoice, create_stripe_checkout, fetch_invoice,
-    fetch_invoice_balance, fetch_invoices, fetch_payments, fetch_profiles, record_payment,
-    reverse_payment, transition_invoice, AddInvoiceLineRequest, ApiError, CreateInvoiceRequest,
-    InvoiceListResponse, RecordPaymentRequest, DEMO_PROFILE_ID_STR,
+    add_invoice_line, create_invoice, create_stripe_checkout, fetch_invoice, fetch_invoice_balance,
+    fetch_invoices, fetch_payments, fetch_profiles, record_payment, reverse_payment,
+    transition_invoice, AddInvoiceLineRequest, ApiError, CreateInvoiceRequest, InvoiceListResponse,
+    RecordPaymentRequest, DEMO_PROFILE_ID_STR,
 };
 use crate::components::{
     CountLine, EmptyState, ErrorAlert, FieldRow, Loading, OkAlert, PageHeader,
