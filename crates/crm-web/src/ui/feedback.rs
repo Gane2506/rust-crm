@@ -315,11 +315,15 @@ fn schedule_toast_timer(toasts: Toasts, id: u64, duration: Duration) -> Option<T
 /// the node; it never re-announces it. Manual dismiss (the × button)
 /// still calls the optional `on_dismiss` handler; auto-dismiss does
 /// not — the handler reports a user dismissal, not a timeout.
+///
+/// `on_dismiss` is a plain `Option` here, not `#[prop(optional)]`:
+/// the Toaster passes its own `Option` straight through, and an
+/// optional prop would make the macro expect the raw handler instead.
 #[component]
 fn ToastItem(
     toast: Toast,
     toasts: Toasts,
-    #[prop(optional)] on_dismiss: Option<UiValueHandler<u64>>,
+    on_dismiss: Option<UiValueHandler<u64>>,
 ) -> impl IntoView {
     let id = toast.id;
     let duration = toast_duration(toast.variant);
