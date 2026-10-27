@@ -6,11 +6,15 @@
 //! and reversals all exist in `crates/crm-api/src/billing.rs`. This
 //! module is the frontend only; the backend is unchanged.
 //!
-//! Billing here is **record-keeping**, not a payment processor: the
-//! domain documents that no charge is executed anywhere (a
-//! Stripe/processor adapter is a later workstream's concern), so
-//! payments are recorded against invoices, never charged. The UI
-//! presents them that way and adds no Stripe copy or charge flow.
+//! Billing is mostly **record-keeping**: payments are recorded
+//! against invoices, never charged by this UI — except for the
+//! Stripe path (STRIPE-02). The invoice detail page offers "Pay
+//! with Stripe" on issued invoices with a balance: it creates a
+//! Checkout Session through the STRIPE-01 backend and redirects the
+//! browser to Stripe's hosted page. This server never sees card
+//! details, and the payment is recorded by the webhook when Stripe
+//! confirms it — the detail page shows the current state on load
+//! and does not poll for it.
 //!
 //! Three API gaps shape the page (flagged, not papered over):
 //! - Invoices carry no human-readable number, so the table shows the
@@ -36,9 +40,9 @@ use leptos_router::components::A;
 use crm_domain::billing::{Invoice, InvoiceStatus, Money, Payment, PaymentStatus};
 
 use crate::api::{
-    add_invoice_line, create_invoice, fetch_invoice, fetch_invoice_balance, fetch_invoices,
-    fetch_payments, fetch_profiles, record_payment, reverse_payment, transition_invoice,
-    AddInvoiceLineRequest, ApiError, CreateInvoiceRequest, InvoiceListResponse,
+    add_invoice_line, create_invoice, create_stripe_checkout, fetch_invoice, fetch_invoice_balance,
+    fetch_invoices, fetch_payments, fetch_profiles, record_payment, reverse_payment,
+    transition_invoice, AddInvoiceLineRequest, ApiError, CreateInvoiceRequest, InvoiceListResponse,
     RecordPaymentRequest, DEMO_PROFILE_ID_STR,
 };
 use crate::components::{
@@ -82,6 +86,19 @@ fn format_money(money: &Money) -> String {
         money.amount() / 100,
         money.amount() % 100
     )
+}
+
+/// Navigates the browser to Stripe's hosted Checkout page.
+///
+/// A plain `window.location.href` assignment: the Checkout URL is
+/// external, so this is a full navigation, not router navigation.
+/// A missing window (non-browser target) or a rejected URL leaves
+/// the user on the detail page — there is no in-app fallback for a
+/// Checkout URL.
+fn redirect_to_checkout(url: &str) {
+    if let Some(window) = web_sys::window() {
+        let _ = window.location().set_href(url);
+    }
 }
 
 /// Parses a decimal amount in major units (`"100"`, `"100.5"`,
@@ -677,6 +694,45 @@ pub fn InvoiceDetail(token: String, invoice_id: String) -> impl IntoView {
         }
     };
 
+    // Pay with Stripe: creates a Checkout Session through the
+    // STRIPE-01 backend and redirects the browser to Stripe's
+    // hosted page. A failure never wipes the record — the friendly
+    // error goes to the alert above the record (with its Retry) and
+    // an error toast, the same as any other transition failure.
+    // After Stripe redirects back, the payment only appears once
+    // the webhook lands; this page shows the current state on load
+    // and does not poll for it.
+    let pay_with_stripe = {
+        let token = token.clone();
+        let invoice_id = invoice_id.clone();
+        move || {
+            if working.get() {
+                return;
+            }
+            let token = token.clone();
+            let invoice_id = invoice_id.clone();
+            working.set(true);
+            spawn_local(async move {
+                match create_stripe_checkout(&invoice_id, &token).await {
+                    Ok(session) => redirect_to_checkout(&session.checkout_url),
+                    Err(e) => {
+                        let message = e.friendly_message();
+                        if let Some(toasts) = toasts {
+                            push_toast(
+                                toasts,
+                                "Stripe Checkout failed",
+                                Some(message.clone()),
+                                ToastVariant::Error,
+                            );
+                        }
+                        error.set(Some(message));
+                    }
+                }
+                working.set(false);
+            });
+        }
+    };
+
     view! {
         <section aria-label="Invoice detail">
             <PageHeader title="Invoice" description="Lines, balance, payments, and lifecycle.">
@@ -702,7 +758,10 @@ pub fn InvoiceDetail(token: String, invoice_id: String) -> impl IntoView {
                     // children closure below captures its environment
                     // by move, so it must take this fresh clone — the
                     // render closure itself must never move `reverse`.
+                    // The Pay button's handler takes its own clone
+                    // for the same reason.
                     let reverse_handler = reverse.clone();
+                    let pay = pay_with_stripe.clone();
                     let status = inv.status;
                     let is_draft = status == InvoiceStatus::Draft;
                     let is_issued = status == InvoiceStatus::Issued;
@@ -718,6 +777,11 @@ pub fn InvoiceDetail(token: String, invoice_id: String) -> impl IntoView {
                         None => "…".to_string(),
                     };
                     let balance_value = balance.get();
+                    // The Pay button only exists on an issued invoice
+                    // with money still owed; while the balance is
+                    // still loading (`None`) there is nothing to pay.
+                    let can_pay_with_stripe = is_issued
+                        && matches!(&balance_value, Some(amount) if amount.amount() > 0);
                     let lines = inv.lines.clone();
                     let payments_list = payments.get();
                     // One fresh clone per use: a `view!` child/prop is a
@@ -785,9 +849,26 @@ pub fn InvoiceDetail(token: String, invoice_id: String) -> impl IntoView {
                                     >
                                         "Void"
                                     </Button>
+                                    {if can_pay_with_stripe {
+                                        view! {
+                                            <Button
+                                                btn_type="button"
+                                                disabled=Signal::derive(move || !can_act)
+                                                on_click={UiHandler::new({
+                                                    let pay = pay.clone();
+                                                    move || pay()
+                                                })}
+                                            >
+                                                "Pay with Stripe"
+                                            </Button>
+                                        }
+                                            .into_any()
+                                    } else {
+                                        ().into_any()
+                                    }}
                                 </div>
                                 <p style="margin: 0.75rem 0 0; font-size: 0.75rem; color: var(--muted-foreground);">
-                                    "Paid and Void are terminal. An invoice with no lines cannot be issued, and a paid invoice cannot be voided."
+                                    "Paid and Void are terminal. An invoice with no lines cannot be issued, and a paid invoice cannot be voided. Pay with Stripe opens Stripe's hosted Checkout; the payment appears here once Stripe confirms it."
                                 </p>
                             </CardContent>
                         </Card>

@@ -65,7 +65,7 @@ hex = { version = "0.4" }
 subtle = { version = "2" }
 # HTTP client for the Leptos CSR app (WASM); used by crm-web to call crm-api.
 gloo-net = { version = "0.7" }
-web-sys = { version = "0.3", features = ["Window", "Storage", "Document", "Element", "HtmlElement", "NodeList", "Event", "EventTarget", "KeyboardEvent", "Navigator"] }
+web-sys = { version = "0.3", features = ["Window", "Storage", "Document", "Element", "HtmlElement", "NodeList", "Event", "EventTarget", "KeyboardEvent", "Navigator", "Location"] }
 # `JsCast` for DOM downcasts in crm-web (dialog focus management).
 wasm-bindgen = { version = "0.2.129" }
 # Argon2id password hashing (03-SEC-02). MIT/Apache-2.0, both on the
