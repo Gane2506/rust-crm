@@ -570,8 +570,9 @@ pub fn FormDetail(token: String, form_id: String) -> impl IntoView {
                             );
                         }
                         submissions.update(|list| {
-                            if let Some(current) =
-                                list.iter_mut().find(|s| s.submission_id == updated.submission_id)
+                            if let Some(current) = list
+                                .iter_mut()
+                                .find(|s| s.submission_id == updated.submission_id)
                             {
                                 *current = updated;
                             }
@@ -962,9 +963,7 @@ fn FormFieldForm(
                 match position_raw.trim().parse::<u32>() {
                     Ok(value) => value,
                     Err(_) => {
-                        status.set(Some(Err(
-                            "Position must be a whole number.".to_string(),
-                        )));
+                        status.set(Some(Err("Position must be a whole number.".to_string())));
                         return;
                     }
                 }

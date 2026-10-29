@@ -1842,7 +1842,9 @@ pub async fn fetch_submissions(
         response
             .json::<SubmissionListResponse>()
             .await
-            .map_err(|error| ApiError::Transport(format!("invalid submission list response: {error}")))
+            .map_err(|error| {
+                ApiError::Transport(format!("invalid submission list response: {error}"))
+            })
     } else {
         Err(api_error_from_response(&response).await)
     }
