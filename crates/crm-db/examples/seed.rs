@@ -1468,6 +1468,12 @@ async fn ensure_demo_staff_grants(
     // ClientProfile:Update (AUDIT-08) is what the profile lifecycle
     // transitions (suspend/reactivate/archive) require — without it
     // every lifecycle button 403s for the demo user.
+    // Forms are agency-scoped (FORM-01): every form call 403d for the
+    // demo user because the seed never granted Form at all, even
+    // though it seeds a published demo form. Agency scope covers both
+    // agency- and profile-scoped requests, so it covers the
+    // profile-scoped form handlers (create, get, publish, archive,
+    // fields, submissions). Field removal requires `Form:Delete`.
     for (resource, operation, scope) in [
         (Resource::ClientProfile, Operation::Read, agency_scope),
         (Resource::ClientProfile, Operation::Create, agency_scope),
@@ -1482,6 +1488,10 @@ async fn ensure_demo_staff_grants(
         (Resource::Campaign, Operation::Read, agency_scope),
         (Resource::Campaign, Operation::Create, agency_scope),
         (Resource::Campaign, Operation::Update, agency_scope),
+        (Resource::Form, Operation::Read, agency_scope),
+        (Resource::Form, Operation::Create, agency_scope),
+        (Resource::Form, Operation::Update, agency_scope),
+        (Resource::Form, Operation::Delete, agency_scope),
     ] {
         let has = existing.iter().any(|grant| {
             grant.action.resource == resource

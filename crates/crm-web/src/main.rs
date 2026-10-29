@@ -23,6 +23,7 @@ use branding::BrandingPage;
 use campaigns::{CampaignDetail, CampaignsPage};
 use contacts::{ContactDetail, ContactsPage, MergePage};
 use emails::{MailPage, ThreadDetail};
+use forms::{FormDetail, FormsPage};
 use login::LoginForm;
 use profiles::{ProfileDetail, ProfilesPage};
 use theme::{provide_theme_mode, ThemeToggle};
@@ -42,6 +43,7 @@ mod campaigns;
 mod components;
 mod contacts;
 mod emails;
+mod forms;
 mod login;
 mod profiles;
 mod theme;
@@ -901,11 +903,29 @@ fn Shell(token: String, on_logout: UiHandler) -> impl IntoView {
                                     move || view! { <BrandingPage token=token.clone() /> }
                                 }
                             />
+                            <Route
+                                path=path!("/forms")
+                                view={
+                                    let token = token.clone();
+                                    move || view! { <FormsPage token=<redacted>() /> }
+                                }
+                            />
+                            <Route
+                                path=path!("/forms/:id")
+                                view={
+                                    let token = token.clone();
+                                    move || {
+                                        let params = leptos_router::hooks::use_params_map();
+                                        let id = params.get().get("id").unwrap_or_default();
+                                        let token = token.clone();
+                                        view! { <FormDetail token=<redacted> form_id=id /> }
+                                    }
+                                }
+                            />
                             // Feature areas whose dedicated views land in later
                             // tasks route to a placeholder so the IA is complete.
                             <Route path=path!("/agents") view=|| view! { <ComingSoon feature="Jev agents" /> } />
                             <Route path=path!("/workflows") view=|| view! { <ComingSoon feature="Workflows" /> } />
-                            <Route path=path!("/forms") view=|| view! { <ComingSoon feature="Forms" /> } />
                             <Route path=path!("/signing") view=|| view! { <ComingSoon feature="Signing" /> } />
                             <Route path=path!("/calls") view=|| view! { <ComingSoon feature="Calls" /> } />
                             <Route path=path!("/analytics") view=|| view! { <ComingSoon feature="Analytics" /> } />
