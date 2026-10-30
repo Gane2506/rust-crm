@@ -17,6 +17,7 @@ use crm_domain::contact::Contact;
 use crm_domain::email::{EmailMessage, EmailThread};
 use crm_domain::form::{Form, FormField, FormSubmission};
 use crm_domain::ids::{ClientProfileId, ContactId};
+use crm_domain::jev::{AgentRun, Handoff, ToolCall};
 use crm_domain::profile::ClientProfile;
 use gloo_net::http::Request;
 use leptos::prelude::{RwSignal, Set};
@@ -1842,6 +1843,210 @@ pub async fn review_submission(
             .json::<FormSubmission>()
             .await
             .map_err(|error| ApiError::Transport(format!("invalid submission response: {error}")))
+    } else {
+        Err(api_error_from_response(&response).await)
+    }
+}
+
+/// `GET /api/v1/agent-runs` response envelope.
+#[derive(Debug, Clone, Deserialize)]
+pub struct AgentRunListResponse {
+    /// The requested page of runs.
+    pub agent_runs: Vec<AgentRun>,
+    /// Total matching runs across all pages.
+    pub total: u64,
+}
+
+/// `GET /api/v1/agent-runs/{id}` response envelope: the run. The
+/// server also returns the run's tool calls in this envelope, but
+/// the detail page fetches tool calls through the dedicated list
+/// endpoint instead, mirroring how submissions are fetched apart
+/// from the form detail envelope; serde ignores the extra key.
+#[derive(Debug, Clone, Deserialize)]
+pub struct AgentRunDetailResponse {
+    /// The run.
+    pub run: AgentRun,
+}
+
+/// `GET /api/v1/agent-runs/{id}/tool-calls` response envelope.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ToolCallListResponse {
+    /// The run's tool calls, oldest first.
+    pub tool_calls: Vec<ToolCall>,
+}
+
+/// `GET /api/v1/agent-runs/{id}/handoffs` response envelope.
+#[derive(Debug, Clone, Deserialize)]
+pub struct HandoffListResponse {
+    /// The run's handoffs, newest first.
+    pub handoffs: Vec<Handoff>,
+}
+
+/// `POST /api/v1/agent-runs` request body.
+/// Field names mirror the API's `CreateAgentRunBody` exactly.
+#[derive(Debug, Clone, Serialize)]
+pub struct CreateAgentRunRequest {
+    /// Owning client profile (UUID string).
+    pub client_profile_id: String,
+    /// Which kind of agent executes the run.
+    pub agent_kind: String,
+    /// Ordered model-adapter names; the first is the primary.
+    pub adapter_names: Vec<String>,
+    /// Input payload for the run (task description, parameters).
+    pub input: serde_json::Value,
+}
+
+/// Lists a profile's agent runs. Runs are profile-scoped: the list
+/// requires a `client_profile_id` and authorizes against it.
+pub async fn fetch_agent_runs(
+    profile_id: &str,
+    token: &str,
+) -> Result<AgentRunListResponse, ApiError> {
+    let url = format!("{API_BASE}/api/v1/agent-runs?client_profile_id={profile_id}&limit=20");
+    let response = bearer(Request::get(&url), token)
+        .send()
+        .await
+        .map_err(|error| ApiError::Transport(error.to_string()))?;
+    if response.ok() {
+        response
+            .json::<AgentRunListResponse>()
+            .await
+            .map_err(|error| {
+                ApiError::Transport(format!("invalid agent run list response: {error}"))
+            })
+    } else {
+        Err(api_error_from_response(&response).await)
+    }
+}
+
+/// Fetches one agent run.
+pub async fn fetch_agent_run(
+    run_id: &str,
+    token: &str,
+) -> Result<AgentRunDetailResponse, ApiError> {
+    let url = format!("{API_BASE}/api/v1/agent-runs/{run_id}");
+    let response = bearer(Request::get(&url), token)
+        .send()
+        .await
+        .map_err(|error| ApiError::Transport(error.to_string()))?;
+    if response.ok() {
+        response
+            .json::<AgentRunDetailResponse>()
+            .await
+            .map_err(|error| ApiError::Transport(format!("invalid agent run response: {error}")))
+    } else {
+        Err(api_error_from_response(&response).await)
+    }
+}
+
+/// Creates an agent run, minting a fresh `Idempotency-Key` per call.
+/// The server starts the run, so a created run is `Running`.
+pub async fn create_agent_run(
+    request: &CreateAgentRunRequest,
+    token: &str,
+) -> Result<AgentRun, ApiError> {
+    let url = format!("{API_BASE}/api/v1/agent-runs");
+    let body = serde_json::to_string(request)
+        .map_err(|error| ApiError::Transport(format!("invalid create-run request: {error}")))?;
+    let response = bearer(
+        Request::post(&url)
+            .header("Idempotency-Key", &new_idempotency_key())
+            .header("Content-Type", "application/json"),
+        token,
+    )
+    .body(body)
+    .map_err(|error| ApiError::Transport(error.to_string()))?
+    .send()
+    .await
+    .map_err(|error| ApiError::Transport(error.to_string()))?;
+    if response.ok() {
+        response
+            .json::<AgentRun>()
+            .await
+            .map_err(|error| ApiError::Transport(format!("invalid agent run response: {error}")))
+    } else {
+        Err(api_error_from_response(&response).await)
+    }
+}
+
+/// Runs an agent-run lifecycle transition
+/// (`request-approval`, `approve`, `deny`, `fail`, `cancel`, or
+/// `complete`).
+///
+/// The server reads the idempotency key on transitions too, so one is
+/// minted per call like every other POST from this client. Only
+/// `complete` carries a body: `{"output": ...}`; the other
+/// transitions take no body.
+pub async fn transition_agent_run(
+    run_id: &str,
+    transition: &str,
+    output: Option<serde_json::Value>,
+    token: &str,
+) -> Result<AgentRun, ApiError> {
+    let url = format!("{API_BASE}/api/v1/agent-runs/{run_id}/{transition}");
+    let builder = bearer(
+        Request::post(&url).header("Idempotency-Key", &new_idempotency_key()),
+        token,
+    );
+    let response = match output {
+        Some(output) => {
+            let body = serde_json::to_string(&serde_json::json!({ "output": output })).map_err(
+                |error| ApiError::Transport(format!("invalid complete-run request: {error}")),
+            )?;
+            builder
+                .header("Content-Type", "application/json")
+                .body(body)
+                .map_err(|error| ApiError::Transport(error.to_string()))?
+                .send()
+                .await
+                .map_err(|error| ApiError::Transport(error.to_string()))?
+        }
+        None => builder
+            .send()
+            .await
+            .map_err(|error| ApiError::Transport(error.to_string()))?,
+    };
+    if response.ok() {
+        response
+            .json::<AgentRun>()
+            .await
+            .map_err(|error| ApiError::Transport(format!("invalid agent run response: {error}")))
+    } else {
+        Err(api_error_from_response(&response).await)
+    }
+}
+
+/// Lists a run's tool calls, oldest first.
+pub async fn fetch_tool_calls(run_id: &str, token: &str) -> Result<ToolCallListResponse, ApiError> {
+    let url = format!("{API_BASE}/api/v1/agent-runs/{run_id}/tool-calls");
+    let response = bearer(Request::get(&url), token)
+        .send()
+        .await
+        .map_err(|error| ApiError::Transport(error.to_string()))?;
+    if response.ok() {
+        response
+            .json::<ToolCallListResponse>()
+            .await
+            .map_err(|error| {
+                ApiError::Transport(format!("invalid tool call list response: {error}"))
+            })
+    } else {
+        Err(api_error_from_response(&response).await)
+    }
+}
+
+/// Lists a run's handoffs, newest first.
+pub async fn fetch_handoffs(run_id: &str, token: &str) -> Result<HandoffListResponse, ApiError> {
+    let url = format!("{API_BASE}/api/v1/agent-runs/{run_id}/handoffs");
+    let response = bearer(Request::get(&url), token)
+        .send()
+        .await
+        .map_err(|error| ApiError::Transport(error.to_string()))?;
+    if response.ok() {
+        response
+            .json::<HandoffListResponse>()
+            .await
+            .map_err(|error| ApiError::Transport(format!("invalid handoff list response: {error}")))
     } else {
         Err(api_error_from_response(&response).await)
     }
