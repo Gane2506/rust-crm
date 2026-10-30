@@ -15,6 +15,7 @@ use crm_domain::billing::{Invoice, InvoiceLine, Money, Payment};
 use crm_domain::campaign::{Campaign, CampaignStep, ProspectPool};
 use crm_domain::contact::Contact;
 use crm_domain::email::{EmailMessage, EmailThread};
+use crm_domain::form::{Form, FormField, FormSubmission};
 use crm_domain::ids::{ClientProfileId, ContactId};
 use crm_domain::profile::ClientProfile;
 use gloo_net::http::Request;
@@ -1610,6 +1611,242 @@ pub async fn send_email(request: &SendEmailRequest, token: &str) -> Result<Email
         Err(api_error_from_response(&response).await)
     }
 }
+
+/// `GET /api/v1/forms` response envelope.
+#[derive(Debug, Clone, Deserialize)]
+pub struct FormListResponse {
+    /// The requested page of forms.
+    pub forms: Vec<Form>,
+    /// Total matching forms across all pages.
+    pub total: u64,
+}
+
+/// `GET /api/v1/forms/{id}` response envelope: the form plus its
+/// fields, in position order.
+#[derive(Debug, Clone, Deserialize)]
+pub struct FormDetailResponse {
+    /// The form.
+    pub form: Form,
+    /// Its fields, in position order.
+    pub fields: Vec<FormField>,
+}
+
+/// `GET /api/v1/forms/{id}/submissions` response envelope.
+#[derive(Debug, Clone, Deserialize)]
+pub struct SubmissionListResponse {
+    /// The requested page of submissions, newest first.
+    pub submissions: Vec<FormSubmission>,
+}
+
+/// `POST /api/v1/forms` request body.
+/// Field names mirror the API's `CreateFormBody` exactly.
+#[derive(Debug, Clone, Serialize)]
+pub struct CreateFormRequest {
+    /// Owning client profile (UUID string).
+    pub client_profile_id: String,
+    /// Form name; must be non-empty.
+    pub name: String,
+}
+
+/// `POST /api/v1/forms/{id}/fields` request body.
+/// Field names mirror the API's `AddFieldBody` exactly. `field_type`
+/// is one of `"text"`, `"email"`, `"phone"`, `"number"`, `"select"`,
+/// `"checkbox"`, `"date"`. `config` is never null: `{}` for
+/// non-select fields, `{"options": [...]}` for select fields.
+#[derive(Debug, Clone, Serialize)]
+pub struct AddFieldRequest {
+    /// Field kind string.
+    pub field_type: String,
+    /// Human-readable label; must be non-empty.
+    pub label: String,
+    /// Whether a submission must answer this field.
+    pub required: bool,
+    /// Display ordering within the form.
+    pub position: u32,
+    /// Field configuration (opaque JSON, never null).
+    pub config: serde_json::Value,
+}
+
+/// Lists a profile's forms. Forms are profile-scoped: the list
+/// requires a `client_profile_id` and authorizes against it.
+pub async fn fetch_forms(profile_id: &str, token: &str) -> Result<FormListResponse, ApiError> {
+    let url = format!("{API_BASE}/api/v1/forms?client_profile_id={profile_id}&limit=20");
+    let response = bearer(Request::get(&url), token)
+        .send()
+        .await
+        .map_err(|error| ApiError::Transport(error.to_string()))?;
+    if response.ok() {
+        response
+            .json::<FormListResponse>()
+            .await
+            .map_err(|error| ApiError::Transport(format!("invalid form list response: {error}")))
+    } else {
+        Err(api_error_from_response(&response).await)
+    }
+}
+
+/// Fetches one form plus its fields.
+pub async fn fetch_form(form_id: &str, token: &str) -> Result<FormDetailResponse, ApiError> {
+    let url = format!("{API_BASE}/api/v1/forms/{form_id}");
+    let response = bearer(Request::get(&url), token)
+        .send()
+        .await
+        .map_err(|error| ApiError::Transport(error.to_string()))?;
+    if response.ok() {
+        response
+            .json::<FormDetailResponse>()
+            .await
+            .map_err(|error| ApiError::Transport(format!("invalid form response: {error}")))
+    } else {
+        Err(api_error_from_response(&response).await)
+    }
+}
+
+/// Creates a draft form, minting a fresh `Idempotency-Key` per call.
+pub async fn create_form(request: &CreateFormRequest, token: &str) -> Result<Form, ApiError> {
+    let url = format!("{API_BASE}/api/v1/forms");
+    let body = serde_json::to_string(request)
+        .map_err(|error| ApiError::Transport(format!("invalid create-form request: {error}")))?;
+    let response = bearer(
+        Request::post(&url)
+            .header("Idempotency-Key", &new_idempotency_key())
+            .header("Content-Type", "application/json"),
+        token,
+    )
+    .body(body)
+    .map_err(|error| ApiError::Transport(error.to_string()))?
+    .send()
+    .await
+    .map_err(|error| ApiError::Transport(error.to_string()))?;
+    if response.ok() {
+        response
+            .json::<Form>()
+            .await
+            .map_err(|error| ApiError::Transport(format!("invalid form response: {error}")))
+    } else {
+        Err(api_error_from_response(&response).await)
+    }
+}
+
+/// Runs a form lifecycle transition (`publish`, `archive`).
+///
+/// The server reads the idempotency key on transitions too, so one is
+/// minted per call like every other POST from this client.
+pub async fn transition_form(
+    form_id: &str,
+    transition: &str,
+    token: &str,
+) -> Result<Form, ApiError> {
+    let url = format!("{API_BASE}/api/v1/forms/{form_id}/{transition}");
+    let response = bearer(
+        Request::post(&url).header("Idempotency-Key", &new_idempotency_key()),
+        token,
+    )
+    .send()
+    .await
+    .map_err(|error| ApiError::Transport(error.to_string()))?;
+    if response.ok() {
+        response
+            .json::<Form>()
+            .await
+            .map_err(|error| ApiError::Transport(format!("invalid form response: {error}")))
+    } else {
+        Err(api_error_from_response(&response).await)
+    }
+}
+
+/// Adds a typed field to a form, minting a fresh `Idempotency-Key`
+/// per call.
+pub async fn add_field(
+    form_id: &str,
+    request: &AddFieldRequest,
+    token: &str,
+) -> Result<FormField, ApiError> {
+    let url = format!("{API_BASE}/api/v1/forms/{form_id}/fields");
+    let body = serde_json::to_string(request)
+        .map_err(|error| ApiError::Transport(format!("invalid add-field request: {error}")))?;
+    let response = bearer(
+        Request::post(&url)
+            .header("Idempotency-Key", &new_idempotency_key())
+            .header("Content-Type", "application/json"),
+        token,
+    )
+    .body(body)
+    .map_err(|error| ApiError::Transport(error.to_string()))?
+    .send()
+    .await
+    .map_err(|error| ApiError::Transport(error.to_string()))?;
+    if response.ok() {
+        response
+            .json::<FormField>()
+            .await
+            .map_err(|error| ApiError::Transport(format!("invalid field response: {error}")))
+    } else {
+        Err(api_error_from_response(&response).await)
+    }
+}
+
+/// Removes a field from a form. The server answers `204` with no body.
+pub async fn remove_field(form_id: &str, field_id: &str, token: &str) -> Result<(), ApiError> {
+    let url = format!("{API_BASE}/api/v1/forms/{form_id}/fields/{field_id}");
+    let response = bearer(Request::delete(&url), token)
+        .send()
+        .await
+        .map_err(|error| ApiError::Transport(error.to_string()))?;
+    if response.ok() {
+        Ok(())
+    } else {
+        Err(api_error_from_response(&response).await)
+    }
+}
+
+/// Lists a form's submissions, newest first.
+pub async fn fetch_submissions(
+    form_id: &str,
+    token: &str,
+) -> Result<SubmissionListResponse, ApiError> {
+    let url = format!("{API_BASE}/api/v1/forms/{form_id}/submissions?limit=20");
+    let response = bearer(Request::get(&url), token)
+        .send()
+        .await
+        .map_err(|error| ApiError::Transport(error.to_string()))?;
+    if response.ok() {
+        response
+            .json::<SubmissionListResponse>()
+            .await
+            .map_err(|error| {
+                ApiError::Transport(format!("invalid submission list response: {error}"))
+            })
+    } else {
+        Err(api_error_from_response(&response).await)
+    }
+}
+
+/// Marks a submission reviewed (idempotent on an already-reviewed
+/// one), minting a fresh `Idempotency-Key` per call.
+pub async fn review_submission(
+    form_id: &str,
+    submission_id: &str,
+    token: &str,
+) -> Result<FormSubmission, ApiError> {
+    let url = format!("{API_BASE}/api/v1/forms/{form_id}/submissions/{submission_id}/review");
+    let response = bearer(
+        Request::post(&url).header("Idempotency-Key", &new_idempotency_key()),
+        token,
+    )
+    .send()
+    .await
+    .map_err(|error| ApiError::Transport(error.to_string()))?;
+    if response.ok() {
+        response
+            .json::<FormSubmission>()
+            .await
+            .map_err(|error| ApiError::Transport(format!("invalid submission response: {error}")))
+    } else {
+        Err(api_error_from_response(&response).await)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
