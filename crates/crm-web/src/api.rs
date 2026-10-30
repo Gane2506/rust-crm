@@ -1631,22 +1631,11 @@ pub struct FormDetailResponse {
     pub fields: Vec<FormField>,
 }
 
-/// `GET /api/v1/forms/{id}/fields` response envelope.
-#[derive(Debug, Clone, Deserialize)]
-pub struct FieldListResponse {
-    /// The form's fields, in position order.
-    pub fields: Vec<FormField>,
-    /// Total fields on the form.
-    pub total: u64,
-}
-
 /// `GET /api/v1/forms/{id}/submissions` response envelope.
 #[derive(Debug, Clone, Deserialize)]
 pub struct SubmissionListResponse {
     /// The requested page of submissions, newest first.
     pub submissions: Vec<FormSubmission>,
-    /// Total submissions on the form.
-    pub total: u64,
 }
 
 /// `POST /api/v1/forms` request body.
@@ -1792,23 +1781,6 @@ pub async fn add_field(
             .json::<FormField>()
             .await
             .map_err(|error| ApiError::Transport(format!("invalid field response: {error}")))
-    } else {
-        Err(api_error_from_response(&response).await)
-    }
-}
-
-/// Lists a form's fields, in position order.
-pub async fn fetch_fields(form_id: &str, token: &str) -> Result<FieldListResponse, ApiError> {
-    let url = format!("{API_BASE}/api/v1/forms/{form_id}/fields");
-    let response = bearer(Request::get(&url), token)
-        .send()
-        .await
-        .map_err(|error| ApiError::Transport(error.to_string()))?;
-    if response.ok() {
-        response
-            .json::<FieldListResponse>()
-            .await
-            .map_err(|error| ApiError::Transport(format!("invalid field list response: {error}")))
     } else {
         Err(api_error_from_response(&response).await)
     }

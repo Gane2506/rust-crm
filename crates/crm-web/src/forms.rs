@@ -100,6 +100,12 @@ fn parse_select_options(input: &str) -> Vec<String> {
 /// using the form's loaded fields; an answer for an unknown field
 /// falls back to the short field id so nothing is ever dropped
 /// silently. The key is the field id (unique per answer in practice).
+/// One submission with its resolved answer rows: each row is
+/// (field label, answer value, field type label). Kept as an alias so
+/// the detail view's row list stays under clippy's type-complexity
+/// threshold.
+type SubmissionAnswers = (FormSubmission, Vec<(String, String, String)>);
+
 fn answer_rows(submission: &FormSubmission, fields: &[FormField]) -> Vec<(String, String, String)> {
     submission
         .answers
@@ -614,14 +620,25 @@ pub fn FormDetail(token: String, form_id: String) -> impl IntoView {
                     let fields_list = fields.get();
                     let field_count = fields_list.len();
                     let submissions_list = submissions.get();
+                    // Clone the detail-action handlers into locals: the
+                    // `For` children closures below are `move`, so using
+                    // the component-body `remove`/`review` directly would
+                    // move those captures out of this render closure and
+                    // make it FnOnce (E0525). Locals are fresh per render.
+                    let remove_for_rows = remove.clone();
+                    let review_for_rows = review.clone();
                     // Precompute each submission's answer rows before the
                     // `view!`: a `For` children closure cannot borrow
                     // per-row data computed inside it.
-                    let submission_rows: Vec<(FormSubmission, Vec<(String, String, String)>)> =
+                    let submission_rows: Vec<SubmissionAnswers> =
                         submissions_list
                             .iter()
                             .map(|s| (s.clone(), answer_rows(s, &fields_list)))
                             .collect();
+                    // Hoisted: a FieldRow child is a stored closure, so
+                    // calling .len() inside it would move submission_rows
+                    // and break the later For below (E0382).
+                    let submission_count = submission_rows.len();
                     let form_id_value = f.form_id.to_string();
                     let profile_id_value = f.client_profile_id.to_string();
                     let form_name = f.name.clone();
@@ -649,7 +666,7 @@ pub fn FormDetail(token: String, form_id: String) -> impl IntoView {
                                     </FieldRow>
                                     <FieldRow label="Fields">{field_count.to_string()}</FieldRow>
                                     <FieldRow label="Submissions">
-                                        {submission_rows.len().to_string()}
+                                        {submission_count.to_string()}
                                     </FieldRow>
                                     <FieldRow label="Created">
                                         {f.created_at.format("%Y-%m-%d %H:%M").to_string()}
@@ -719,7 +736,7 @@ pub fn FormDetail(token: String, form_id: String) -> impl IntoView {
                                                         let field_id = field.field_id.to_string();
                                                         let field_id_for_remove =
                                                             field_id.clone();
-                                                        let remove_one = remove.clone();
+                                                        let remove_one = remove_for_rows.clone();
                                                         let options = field
                                                             .config
                                                             .get("options")
@@ -806,7 +823,7 @@ pub fn FormDetail(token: String, form_id: String) -> impl IntoView {
                                             key=|(s, _)| s.submission_id.to_string()
                                             children=move |(s, answers)| {
                                                 let submission_id = s.submission_id.to_string();
-                                                let review_one = review.clone();
+                                                let review_one = review_for_rows.clone();
                                                 let is_new =
                                                     s.status == SubmissionStatus::New;
                                                 let status = s.status;

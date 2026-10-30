@@ -907,7 +907,7 @@ fn Shell(token: String, on_logout: UiHandler) -> impl IntoView {
                                 path=path!("/forms")
                                 view={
                                     let token = token.clone();
-                                    move || view! { <FormsPage token=<redacted>() /> }
+                                    move || view! { <FormsPage token=token.clone() /> }
                                 }
                             />
                             <Route
@@ -918,7 +918,7 @@ fn Shell(token: String, on_logout: UiHandler) -> impl IntoView {
                                         let params = leptos_router::hooks::use_params_map();
                                         let id = params.get().get("id").unwrap_or_default();
                                         let token = token.clone();
-                                        view! { <FormDetail token=<redacted> form_id=id /> }
+                                        view! { <FormDetail token=token.clone() form_id=id /> }
                                     }
                                 }
                             />
